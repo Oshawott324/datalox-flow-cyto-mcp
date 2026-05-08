@@ -271,6 +271,14 @@ flowcyto open-gate-editor-window /path/to/run/flowcyto.workspace.json
 
 That command starts the local gate editor server and opens `/mcp-app-preview` in a small native `WKWebView` window. It exercises the same `window.openai.callTool(...)` branch and revision polling used by the embedded MCP app preview, without showing browser chrome.
 
+Windows native preview parity should use the same local server and compact app
+surface hosted in WebView2, not a browser tab or Electron shell. The concrete
+implementation plan is in:
+
+```text
+docs/windows-webview2-compact-window.md
+```
+
 Keep the browser URL available only for inspection and automated Playwright coverage:
 
 ```bash
