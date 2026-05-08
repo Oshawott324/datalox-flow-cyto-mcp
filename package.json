@@ -1,0 +1,38 @@
+{
+  "name": "@datalox/flowcyto-mcp",
+  "version": "0.1.0",
+  "description": "Alpha flow cytometry MCP server, CLI, and compact gate editor.",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "flowcyto": "./dist/src/cli/main.js",
+    "flowcyto-mcp": "./dist/src/mcp/server.js"
+  },
+  "files": [
+    "dist/src/**/*",
+    "docs/**/*.md",
+    "schemas/**/*",
+    "scripts/fetch-fcs-fixtures.mjs",
+    "testdata/fixtures/manifest.json"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "fixtures:fetch": "node scripts/fetch-fcs-fixtures.mjs",
+    "test": "vitest run",
+    "pretest": "npm run build",
+    "verify:alpha": "npm run check && npm test && node dist/src/cli/main.js doctor && npm pack --dry-run --json > /dev/null"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "commander": "^14.0.2",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "playwright": "^1.59.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.8"
+  }
+}

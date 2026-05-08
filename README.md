@@ -1,0 +1,207 @@
+# Flowcyto MCP
+
+Alpha flow cytometry MCP server, CLI, and compact gate editor.
+
+The goal is a file-backed, agent-native gate editor:
+
+```text
+FCS file -> flowcyto.workspace.json -> MCP tools -> compact plot UI -> revision-safe JSON updates
+```
+
+This is not a FlowJo replacement yet. It is an internal alpha for validating the
+agentic workflow: open FCS metadata/previews, draw/edit gates, write structured
+JSON, and reflect agent-side changes live in the open surface.
+
+## Install
+
+Use Node.js 20 or newer.
+
+From a checkout:
+
+```bash
+npm ci
+npm run build
+npm run fixtures:fetch
+npm run verify:alpha
+```
+
+Create an installable alpha tarball:
+
+```bash
+npm pack
+npm install -g ./datalox-flowcyto-mcp-0.1.0.tgz
+flowcyto doctor
+```
+
+The package name is set to `@datalox/flowcyto-mcp`, but publishing is disabled
+with `private: true` until the real MCP-host validation gate passes.
+
+## Workspace
+
+Any user directory can be a run directory. The folder name is not part of the
+contract.
+
+```text
+my-cytometry-run/
+  flowcyto.workspace.json
+  data/
+    sample_001.fcs
+  reports/
+  .datalox/
+    cache/
+      previews/
+    ui-state.json
+```
+
+Create a workspace:
+
+```bash
+flowcyto init /path/to/my-cytometry-run \
+  --sample /path/to/sample_001.fcs \
+  --sample-id sample_001
+```
+
+Validate it:
+
+```bash
+flowcyto validate /path/to/my-cytometry-run/flowcyto.workspace.json
+```
+
+The canonical artifact is `flowcyto.workspace.json`. Gates are stored as
+structured JSON with a `revision` field so the UI and agent can reject stale
+writes instead of overwriting each other.
+
+## CLI
+
+Read metadata:
+
+```bash
+flowcyto metadata /path/to/my-cytometry-run/flowcyto.workspace.json \
+  --sample sample_001
+```
+
+Render a capped point preview:
+
+```bash
+flowcyto preview /path/to/my-cytometry-run/flowcyto.workspace.json \
+  --sample sample_001 \
+  --x FSC-A \
+  --y SSC-A \
+  --max-events 10000
+```
+
+Render a binned preview for larger display requests:
+
+```bash
+flowcyto preview /path/to/my-cytometry-run/flowcyto.workspace.json \
+  --sample sample_001 \
+  --x FSC-A \
+  --y SSC-A \
+  --format bins \
+  --max-events 60000
+```
+
+Open the compact native preview window on macOS:
+
+```bash
+flowcyto open-gate-editor-window /path/to/my-cytometry-run/flowcyto.workspace.json
+```
+
+Open the browser debug surface:
+
+```bash
+flowcyto open-gate-editor /path/to/my-cytometry-run/flowcyto.workspace.json
+```
+
+The browser route is for debugging and Playwright coverage. The intended user
+surface is the MCP embedded app or the compact native preview.
+
+## MCP Registration
+
+Stdio MCP entrypoint:
+
+```bash
+flowcyto-mcp
+```
+
+Streamable HTTP MCP entrypoint:
+
+```bash
+flowcyto-mcp --http --host 127.0.0.1 --port 8787
+```
+
+Register this endpoint in a Streamable HTTP MCP-capable host:
+
+```text
+http://127.0.0.1:8787/mcp
+```
+
+The host should discover these tools:
+
+```text
+render_gate_editor
+get_gate_editor_state
+get_workspace_revision
+read_workspace
+write_workspace
+validate_workspace
+get_sample_metadata
+get_event_preview
+upsert_gate
+delete_gate
+```
+
+The embedded app resource is:
+
+```text
+ui://flowcyto/gate-editor-v1.html
+```
+
+Expected live loop:
+
+```text
+human draws/edits gate -> workspace revision increments
+agent writes gate JSON -> workspace revision increments
+open UI polls revision -> new gate appears without manual reload
+```
+
+Keep HTTP bound to localhost for alpha. Do not expose the HTTP server on a public
+network without TLS, authentication, and a deployment review.
+
+## Fixture Coverage
+
+Fetch external FCS fixtures:
+
+```bash
+npm run fixtures:fetch
+```
+
+Fixtures are declared in:
+
+```text
+testdata/fixtures/manifest.json
+```
+
+The current external fixtures come from Bioconductor `flowCore` extdata under
+the Artistic-2.0 license. The package includes the manifest and fetch script,
+not the downloaded FCS binaries.
+
+## Alpha Limitations
+
+- Internal alpha only.
+- Not a validated clinical, diagnostic, or regulated analysis product.
+- Not a full FlowJo replacement.
+- FCS parser coverage is fixture-driven but still incomplete.
+- No Gating-ML import/export yet.
+- No FlowJo workspace import/export yet.
+- No public-network HTTP security posture yet.
+- Real named MCP-host validation is still required before public beta.
+- The UI is optimized for manual gating and visual review, not full batch
+  cytometry analysis.
+
+## License
+
+This project is licensed under AGPL-3.0-or-later. See [LICENSE](LICENSE).
+
+Commercial licensing can be offered separately for organizations that need to
+embed, redistribute, or deploy the product without AGPL obligations.

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://datalox.dev/schemas/flowcyto.workspace.schema.json",
+  "title": "Flow Cytometry Workspace",
+  "type": "object",
+  "required": ["version", "revision", "samples", "views", "gates"],
+  "properties": {
+    "version": { "const": 1 },
+    "revision": { "type": "integer", "minimum": 0 },
+    "samples": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "path"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "views": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "sample", "parent", "x", "y", "scale"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "sample": { "type": "string", "minLength": 1 },
+          "parent": { "type": "string", "minLength": 1 },
+          "x": { "type": "string", "minLength": 1 },
+          "y": { "type": "string", "minLength": 1 },
+          "scale": {
+            "type": "object",
+            "required": ["x", "y"],
+            "properties": {
+              "x": { "enum": ["linear", "arcsinh", "biex"] },
+              "y": { "enum": ["linear", "arcsinh", "biex"] }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "gates": { "type": "array" }
+  },
+  "additionalProperties": false
+}

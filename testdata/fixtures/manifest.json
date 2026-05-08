@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "fixtures": [
+    {
+      "id": "local-cfp-well-a4",
+      "path": "testdata/fixtures/CFP_Well_A4.fcs",
+      "source": "Existing project fixture",
+      "license": "project-local",
+      "expected": {
+        "minParameters": 2,
+        "minEvents": 1,
+        "requiredKeywords": ["$PAR", "$TOT", "$DATATYPE"]
+      }
+    },
+    {
+      "id": "flowcore-0877408774-B08",
+      "path": "testdata/fixtures/downloaded/flowcore-0877408774.B08.fcs",
+      "source": "Bioconductor flowCore extdata",
+      "sourceUrl": "https://bioconductor.org/packages/3.22/bioc/src/contrib/flowCore_2.22.1.tar.gz",
+      "packagePath": "flowCore/inst/extdata/0877408774.B08",
+      "license": "Artistic-2.0",
+      "expected": {
+        "minParameters": 2,
+        "minEvents": 1,
+        "requiredKeywords": ["$PAR", "$TOT", "$DATATYPE"]
+      }
+    },
+    {
+      "id": "flowcore-0877408774-E07",
+      "path": "testdata/fixtures/downloaded/flowcore-0877408774.E07.fcs",
+      "source": "Bioconductor flowCore extdata",
+      "sourceUrl": "https://bioconductor.org/packages/3.22/bioc/src/contrib/flowCore_2.22.1.tar.gz",
+      "packagePath": "flowCore/inst/extdata/0877408774.E07",
+      "license": "Artistic-2.0",
+      "expected": {
+        "minParameters": 2,
+        "minEvents": 1,
+        "requiredKeywords": ["$PAR", "$TOT", "$DATATYPE"]
+      }
+    },
+    {
+      "id": "flowcore-comp-060909-001",
+      "path": "testdata/fixtures/downloaded/flowcore-comp-060909.001.fcs",
+      "source": "Bioconductor flowCore compensation extdata",
+      "sourceUrl": "https://bioconductor.org/packages/3.22/bioc/src/contrib/flowCore_2.22.1.tar.gz",
+      "packagePath": "flowCore/inst/extdata/compdata/data/060909.001",
+      "license": "Artistic-2.0",
+      "expected": {
+        "minParameters": 2,
+        "minEvents": 1,
+        "requiredKeywords": ["$PAR", "$TOT", "$DATATYPE"]
+      }
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+# dependencies and build output
+node_modules/
+dist/
+*.tgz
+
+# local runtime state
+.DS_Store
+*.log
+.datalox/
+datalox-trajectory-mcp/
+
+# fetched external fixtures are installed from the manifest
+testdata/fixtures/downloaded/
+
+# Datalox host-adoption scaffolding, not product source
+.claude/
+.cursor/
+.windsurf/
+.github/copilot-instructions.md
+agent-wiki/
+bin/
+skills/
+AGENTS.md
+CLAUDE.md
+DATALOX.md
+GEMINI.md
+START_HERE.md
+WIKI.md
+orchestration-protocol.md
