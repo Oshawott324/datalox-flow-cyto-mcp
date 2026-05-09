@@ -1,9 +1,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 import { FlowcytoError } from "../../core/index.js";
 
 const READY_TOKEN = "flowcyto_native_window_ready";
+const ERROR_PREFIX = "flowcyto_native_window_error ";
 
 export type NativeGateEditorWindowOptions = {
   url: string;
@@ -12,16 +16,122 @@ export type NativeGateEditorWindowOptions = {
   height?: number;
 };
 
+export type NativeGateEditorRuntime = "macos_wkwebview" | "windows_webview2";
+
 export type NativeGateEditorWindow = {
-  runtime: "macos_wkwebview";
+  runtime: NativeGateEditorRuntime;
   pid?: number;
   ready: Promise<void>;
   wait(): Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
   close(): void;
 };
 
-export function supportsNativeGateEditorWindow(): boolean {
-  return process.platform === "darwin";
+export type NativeGateEditorReadiness = {
+  ok: boolean;
+  detail: string;
+  runtime: NativeGateEditorRuntime | null;
+  helperPath?: string;
+};
+
+type NativeWindowErrorPayload = {
+  code: string;
+  path: string;
+  message: string;
+};
+
+export function nativeGateEditorRuntimeForPlatform(platform: NodeJS.Platform = process.platform): NativeGateEditorRuntime | null {
+  if (platform === "darwin") return "macos_wkwebview";
+  if (platform === "win32") return "windows_webview2";
+  return null;
+}
+
+export function supportsNativeGateEditorWindow(platform: NodeJS.Platform = process.platform): boolean {
+  return nativeGateEditorRuntimeForPlatform(platform) !== null;
+}
+
+export function isLocalGateEditorPreviewUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:"
+      && url.pathname === "/mcp-app-preview"
+      && (url.hostname === "127.0.0.1" || url.hostname === "localhost")
+      && url.port.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function packageRootFromModule(startDir = path.dirname(fileURLToPath(import.meta.url))): string {
+  let current = startDir;
+  for (;;) {
+    if (existsSync(path.join(current, "package.json"))) return current;
+    const parent = path.dirname(current);
+    if (parent === current) return process.cwd();
+    current = parent;
+  }
+}
+
+function windowsRuntimeArch(arch: NodeJS.Architecture = process.arch): "win-x64" | "win-arm64" {
+  if (arch === "x64") return "win-x64";
+  if (arch === "arm64") return "win-arm64";
+  throw new FlowcytoError(
+    "windows_webview2_arch_unsupported",
+    `Windows WebView2 native preview only supports x64 and arm64 builds; received ${arch}.`,
+    "/surface/runtime",
+  );
+}
+
+export function windowsWebView2HelperPath(
+  arch: NodeJS.Architecture = process.arch,
+  packageRoot = packageRootFromModule(),
+): string {
+  return path.join(
+    packageRoot,
+    "dist",
+    "native",
+    "windows",
+    windowsRuntimeArch(arch),
+    "flowcyto-webview2-window.exe",
+  );
+}
+
+export function nativeGateEditorReadiness(
+  platform: NodeJS.Platform = process.platform,
+  arch: NodeJS.Architecture = process.arch,
+  packageRoot = packageRootFromModule(),
+): NativeGateEditorReadiness {
+  const runtime = nativeGateEditorRuntimeForPlatform(platform);
+  if (runtime === "macos_wkwebview") {
+    return { ok: true, detail: runtime, runtime };
+  }
+  if (runtime === "windows_webview2") {
+    const helperPath = windowsWebView2HelperPath(arch, packageRoot);
+    return existsSync(helperPath)
+      ? { ok: true, detail: runtime, runtime, helperPath }
+      : { ok: false, detail: "windows_webview2_helper_missing", runtime, helperPath };
+  }
+  return { ok: false, detail: "unsupported_platform", runtime: null };
+}
+
+export function parseNativeWindowErrorPayload(raw: string): NativeWindowErrorPayload {
+  const trimmed = raw.trim();
+  try {
+    const parsed = JSON.parse(trimmed) as Partial<NativeWindowErrorPayload>;
+    if (typeof parsed.code === "string" && typeof parsed.message === "string") {
+      return {
+        code: parsed.code,
+        path: typeof parsed.path === "string" ? parsed.path : "/surface",
+        message: parsed.message,
+      };
+    }
+  } catch {
+    // macOS JXA currently reports plain text after the shared error prefix.
+  }
+  return {
+    code: "native_window_failed",
+    path: "/surface",
+    message: trimmed || "Native gate editor window failed.",
+  };
 }
 
 export function macGateEditorWindowScript(): string {
@@ -105,14 +215,18 @@ function nativeWindowError(message: string): FlowcytoError {
 }
 
 export function launchNativeGateEditorWindow(options: NativeGateEditorWindowOptions): NativeGateEditorWindow {
-  if (!supportsNativeGateEditorWindow()) {
-    throw new FlowcytoError(
-      "native_window_unsupported",
-      "The local native gate editor window currently requires macOS WebKit.",
-      "/surface",
-    );
-  }
+  const runtime = nativeGateEditorRuntimeForPlatform();
+  if (runtime === "macos_wkwebview") return launchMacWebKitWindow(options);
+  if (runtime === "windows_webview2") return launchWindowsWebView2Window(options);
 
+  throw new FlowcytoError(
+    "native_window_unsupported",
+    "The local native gate editor window requires macOS WebKit or Windows WebView2.",
+    "/surface",
+  );
+}
+
+function launchMacWebKitWindow(options: NativeGateEditorWindowOptions): NativeGateEditorWindow {
   const child: ChildProcess = spawn("osascript", [
     "-l",
     "JavaScript",
@@ -126,6 +240,55 @@ export function launchNativeGateEditorWindow(options: NativeGateEditorWindowOpti
     stdio: ["ignore", "pipe", "pipe"],
   });
 
+  return wrapNativeWindowChild(child, "macos_wkwebview", "WebKit");
+}
+
+function launchWindowsWebView2Window(options: NativeGateEditorWindowOptions): NativeGateEditorWindow {
+  if (!isLocalGateEditorPreviewUrl(options.url)) {
+    throw new FlowcytoError(
+      "native_window_url_not_local",
+      "Windows native preview only accepts the local /mcp-app-preview URL.",
+      "/surface/url",
+    );
+  }
+
+  const helperPath = windowsWebView2HelperPath();
+  if (!existsSync(helperPath)) {
+    throw new FlowcytoError(
+      "windows_webview2_helper_missing",
+      `Windows WebView2 helper was not found at ${helperPath}. Run the Windows native build before packaging.`,
+      "/surface/runtime",
+    );
+  }
+
+  const child: ChildProcess = spawn(helperPath, [
+    options.url,
+    options.title ?? "Flowcyto Gate Editor",
+    String(options.width ?? 620),
+    String(options.height ?? 640),
+  ], {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+
+  return wrapNativeWindowChild(child, "windows_webview2", "WebView2");
+}
+
+function extractNativeWindowError(stdout: string): FlowcytoError | null {
+  const start = stdout.indexOf(ERROR_PREFIX);
+  if (start < 0) return null;
+  const rest = stdout.slice(start + ERROR_PREFIX.length);
+  const line = rest.split(/\r?\n/, 1)[0]?.trim();
+  if (!line) return null;
+  const parsed = parseNativeWindowErrorPayload(line);
+  return new FlowcytoError(parsed.code, parsed.message, parsed.path);
+}
+
+function wrapNativeWindowChild(
+  child: ChildProcess,
+  runtime: NativeGateEditorRuntime,
+  runtimeLabel: string,
+): NativeGateEditorWindow {
   const stderrChunks: string[] = [];
   let stdout = "";
   let readySettled = false;
@@ -139,7 +302,7 @@ export function launchNativeGateEditorWindow(options: NativeGateEditorWindowOpti
   const ready = new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
       if (!child.killed) child.kill("SIGTERM");
-      fail(nativeWindowError("Timed out waiting for the native WebKit window to report readiness."));
+      fail(nativeWindowError(`Timed out waiting for the native ${runtimeLabel} window to report readiness.`));
     }, 5_000);
     const fail = (error: unknown) => {
       if (readySettled) return;
@@ -156,6 +319,8 @@ export function launchNativeGateEditorWindow(options: NativeGateEditorWindowOpti
 
     child.stdout?.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
+      const error = extractNativeWindowError(stdout);
+      if (error) fail(error);
       if (stdout.includes(READY_TOKEN)) pass();
     });
     child.once("error", (error) => {
@@ -163,7 +328,7 @@ export function launchNativeGateEditorWindow(options: NativeGateEditorWindowOpti
     });
     child.once("exit", (code, signal) => {
       if (readySettled) return;
-      const detail = stderrText() || `osascript exited before opening the window: code=${code ?? "null"} signal=${signal ?? "null"}`;
+      const detail = stderrText() || `${runtimeLabel} launcher exited before opening the window: code=${code ?? "null"} signal=${signal ?? "null"}`;
       fail(nativeWindowError(detail));
     });
   });
@@ -177,13 +342,13 @@ export function launchNativeGateEditorWindow(options: NativeGateEditorWindowOpti
         resolve({ code, signal });
         return;
       }
-      const detail = stderrText() || `osascript exited with code=${code ?? "null"} signal=${signal ?? "null"}`;
+      const detail = stderrText() || `${runtimeLabel} launcher exited with code=${code ?? "null"} signal=${signal ?? "null"}`;
       reject(nativeWindowError(detail));
     });
   });
 
   return {
-    runtime: "macos_wkwebview",
+    runtime,
     pid: child.pid,
     ready,
     wait: () => wait,

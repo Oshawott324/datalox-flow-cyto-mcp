@@ -10,7 +10,15 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { chromium } from "playwright";
 import { describe, expect, it } from "vitest";
 
-import { macGateEditorWindowScript, supportsNativeGateEditorWindow } from "../src/app/gate-editor/native-window.js";
+import {
+  isLocalGateEditorPreviewUrl,
+  macGateEditorWindowScript,
+  nativeGateEditorReadiness,
+  nativeGateEditorRuntimeForPlatform,
+  parseNativeWindowErrorPayload,
+  supportsNativeGateEditorWindow,
+  windowsWebView2HelperPath,
+} from "../src/app/gate-editor/native-window.js";
 import { startGateEditorServer } from "../src/app/gate-editor/server.js";
 import {
   deleteGate,
@@ -530,13 +538,82 @@ describe("flowcyto CLI", () => {
 });
 
 describe("flowcyto gate editor server", () => {
-  it("defines the browserless macOS WebKit preview window launcher", () => {
+  it("defines native preview platform contracts", async () => {
     const script = macGateEditorWindowScript();
     expect(supportsNativeGateEditorWindow()).toBe(process.platform === "darwin");
+    expect(supportsNativeGateEditorWindow("darwin")).toBe(true);
+    expect(supportsNativeGateEditorWindow("win32")).toBe(true);
+    expect(supportsNativeGateEditorWindow("linux")).toBe(false);
+    expect(nativeGateEditorRuntimeForPlatform("darwin")).toBe("macos_wkwebview");
+    expect(nativeGateEditorRuntimeForPlatform("win32")).toBe("windows_webview2");
+    expect(nativeGateEditorRuntimeForPlatform("linux")).toBeNull();
     expect(script).toContain("WKWebView");
     expect(script).toContain("flowcyto_native_window_ready");
     expect(script).toContain("NSURLRequest.requestWithURL");
     expect(script).toContain("windowWillClose");
+
+    expect(isLocalGateEditorPreviewUrl("http://127.0.0.1:50514/mcp-app-preview")).toBe(true);
+    expect(isLocalGateEditorPreviewUrl("http://localhost:50514/mcp-app-preview")).toBe(true);
+    expect(isLocalGateEditorPreviewUrl("https://127.0.0.1:50514/mcp-app-preview")).toBe(false);
+    expect(isLocalGateEditorPreviewUrl("http://0.0.0.0:50514/mcp-app-preview")).toBe(false);
+    expect(isLocalGateEditorPreviewUrl("http://127.0.0.1:50514/")).toBe(false);
+
+    expect(windowsWebView2HelperPath("x64", "/pkg")).toBe(path.join("/pkg", "dist", "native", "windows", "win-x64", "flowcyto-webview2-window.exe"));
+    expect(windowsWebView2HelperPath("arm64", "/pkg")).toBe(path.join("/pkg", "dist", "native", "windows", "win-arm64", "flowcyto-webview2-window.exe"));
+
+    const packageRoot = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-native-readiness-"));
+    const missingReadiness = nativeGateEditorReadiness("win32", "x64", packageRoot);
+    expect(missingReadiness.ok).toBe(false);
+    expect(missingReadiness.detail).toBe("windows_webview2_helper_missing");
+
+    const helperPath = windowsWebView2HelperPath("x64", packageRoot);
+    await fs.mkdir(path.dirname(helperPath), { recursive: true });
+    await fs.writeFile(helperPath, "");
+    const readyReadiness = nativeGateEditorReadiness("win32", "x64", packageRoot);
+    expect(readyReadiness.ok).toBe(true);
+    expect(readyReadiness.detail).toBe("windows_webview2");
+  });
+
+  it("defines the Windows WebView2 helper source contract", async () => {
+    const helperRoot = path.resolve("native/windows/FlowcytoGateEditorWindow");
+    const project = await fs.readFile(path.join(helperRoot, "FlowcytoGateEditorWindow.csproj"), "utf8");
+    const program = await fs.readFile(path.join(helperRoot, "Program.cs"), "utf8");
+    const mainForm = await fs.readFile(path.join(helperRoot, "MainForm.cs"), "utf8");
+
+    expect(project).toContain("<OutputType>Exe</OutputType>");
+    expect(project).toContain("<TargetFramework>net8.0-windows</TargetFramework>");
+    expect(project).toContain("<PackageReference Include=\"Microsoft.Web.WebView2\" Version=\"1.0.3537.50\" />");
+
+    expect(program).toContain("flowcyto_native_window_ready");
+    expect(program).toContain("flowcyto_native_window_error");
+    expect(program).toContain("native_window_url_not_local");
+    expect(program).toContain("\"/mcp-app-preview\"");
+    expect(program).toContain("http://127.0.0.1:<port>/mcp-app-preview");
+
+    expect(mainForm).toContain("CoreWebView2Environment.GetAvailableBrowserVersionString()");
+    expect(mainForm).toContain("WebView2RuntimeNotFoundException");
+    expect(mainForm).toContain("webview2_runtime_missing");
+    expect(mainForm).toContain("Environment.SpecialFolder.LocalApplicationData");
+    expect(mainForm).toContain("AreDefaultContextMenusEnabled = false");
+    expect(mainForm).toContain("Program.IsAllowedPreviewUri(uri)");
+  });
+
+  it("parses structured native window errors for agent-readable CLI output", () => {
+    expect(parseNativeWindowErrorPayload(JSON.stringify({
+      code: "webview2_runtime_missing",
+      path: "/surface/runtime",
+      message: "Microsoft Edge WebView2 Runtime is required.",
+    }))).toEqual({
+      code: "webview2_runtime_missing",
+      path: "/surface/runtime",
+      message: "Microsoft Edge WebView2 Runtime is required.",
+    });
+
+    expect(parseNativeWindowErrorPayload("plain native failure")).toEqual({
+      code: "native_window_failed",
+      path: "/surface",
+      message: "plain native failure",
+    });
   });
 
   it("serves the plot panel and revision-safe gate endpoints", async () => {

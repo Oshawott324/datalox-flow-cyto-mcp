@@ -107,7 +107,9 @@ Open the compact native preview window on macOS:
 flowcyto open-gate-editor-window /path/to/my-cytometry-run/flowcyto.workspace.json
 ```
 
-Windows compact native preview parity is planned with WebView2. See
+Windows compact native preview parity has source-level support through a thin
+WebView2 helper, but still requires a Windows build and manual WebView2 launch
+validation before release. See
 [docs/windows-webview2-compact-window.md](docs/windows-webview2-compact-window.md).
 
 Open the browser debug surface:

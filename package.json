@@ -11,6 +11,8 @@
   },
   "files": [
     "dist/src/**/*",
+    "dist/native/windows/**/*",
+    "native/windows/**/*",
     "docs/**/*.md",
     "schemas/**/*",
     "scripts/fetch-fcs-fixtures.mjs",
@@ -18,6 +20,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "build:native:windows:x64": "dotnet publish native/windows/FlowcytoGateEditorWindow/FlowcytoGateEditorWindow.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o dist/native/windows/win-x64",
+    "build:native:windows:arm64": "dotnet publish native/windows/FlowcytoGateEditorWindow/FlowcytoGateEditorWindow.csproj -c Release -r win-arm64 --self-contained false -p:PublishSingleFile=true -o dist/native/windows/win-arm64",
     "check": "tsc --noEmit -p tsconfig.json",
     "fixtures:fetch": "node scripts/fetch-fcs-fixtures.mjs",
     "test": "vitest run",

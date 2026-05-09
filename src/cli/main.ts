@@ -4,7 +4,7 @@ import { access } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { launchNativeGateEditorWindow, supportsNativeGateEditorWindow } from "../app/gate-editor/native-window.js";
+import { launchNativeGateEditorWindow, nativeGateEditorReadiness } from "../app/gate-editor/native-window.js";
 import { startGateEditorServer } from "../app/gate-editor/server.js";
 import {
   FlowcytoError,
@@ -175,6 +175,7 @@ program
       const cliPath = fileURLToPath(import.meta.url);
       const mcpPath = fileURLToPath(new URL("../mcp/server.js", import.meta.url));
       const nodeMajor = Number(process.versions.node.split(".")[0]);
+      const nativePreview = nativeGateEditorReadiness();
       const checks = [
         {
           name: "node_runtime",
@@ -193,8 +194,8 @@ program
         },
         {
           name: "native_preview",
-          ok: supportsNativeGateEditorWindow(),
-          detail: supportsNativeGateEditorWindow() ? "macos_wkwebview" : "unsupported_platform",
+          ok: nativePreview.ok,
+          detail: nativePreview.detail,
         },
       ];
       const ok = checks.every((check) => check.ok);
