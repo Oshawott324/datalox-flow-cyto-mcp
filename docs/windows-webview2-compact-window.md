@@ -31,7 +31,27 @@ References:
 https://learn.microsoft.com/en-us/microsoft-edge/webview2/
 https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution
 https://learn.microsoft.com/en-us/microsoft-edge/webview2/get-started/win32
+https://learn.microsoft.com/en-us/microsoft-edge/webview2/get-started/winforms
+https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/user-data-folder
 ```
+
+Concrete meaning of "thin native WebView2 helper":
+
+```text
+the helper is a window host, not a product runtime
+the helper receives one already-running localhost URL from TypeScript
+the helper validates that URL is local
+the helper creates one WinForms window
+the helper creates one WebView2 control
+the helper loads /mcp-app-preview
+the helper prints one readiness token or one structured error
+the helper exits when the user closes the window
+```
+
+It must not contain cytometry-specific state beyond the title string. No FCS
+paths, sample IDs, gates, marker names, workspace JSON, preview bins, or MCP
+tool names should cross into the C# process. That keeps the Windows path equal
+to the macOS `WKWebView` path: a local view container around the existing app.
 
 ## Target UX
 
@@ -130,103 +150,506 @@ type NativeGateEditorRuntime =
   | "windows_webview2"
 ```
 
-## Helper Implementation
+## Concrete Implementation Plan
 
-Use a small C# WinForms helper first.
+Implement this as a small, reviewable runtime slice rather than a desktop app.
 
-Recommended layout:
-
-```text
-native/
-  windows/
-    FlowcytoGateEditorWindow/
-      FlowcytoGateEditorWindow.csproj
-      Program.cs
-      MainForm.cs
-```
-
-Why C# WinForms first:
+Files to add:
 
 ```text
-less Win32 boilerplate than C++
-WebView2 package is standard through NuGet
-easy to build in GitHub Actions on windows-latest
-small enough to audit
-no Electron-style runtime ownership
+native/windows/FlowcytoGateEditorWindow/FlowcytoGateEditorWindow.csproj
+native/windows/FlowcytoGateEditorWindow/Program.cs
+native/windows/FlowcytoGateEditorWindow/MainForm.cs
 ```
 
-Project dependency:
+Files to change:
 
-```xml
-<PackageReference Include="Microsoft.Web.WebView2" Version="*" />
+```text
+src/app/gate-editor/native-window.ts
+src/cli/main.ts
+tests/core.test.ts
+package.json
+README.md
+docs/implementation-details.md
 ```
 
-The implementation should pin a specific WebView2 SDK version before release
-instead of leaving `*` in committed code.
+Build outputs:
 
-Helper command shape:
+```text
+dist/native/windows/win-x64/flowcyto-webview2-window.exe
+dist/native/windows/win-arm64/flowcyto-webview2-window.exe
+```
+
+### Native Helper Contract
+
+The helper process is invoked by TypeScript, not by users directly:
 
 ```text
 flowcyto-webview2-window.exe <url> <title> <width> <height>
 ```
 
-Example:
+Required argument rules:
 
 ```text
-flowcyto-webview2-window.exe ^
-  http://127.0.0.1:50514/mcp-app-preview ^
-  "flowcyto.workspace.json - Flowcyto" ^
-  620 ^
-  640
+url    absolute http URL, local only, path must be /mcp-app-preview
+title  plain window title
+width  integer, 360 <= width <= 2200
+height integer, 360 <= height <= 1800
 ```
 
-Stdout protocol:
+Allowed URLs:
+
+```text
+http://127.0.0.1:<port>/mcp-app-preview
+http://localhost:<port>/mcp-app-preview
+```
+
+Rejected URLs:
+
+```text
+https://...
+http://0.0.0.0:...
+http://192.168.x.x:...
+http://example.com/...
+file://...
+anything whose path is not /mcp-app-preview
+```
+
+Stdout lines are the process API:
 
 ```text
 flowcyto_native_window_ready
-flowcyto_native_window_error <machine-readable message>
+flowcyto_native_window_error {"code":"webview2_runtime_missing","path":"/surface/runtime","message":"Microsoft Edge WebView2 Runtime is required for the Windows native gate editor window."}
 ```
 
-Use the same ready token as macOS unless there is a concrete reason to split it.
+The TypeScript parent watches stdout for the ready token. If it sees an error
+line, it parses the JSON after the prefix and returns a `FlowcytoError` with the
+same `code`, `path`, and `message`.
 
-## C# Behavior
+### C# Project
 
-Minimal behavior:
+Use WinForms because this helper needs one native window and one WebView2
+control. It does not need WPF layout, Electron, Tauri, menus, auto-update, or a
+plugin framework.
+
+Initial `FlowcytoGateEditorWindow.csproj`:
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>flowcyto-webview2-window</AssemblyName>
+    <RootNamespace>FlowcytoGateEditorWindow</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3537.50" />
+  </ItemGroup>
+</Project>
+```
+
+The WebView2 SDK version must be pinned in committed code. Upgrade it only as an
+explicit dependency-maintenance change.
+
+Use `OutputType=Exe` because the TypeScript parent needs a reliable stdout pipe
+for the ready/error protocol. The Node launcher should set `windowsHide: true`
+so the console window is hidden while the WinForms window is still shown.
+
+### Program.cs
+
+`Program.cs` should only parse arguments, validate the local URL, and start the
+form.
 
 ```csharp
-[STAThread]
-static async Task Main(string[] args) {
-  var url = args[0];
-  var title = args.Length > 1 ? args[1] : "Flowcyto Gate Editor";
-  var width = args.Length > 2 ? int.Parse(args[2]) : 620;
-  var height = args.Length > 3 ? int.Parse(args[3]) : 620;
+using System.Text.Json;
 
-  ApplicationConfiguration.Initialize();
-  using var form = new MainForm(url, title, width, height);
-  Application.Run(form);
+namespace FlowcytoGateEditorWindow;
+
+internal static class Program
+{
+    [STAThread]
+    private static void Main(string[] args)
+    {
+        if (!TryParseArgs(args, out var options, out var error))
+        {
+            WriteError(error);
+            Environment.Exit(2);
+            return;
+        }
+
+        ApplicationConfiguration.Initialize();
+        Application.Run(new MainForm(options));
+    }
+
+    private static bool TryParseArgs(
+        string[] args,
+        out WindowOptions options,
+        out NativeWindowError error)
+    {
+        options = default!;
+        error = default!;
+
+        if (args.Length < 1)
+        {
+            error = NativeWindowError.InvalidArgs("Missing /mcp-app-preview URL.");
+            return false;
+        }
+
+        if (!Uri.TryCreate(args[0], UriKind.Absolute, out var uri) || !IsAllowedPreviewUri(uri))
+        {
+            error = new NativeWindowError(
+                "native_window_url_not_local",
+                "/surface/url",
+                "Windows native preview only accepts http://127.0.0.1:<port>/mcp-app-preview or http://localhost:<port>/mcp-app-preview.");
+            return false;
+        }
+
+        var title = args.Length > 1 && args[1].Length > 0
+            ? args[1]
+            : "Flowcyto Gate Editor";
+
+        var width = ParseBoundedInt(args, 2, 620, 360, 2200);
+        var height = ParseBoundedInt(args, 3, 640, 360, 1800);
+
+        options = new WindowOptions(uri, title, width, height);
+        return true;
+    }
+
+    private static int ParseBoundedInt(string[] args, int index, int fallback, int min, int max)
+    {
+        if (args.Length <= index || !int.TryParse(args[index], out var value))
+        {
+            return fallback;
+        }
+
+        return Math.Clamp(value, min, max);
+    }
+
+    private static bool IsAllowedPreviewUri(Uri uri)
+    {
+        return uri.Scheme == Uri.UriSchemeHttp
+            && uri.AbsolutePath == "/mcp-app-preview"
+            && (uri.Host == "127.0.0.1" || uri.Host == "localhost")
+            && !uri.IsDefaultPort;
+    }
+
+    internal static void WriteReady()
+    {
+        Console.Out.WriteLine("flowcyto_native_window_ready");
+        Console.Out.Flush();
+    }
+
+    internal static void WriteError(NativeWindowError error)
+    {
+        Console.Out.Write("flowcyto_native_window_error ");
+        Console.Out.WriteLine(JsonSerializer.Serialize(error));
+        Console.Out.Flush();
+    }
+}
+
+internal sealed record WindowOptions(Uri Url, string Title, int Width, int Height);
+
+internal sealed record NativeWindowError(string code, string path, string message)
+{
+    public static NativeWindowError InvalidArgs(string message)
+        => new("native_window_invalid_args", "/surface", message);
 }
 ```
 
-`MainForm`:
+### MainForm.cs
 
-```text
-sets title and size
-creates WebView2
-docks WebView2 to fill
-uses a dedicated user data folder
-awaits EnsureCoreWebView2Async()
-navigates to URL
-writes ready token after navigation starts or WebView2 initialization succeeds
-exits process when the window closes
+`MainForm` owns the UI host. Keep it intentionally boring.
+
+```csharp
+using Microsoft.Web.WebView2.Core;
+using Microsoft.Web.WebView2.WinForms;
+
+namespace FlowcytoGateEditorWindow;
+
+internal sealed class MainForm : Form
+{
+    private readonly WindowOptions _options;
+    private readonly WebView2 _webView;
+    private bool _readyWritten;
+
+    public MainForm(WindowOptions options)
+    {
+        _options = options;
+
+        Text = options.Title;
+        StartPosition = FormStartPosition.CenterScreen;
+        Width = options.Width;
+        Height = options.Height;
+        MinimumSize = new Size(360, 360);
+
+        _webView = new WebView2
+        {
+            Dock = DockStyle.Fill,
+            AllowExternalDrop = false
+        };
+
+        Controls.Add(_webView);
+        Shown += async (_, _) => await InitializeWebViewAsync();
+    }
+
+    private async Task InitializeWebViewAsync()
+    {
+        try
+        {
+            var runtimeVersion = CoreWebView2Environment.GetAvailableBrowserVersionString();
+            if (string.IsNullOrWhiteSpace(runtimeVersion))
+            {
+                Program.WriteError(new NativeWindowError(
+                    "webview2_runtime_missing",
+                    "/surface/runtime",
+                    "Microsoft Edge WebView2 Runtime is required for the Windows native gate editor window."));
+                Close();
+                return;
+            }
+
+            var userDataFolder = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Datalox",
+                "FlowcytoMcp",
+                "WebView2");
+
+            Directory.CreateDirectory(userDataFolder);
+
+            var environment = await CoreWebView2Environment.CreateAsync(
+                browserExecutableFolder: null,
+                userDataFolder: userDataFolder,
+                options: null);
+
+            await _webView.EnsureCoreWebView2Async(environment);
+
+            _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
+            _webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
+            _webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
+            _webView.CoreWebView2.Settings.IsZoomControlEnabled = true;
+
+            _webView.CoreWebView2.NavigationStarting += (_, args) =>
+            {
+                if (!IsAllowedPreviewUri(new Uri(args.Uri)))
+                {
+                    args.Cancel = true;
+                }
+            };
+
+            _webView.CoreWebView2.NavigationCompleted += (_, args) =>
+            {
+                if (_readyWritten) return;
+                _readyWritten = true;
+
+                if (args.IsSuccess)
+                {
+                    Program.WriteReady();
+                    return;
+                }
+
+                Program.WriteError(new NativeWindowError(
+                    "native_window_navigation_failed",
+                    "/surface/url",
+                    $"WebView2 failed to load the local preview URL: {args.WebErrorStatus}."));
+                Close();
+            };
+
+            _webView.CoreWebView2.Navigate(_options.Url.ToString());
+        }
+        catch (WebView2RuntimeNotFoundException)
+        {
+            Program.WriteError(new NativeWindowError(
+                "webview2_runtime_missing",
+                "/surface/runtime",
+                "Microsoft Edge WebView2 Runtime is required for the Windows native gate editor window."));
+            Close();
+        }
+        catch (Exception error)
+        {
+            Program.WriteError(new NativeWindowError(
+                "native_window_failed",
+                "/surface",
+                error.Message));
+            Close();
+        }
+    }
+
+    private static bool IsAllowedPreviewUri(Uri uri)
+    {
+        return uri.Scheme == Uri.UriSchemeHttp
+            && uri.AbsolutePath == "/mcp-app-preview"
+            && (uri.Host == "127.0.0.1" || uri.Host == "localhost")
+            && !uri.IsDefaultPort;
+    }
+}
 ```
 
-Use a stable user data folder:
+The duplicated URL check in `Program.cs` and `MainForm.cs` is deliberate. The
+first check rejects bad startup input. The second prevents in-window navigation
+from turning the helper into a general-purpose browser.
 
-```text
-%LOCALAPPDATA%\Datalox\FlowcytoMcp\WebView2
+### TypeScript Launcher Changes
+
+Refactor `src/app/gate-editor/native-window.ts` into small platform helpers.
+Do not bury Windows rules inside the CLI command.
+
+Add pure helpers so most Windows behavior can be tested on macOS/Linux:
+
+```ts
+export type NativeGateEditorRuntime = "macos_wkwebview" | "windows_webview2";
+
+export function nativeGateEditorRuntimeForPlatform(platform = process.platform): NativeGateEditorRuntime | null {
+  if (platform === "darwin") return "macos_wkwebview";
+  if (platform === "win32") return "windows_webview2";
+  return null;
+}
+
+export function isLocalGateEditorPreviewUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:"
+      && url.pathname === "/mcp-app-preview"
+      && (url.hostname === "127.0.0.1" || url.hostname === "localhost")
+      && url.port.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+export function windowsWebView2HelperPath(
+  arch = process.arch,
+  baseDir = path.resolve(fileURLToPath(new URL("../../../..", import.meta.url))),
+): string {
+  const runtimeArch = arch === "arm64" ? "win-arm64" : "win-x64";
+  return path.join(baseDir, "dist", "native", "windows", runtimeArch, "flowcyto-webview2-window.exe");
+}
 ```
 
-Do not use the repository directory for WebView2 user data.
+Update the public type:
+
+```ts
+export type NativeGateEditorWindow = {
+  runtime: NativeGateEditorRuntime;
+  pid?: number;
+  ready: Promise<void>;
+  wait(): Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
+  close(): void;
+};
+```
+
+Update support detection:
+
+```ts
+export function supportsNativeGateEditorWindow(): boolean {
+  return nativeGateEditorRuntimeForPlatform() !== null;
+}
+```
+
+Dispatch explicitly:
+
+```ts
+export function launchNativeGateEditorWindow(options: NativeGateEditorWindowOptions): NativeGateEditorWindow {
+  const runtime = nativeGateEditorRuntimeForPlatform();
+
+  if (runtime === "macos_wkwebview") {
+    return launchMacWebKitWindow(options);
+  }
+
+  if (runtime === "windows_webview2") {
+    return launchWindowsWebView2Window(options);
+  }
+
+  throw new FlowcytoError(
+    "native_window_unsupported",
+    "The local native gate editor window requires macOS WebKit or Windows WebView2.",
+    "/surface",
+  );
+}
+```
+
+Windows launcher:
+
+```ts
+function launchWindowsWebView2Window(options: NativeGateEditorWindowOptions): NativeGateEditorWindow {
+  if (!isLocalGateEditorPreviewUrl(options.url)) {
+    throw new FlowcytoError(
+      "native_window_url_not_local",
+      "Windows native preview only accepts the local /mcp-app-preview URL.",
+      "/surface/url",
+    );
+  }
+
+  const helperPath = windowsWebView2HelperPath();
+  if (!existsSync(helperPath)) {
+    throw new FlowcytoError(
+      "windows_webview2_helper_missing",
+      `Windows WebView2 helper was not found at ${helperPath}. Run the Windows native build before packaging.`,
+      "/surface/runtime",
+    );
+  }
+
+  const child = spawn(helperPath, [
+    options.url,
+    options.title ?? "Flowcyto Gate Editor",
+    String(options.width ?? 620),
+    String(options.height ?? 640),
+  ], {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+
+  return wrapNativeWindowChild(child, "windows_webview2", "WebView2");
+}
+```
+
+Then move the existing stdout/stderr ready handling into:
+
+```ts
+function wrapNativeWindowChild(
+  child: ChildProcess,
+  runtime: NativeGateEditorRuntime,
+  runtimeLabel: string,
+): NativeGateEditorWindow
+```
+
+That wrapper should:
+
+```text
+resolve ready when stdout contains flowcyto_native_window_ready
+reject ready when stdout contains flowcyto_native_window_error <json>
+include stderr in native_window_failed when the process exits early
+kill the child on readiness timeout
+return runtime from the wrapper argument
+```
+
+### CLI Doctor Changes
+
+`flowcyto doctor` should report platform-specific native readiness:
+
+```json
+{
+  "name": "native_preview",
+  "ok": true,
+  "detail": "windows_webview2"
+}
+```
+
+If the helper is missing on Windows:
+
+```json
+{
+  "name": "native_preview",
+  "ok": false,
+  "detail": "windows_webview2_helper_missing"
+}
+```
+
+If WebView2 Runtime is missing, the helper is the authoritative detector. The
+doctor command can either run the helper in a future `--deep` mode or leave this
+as a launch-time structured error. For alpha, launch-time detection is enough.
 
 ## Runtime Detection
 
@@ -292,48 +715,19 @@ payload. That is the wrong tradeoff for a small MCP/CLI alpha.
 
 ## TypeScript Integration
 
-Update `src/app/gate-editor/native-window.ts`:
-
-```ts
-export type NativeGateEditorWindow = {
-  runtime: "macos_wkwebview" | "windows_webview2";
-  pid?: number;
-  ready: Promise<void>;
-  wait(): Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
-  close(): void;
-};
-```
-
-Support check:
-
-```ts
-export function supportsNativeGateEditorWindow(): boolean {
-  return process.platform === "darwin" || process.platform === "win32";
-}
-```
-
-Launch dispatch:
-
-```ts
-if (process.platform === "darwin") return launchMacWebKitWindow(options);
-if (process.platform === "win32") return launchWindowsWebView2Window(options);
-throw native_window_unsupported;
-```
-
-Windows helper resolution:
+The implementation details above are the source of truth for
+`src/app/gate-editor/native-window.ts`. Keep the important seams testable as
+pure functions:
 
 ```text
-dist/native/windows/<arch>/flowcyto-webview2-window.exe
+nativeGateEditorRuntimeForPlatform(platform)
+isLocalGateEditorPreviewUrl(value)
+windowsWebView2HelperPath(arch, baseDir)
+wrapNativeWindowChild(child, runtime, runtimeLabel)
 ```
 
-Architecture mapping:
-
-```text
-x64   -> win-x64
-arm64 -> win-arm64
-```
-
-The npm package should include:
+The npm package should include the helper binaries only after the Windows native
+build has produced them:
 
 ```json
 {
