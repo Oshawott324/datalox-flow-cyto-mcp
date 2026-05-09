@@ -7,10 +7,392 @@ A small window containing one interactive cytometry plot is enough for the first
 It should not be only a chart. It should be a file-backed gate editor:
 
 ```text
-FCS file -> MCP tools -> interactive plot -> workspace JSON -> agent reads/updates JSON -> plot refreshes
+FCS/workspace -> agent calls MCP -> compact app opens -> agent upserts gates -> app refreshes live
 ```
 
 The UI can be small, but the artifact boundary must be complete.
+
+## Agent-Opened Compact App Target
+
+The product target is an agent-opened MCP app, not a human-started browser page
+and not a demo script that patches JSON behind the agent.
+
+Required target flow:
+
+```text
+User asks agent: "Open this FCS/workspace and gate the main population."
+Agent calls MCP tool: flowcyto.open_gate_editor.
+MCP host renders the compact Flowcyto app from the tool's UI resource.
+Agent calls flowcyto.get_plot_context.
+Agent calls flowcyto.upsert_gate.
+The already-open compact app updates live.
+```
+
+This is the contract to make real for Codex, Claude Code, ChatGPT Apps, and
+other MCP-capable agent hosts.
+
+`flowcyto.open_gate_editor` is the entrypoint. In an MCP Apps-capable host, its
+tool descriptor should point to:
+
+```text
+ui://flowcyto/gate-editor-v1.html
+```
+
+through tool metadata such as:
+
+```text
+_meta.ui.resourceUri
+_meta["openai/outputTemplate"]
+```
+
+The embedded app should use the host-provided bridge:
+
+```text
+window.openai.callTool(...)
+```
+
+to call the same MCP tools the agent can call directly.
+
+The required model-facing tool loop is:
+
+```text
+flowcyto.open_gate_editor(workspace_path, sample_id?, view_id?)
+flowcyto.get_plot_context(workspace_path, sample_id?, view_id?)
+flowcyto.upsert_gate(workspace_path, gate, expected_revision)
+```
+
+`get_plot_context` should return enough structured plot context for the agent to
+make a gate without guessing:
+
+```text
+active sample
+active x/y channels
+display transform and visible data bounds
+preview density/points summary
+current gates
+workspace revision
+recommended gate shape schema
+```
+
+If a host cannot render MCP Apps resources, the same entrypoint may launch a
+compact native surface instead. Minimum native parity targets are:
+
+```text
+macOS: WKWebView compact window
+Windows: WebView2 compact window
+```
+
+The browser route remains a developer/debug surface. It is not the product
+experience we should optimize demos around.
+
+During migration, older tool names such as `render_gate_editor` and
+`get_gate_editor_state` may remain compatibility aliases. New docs, demos, and
+host validation should use `flowcyto.open_gate_editor`,
+`flowcyto.get_plot_context`, and `flowcyto.upsert_gate`.
+
+## Make The Agent-Opened Flow Real
+
+Implement this as a contract migration, not as another demo script.
+
+Current status in the repo:
+
+```text
+Milestone A is implemented.
+Milestone B is implemented.
+Milestone C is implemented.
+Milestone D is implemented.
+Milestone E is implemented.
+open_gate_editor owns the MCP Apps UI resource metadata.
+open_gate_editor(surface="auto" | "mcp_app") returns the MCP app resource contract.
+open_gate_editor(surface="native_window") launches the compact native window path.
+render_gate_editor remains as a deprecated compatibility alias.
+get_plot_context exists and returns revision, axes, bounds, preview, gates, and gateSchema.
+get_gate_editor_state remains as a deprecated compatibility alias.
+agent-side upsert_gate/delete_gate return workspacePath, revision, and gateCount.
+the already-open embedded app polls get_workspace_revision and refreshes through get_plot_context.
+native_window fallback uses macOS WKWebView or Windows WebView2 launcher contracts, never a browser tab.
+flowcyto-live-gating is generated as a clean demo repo with no gate writer scripts.
+```
+
+Remaining gaps:
+
+```text
+Milestone F is the next implementation gap: run the host matrix in named real
+agent hosts, including Windows WebView2 live validation.
+```
+
+The remaining implementation must close those gaps in this order.
+
+### Milestone A: Promote `open_gate_editor` To The UI Entry Tool
+
+Status: passed on 2026-05-09.
+
+Code work:
+
+```text
+src/mcp/server.ts
+  move MCP Apps UI metadata from render_gate_editor to open_gate_editor
+  keep render_gate_editor as a deprecated compatibility alias
+  add optional surface: "mcp_app" | "native_window" | "auto"
+  for surface="mcp_app", return the UI resource contract only
+  for surface="native_window", launch the compact native window from the MCP tool
+  for surface="auto", prefer mcp_app and let agents request native_window in non-UI hosts
+
+tests/core.test.ts
+  assert open_gate_editor has _meta.ui.resourceUri
+  assert open_gate_editor has _meta["openai/outputTemplate"]
+  assert render_gate_editor is only an alias, not the tested happy path
+
+README.md
+  list open_gate_editor as the app-opening tool
+```
+
+Pass criteria:
+
+```text
+tools/list includes open_gate_editor
+open_gate_editor descriptor points to ui://flowcyto/gate-editor-v1.html
+open_gate_editor returns surface.kind="mcp_app" for surface="mcp_app"
+render_gate_editor still works but no README/demo/test happy path depends on it
+npm test has a failing assertion if the UI metadata is only on render_gate_editor
+```
+
+### Milestone B: Add `get_plot_context`
+
+Status: passed on 2026-05-09.
+
+Code work:
+
+```text
+src/mcp/server.ts
+  register get_plot_context
+  keep get_gate_editor_state as a deprecated compatibility alias
+
+src/app/gate-editor/server.ts
+  rename or wrap getGateEditorState as getPlotContext
+
+src/app/gate-editor/ui.ts
+  embedded app calls get_plot_context for /api/state
+  local preview shim supports get_plot_context
+
+tests/core.test.ts
+  call get_plot_context through stdio MCP
+  call get_plot_context through Streamable HTTP MCP
+  verify embedded app branch calls get_plot_context
+```
+
+`get_plot_context` response must be explicit enough that the agent does not
+need to scrape pixels or invent coordinate bounds:
+
+```text
+ok
+workspacePath
+revision
+sampleId
+viewId
+x channel
+y channel
+scale
+visible data bounds
+preview format and summary
+current gates
+gate schema
+recommended expected_revision value
+```
+
+Pass criteria:
+
+```text
+get_plot_context returns revision, axes, bounds, preview, gates, and gateSchema
+get_plot_context returns structured errors for missing sample/channel/workspace
+embedded app renders using get_plot_context, not get_gate_editor_state
+get_gate_editor_state still works as an alias during migration
+```
+
+### Milestone C: Make Agent Writes Refresh The Already-Open App
+
+Status: passed on 2026-05-09.
+
+Code work:
+
+```text
+src/app/gate-editor/ui.ts
+  polls get_workspace_revision while visible
+  on revision change, calls get_plot_context through /api/state
+  does not refresh during in-progress drag/draw or unsaved local gate edits
+  leaves stale_revision errors visible when a save conflict is rejected
+
+src/mcp/server.ts
+  upsert_gate returns ok, revision, gate, gateCount, workspacePath
+  delete_gate returns ok, revision, gateCount, workspacePath
+
+tests/core.test.ts
+  opens the embedded app
+  calls upsert_gate from the agent side
+  asserts the already-open app shows the new gate without page reload
+  asserts pointer moves do not write the workspace before Save
+  asserts stale expected_revision returns structured stale_revision details
+```
+
+Pass criteria:
+
+```text
+agent upsert_gate increments workspace.revision exactly once
+already-open embedded app shows the new gate within 1 second
+human UI edit increments workspace.revision exactly once
+stale expected_revision returns a structured stale_revision error
+no workspace write happens on every pointer move
+```
+
+### Milestone D: Make Non-UI Agent Hosts Still Open A Compact Window
+
+Status: passed on 2026-05-09.
+
+Some MCP hosts will not render MCP Apps UI resources. Codex CLI and Claude Code
+may need this path until they support embedded app resources.
+
+Code work:
+
+```text
+src/mcp/server.ts
+  open_gate_editor(surface="native_window") starts the compact native window after native readiness preflight
+  returns surface.kind="native_window"
+  returns runtime: "macos_wkwebview" or "windows_webview2"
+  returns structured native_window_unsupported on Linux/unsupported platforms
+
+src/app/gate-editor/native-window.ts
+  keep macOS WKWebView path
+  keep Windows WebView2 path
+  reject public/non-local URLs
+  expose launcher plans for macOS and Windows so tests prove no browser command is used
+
+tests/core.test.ts
+  assert native_window unsupported path is structured on unsupported platform
+  assert launcher command contract for macOS and Windows helpers
+```
+
+Pass criteria:
+
+```text
+on macOS, agent calls open_gate_editor(surface="native_window") and a compact WKWebView opens
+on Windows, agent calls open_gate_editor(surface="native_window") and a compact WebView2 window opens
+neither path opens a normal browser tab
+neither path requires modifying Codex, Claude Code, or Datalox UI source
+the MCP tool call itself is what starts the compact surface
+```
+
+### Milestone E: Add The Real Demo Harness
+
+Status: passed on 2026-05-09.
+
+The demo repo should prove the product, not work around it.
+
+Demo repo contents:
+
+```text
+flowcyto-live-gating/
+  flowcyto.workspace.json
+  data/*.fcs
+  README.md
+  AGENTS.md
+  .mcp.json or host-specific MCP registration notes
+```
+
+Do not require:
+
+```text
+manual browser launch
+manual compact window launch
+agent-host source edits
+JSON writer scripts as the primary path
+prompt instructions that force rectangle gates
+```
+
+Allowed:
+
+```text
+starting/registering the Flowcyto MCP server
+an AGENTS.md telling the agent to use Flowcyto MCP tools
+small shell commands that install dependencies or start the MCP server
+```
+
+Implementation:
+
+```text
+scripts/create-live-gating-demo.mjs
+  creates or refreshes /Users/yifanjin/flowcyto-live-gating
+  copies data/sample_001.fcs
+  writes flowcyto.workspace.json with revision 0 and no gates
+  writes .mcp.json pointing at the local Flowcyto MCP server
+  writes AGENTS.md with the required MCP tool sequence
+  removes old scripts/, prompts/, and .datalox/ watcher artifacts
+
+tests/core.test.ts
+  asserts the generated demo contains only the expected files
+  asserts no gate writer scripts or prompt hacks are present
+  asserts AGENTS.md names open_gate_editor, get_plot_context, and upsert_gate
+  asserts the workspace validates, starts at revision 0, and has no gates
+```
+
+Pass criteria for the video:
+
+```text
+fresh repo starts with no hand-authored demo gate
+user prompt is exactly: Open this FCS/workspace and gate the main population.
+tool trace shows open_gate_editor
+compact app appears from the tool call
+tool trace shows get_plot_context
+tool trace shows upsert_gate
+the already-open app updates without manual reload
+workspace revision increments
+the gate is biologically plausible for the visible population
+no host app code changes are made during the demo
+```
+
+### Milestone F: Host Matrix
+
+The first real host matrix should be small:
+
+```text
+ChatGPT/OpenAI Apps-capable host:
+  expected surface: embedded MCP Apps resource
+  pass: host renders ui://flowcyto/gate-editor-v1.html after open_gate_editor
+
+Codex:
+  expected surface: native_window until embedded MCP Apps UI exists
+  pass: agent calls open_gate_editor(surface="native_window") and compact app opens
+
+Claude Code:
+  expected surface: native_window until embedded MCP Apps UI exists
+  pass: agent calls open_gate_editor(surface="native_window") and compact app opens
+```
+
+Platform pass matrix:
+
+```text
+macOS:
+  mcp_app host pass when available
+  native_window WKWebView pass required
+
+Windows:
+  native_window WebView2 pass required
+  mcp_app host pass when available
+```
+
+Global pass criteria:
+
+```text
+npm run check passes
+npm test passes
+npm run verify:alpha passes
+README lists the target tool names
+docs do not present browser debug as the user path
+new Datalox trajectory uses exact code_change or document_change evidence
+```
+
+If any pass criterion requires a human/manual step, write the exact command,
+host name, OS, expected visual result, and failure output before calling it
+passed.
 
 ## Performance Goal
 
@@ -47,8 +429,9 @@ Live artifact behavior is a core goal, not polish.
 Required loop:
 
 ```text
-human edits gate in UI -> workspace revision increments -> agent sees updated JSON
-agent edits workspace JSON -> revision increments -> UI refreshes without reopening
+agent opens compact app -> app tracks workspace revision
+agent calls upsert_gate -> workspace revision increments -> open app refreshes
+human edits gate in UI -> workspace revision increments -> agent sees updated context
 ```
 
 The UI is only successful if agent-side changes become visible while the gate editor is open.
@@ -399,6 +782,8 @@ flowcyto metadata                   get_sample_metadata
 flowcyto preview                    get_event_preview
 flowcyto set-workspace              write_workspace
 flowcyto open-gate-editor           open_gate_editor
+no direct CLI equivalent            get_plot_context
+no direct CLI equivalent            upsert_gate/delete_gate
 ```
 
 The agent should be able to solve most non-interactive tasks with the CLI alone. The MCP UI exists for the one thing text/code cannot do well: human gate drawing and visual review.
@@ -417,7 +802,7 @@ flowcyto-mcp-server
     preview
     gate-editor
   resources/
-    ui://flow-cyto/gate-editor
+    ui://flowcyto/gate-editor-v1.html
   core/
     workspace schema
     validation
@@ -432,10 +817,11 @@ Keep the server responsible for filesystem and FCS access. Keep the UI sandboxed
 Do not let the browser view read arbitrary local files. The UI receives only the workspace path and calls MCP tools for:
 
 ```text
-read_workspace
-write_workspace
-get_sample_metadata
+get_plot_context
 get_event_preview
+upsert_gate
+delete_gate
+get_workspace_revision
 ```
 
 This keeps the filesystem boundary clean and keeps the agent, CLI, and UI using the same contract.
@@ -782,13 +1168,17 @@ Do not encode biological meaning in the gate shape. Biological labels can be met
 Expose a small set of tools:
 
 ```text
-open_workspace(path) -> workspace summary
-read_workspace(path) -> workspace JSON
-write_workspace(path, workspace) -> validation result
-list_samples(workspace_path) -> sample ids and FCS paths
-get_sample_metadata(workspace_path, sample_id) -> parameters and keywords
-get_event_preview(workspace_path, sample_id, x, y, parent_gate_id?, max_events?) -> renderable points or bins
-validate_workspace(workspace_path) -> errors for agent repair
+flowcyto.open_gate_editor(workspace_path, sample_id?, view_id?) -> compact app surface
+flowcyto.get_plot_context(workspace_path, sample_id?, view_id?) -> agent-ready plot context
+flowcyto.upsert_gate(workspace_path, gate, expected_revision) -> revision-safe gate write
+flowcyto.delete_gate(workspace_path, gate_id, expected_revision) -> revision-safe gate delete
+flowcyto.open_workspace(path) -> workspace summary
+flowcyto.read_workspace(path) -> workspace JSON
+flowcyto.write_workspace(path, workspace, expected_revision?) -> validation result
+flowcyto.list_samples(workspace_path) -> sample ids and FCS paths
+flowcyto.get_sample_metadata(workspace_path, sample_id) -> parameters and keywords
+flowcyto.get_event_preview(workspace_path, sample_id, x, y, parent_gate_id?, max_events?) -> renderable points or bins
+flowcyto.validate_workspace(workspace_path) -> errors for agent repair
 ```
 
 The UI can call these tools through MCP Apps. The agent can call the same tools directly.
@@ -850,10 +1240,35 @@ type EventPreview = {
     counts: number[]
   }
 }
+
+type PlotContext = {
+  ok: boolean
+  workspacePath: string
+  revision: number
+  sampleId: string
+  viewId?: string
+  x: string
+  y: string
+  parent: string
+  scale: { x: "linear" | "arcsinh" | "biex"; y: "linear" | "arcsinh" | "biex" }
+  bounds: { xMin: number; xMax: number; yMin: number; yMax: number }
+  preview: EventPreview
+  gates: WorkspaceGate[]
+  gateSchema: {
+    preferredTypes: Array<"polygon" | "rect" | "range">
+    requiredRevisionField: "expected_revision"
+  }
+}
 ```
 
 Tool behavior rules:
 
+- `open_gate_editor` opens the compact surface. In MCP Apps hosts, it returns
+  metadata that causes the host to render `ui://flowcyto/gate-editor-v1.html`.
+- `get_plot_context` is the agent's read path for deciding what gate to write.
+  It should not require the agent to scrape the UI or inspect raw canvas pixels.
+- `upsert_gate` is the primary agent write path for gates and must require
+  `expected_revision`.
 - `read_workspace` returns the parsed JSON exactly enough for the agent to edit it.
 - `write_workspace` validates before writing and returns structured errors.
 - `get_event_preview` is for display only. It must not be treated as full analysis data.
@@ -866,13 +1281,13 @@ Tool behavior rules:
 Provide one MCP App resource:
 
 ```text
-ui://flow-cyto/gate-editor
+ui://flowcyto/gate-editor-v1.html
 ```
 
 The tool that opens it:
 
 ```text
-open_gate_editor(workspace_path, sample_id?, view_id?) -> MCP App UI
+flowcyto.open_gate_editor(workspace_path, sample_id?, view_id?) -> MCP App UI
 ```
 
 The UI should call server tools for data and workspace updates. It should not directly read arbitrary local files.
@@ -890,10 +1305,11 @@ The app input should be small:
 The app should then call:
 
 ```text
-read_workspace
-get_sample_metadata
-get_event_preview
-write_workspace
+flowcyto.get_plot_context
+flowcyto.get_event_preview
+flowcyto.upsert_gate
+flowcyto.delete_gate
+flowcyto.get_workspace_revision
 ```
 
 Do not send full FCS event tables as MCP tool input. The server owns file access and preview generation.
@@ -1028,8 +1444,11 @@ Use file-backed state.
 Required behavior:
 
 ```text
-UI edit -> write_workspace -> file changes -> agent can read
-agent edit -> write_workspace or file patch -> UI receives refresh
+agent calls open_gate_editor -> compact app opens and tracks revision
+agent calls get_plot_context -> agent gets axes, bounds, preview, gates, revision
+agent calls upsert_gate -> workspace revision increments
+open compact app polls revision -> new gate appears without manual reload
+human UI edit -> upsert_gate/write_workspace -> agent sees updated context
 ```
 
 This is part of the MVP. Do not ship a gate editor that requires manual reload to see agent changes.
@@ -1045,9 +1464,9 @@ Start with polling if it keeps the system simple. Replace with a watcher only wh
 Concrete MVP:
 
 ```text
-UI polls read_workspace every 1000 ms while visible.
+UI polls get_workspace_revision every 1000 ms while visible.
 UI compares revision.
-If revision changed and no local edit is in progress, refresh.
+If revision changed and no local edit is in progress, refresh through get_plot_context.
 If revision changed during local edit, show stale revision and require save retry.
 ```
 
@@ -1072,6 +1491,11 @@ UI requests a new preview only if sample, axes, scale, or parent changed
 ```
 
 If the agent edits the file directly instead of calling `write_workspace`, the UI should still detect the changed file on the next poll. Direct file edits must still pass validation before the UI adopts them.
+
+Direct file editing is a fallback, not the desired agent demo path. The desired
+path is `get_plot_context` followed by `upsert_gate` so the agent sees the
+revision contract and writes one structured gate rather than freehand patching
+the whole workspace.
 
 Refresh rules:
 
@@ -1209,7 +1633,8 @@ Required work:
 1. Real MCP host embed
    run the gate editor as ui://flowcyto/gate-editor-v1.html inside an actual MCP-capable host
    verify window.openai.callTool is provided by the host, not the local shim
-   verify render_gate_editor opens the compact surface without browser chrome
+   verify flowcyto.open_gate_editor opens the compact surface without browser chrome
+   verify flowcyto.get_plot_context gives the agent axes, bounds, preview, gates, and revision
    verify upsert_gate/delete_gate are callable from the embedded app
    verify agent-side writes appear in the open app without manual reload
 
@@ -1250,9 +1675,10 @@ flowcyto doctor passes
 npm run verify:alpha passes
 flowcyto validate passes fixture workspaces
 flowcyto open-gate-editor-window opens the compact native preview
-flowcyto-mcp render_gate_editor opens in the real MCP host
+flowcyto.open_gate_editor opens the compact resource in the real MCP host
+flowcyto.get_plot_context returns agent-ready plot context
 human-drawn gate increments workspace revision
-agent-written gate appears in the already-open surface within about 1 second
+agent-written upsert_gate appears in the already-open surface within about 1 second
 large fixture preview does not freeze the MCP server process
 large raw point preview rejects with point_preview_too_large and recommends bins
 malformed/stale writes return structured errors for the agent
@@ -1311,33 +1737,49 @@ There are now three validation levels:
 
 3. Named MCP host proof
    register http://127.0.0.1:8787/mcp or an HTTPS tunnel in the real host
-   call render_gate_editor from the agent
+   ask the agent to open the workspace and gate the main population
+   verify the agent calls flowcyto.open_gate_editor
    verify the host embeds ui://flowcyto/gate-editor-v1.html
 ```
 
 The named MCP host proof must check:
 
 ```text
-tools/list includes render_gate_editor, get_gate_editor_state, upsert_gate,
+tools/list includes open_gate_editor, get_plot_context, upsert_gate,
 delete_gate, and get_workspace_revision
 
 resources/read returns ui://flowcyto/gate-editor-v1.html with
 text/html;profile=mcp-app
 
-render_gate_editor opens the compact plot panel inside the host, not a browser
-tab
+open_gate_editor opens the compact plot panel inside the host, not a browser
+tab or a manually launched demo watcher
 
 the embedded app receives window.openai.callTool from the host
 
+agent calls get_plot_context after opening the surface
+
 human draw/edit writes a gate and increments workspace.revision
 
-agent calls upsert_gate or write_workspace while the app is open
+agent calls upsert_gate while the app is open
 
 the open app shows the new revision and gate without manual reload
 ```
 
 The local `/mcp-app-preview` route is not the named host proof. It is only a
 developer preview that injects a compatible `window.openai.callTool` shim.
+
+Compatibility aliases may exist during migration, but the validation script and
+video should use the target tool names. A passing proof should be understandable
+as:
+
+```text
+natural language user request
+-> flowcyto.open_gate_editor
+-> compact embedded Flowcyto app appears
+-> flowcyto.get_plot_context
+-> flowcyto.upsert_gate
+-> already-open app updates live
+```
 
 ## Real FCS Fixture Coverage
 

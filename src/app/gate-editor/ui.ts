@@ -345,6 +345,7 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       viewKey: null,
       renderMode: "pseudocolor",
       scale: { x: "linear", y: "linear" },
+      localDirty: false,
       savePending: false
     };
     const canvas = document.getElementById("plot");
@@ -410,6 +411,10 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       setGateTrayOpen(true);
     }
 
+    function hasLocalEditInProgress() {
+      return Boolean(state.savePending || state.drag || state.draft || state.localDirty);
+    }
+
     async function api(path, options) {
       if (isMcpApp()) return appApi(path, options);
       const response = await fetch(path, options);
@@ -428,7 +433,7 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
         };
       }
       if (url.pathname === "/api/state") {
-        return callFlowcytoTool("get_gate_editor_state", {
+        return callFlowcytoTool("get_plot_context", {
           workspace_path: workspacePath,
           sample_id: url.searchParams.get("sample_id") || appConfig.sampleId || appConfig.sample_id || undefined,
           parent_gate_id: url.searchParams.get("parent") || appConfig.parent || appConfig.parent_gate_id || undefined,
@@ -1013,6 +1018,7 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       state.parent = body.parent || "root";
       state.x = body.x;
       state.y = body.y;
+      state.localDirty = false;
       const nextViewKey = [state.sampleId, state.parent, state.x, state.y].join("\\0");
       if (state.viewKey !== nextViewKey || reason === "sample" || reason === "axis" || reason === "parent") {
         state.viewport = null;
@@ -1078,9 +1084,11 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       state.savePending = false;
       if (result.ok) {
         state.draft = null;
+        state.localDirty = false;
         state.selectedGateId = gate.id;
         await loadState("save");
       } else {
+        state.localDirty = true;
         setErrors(result.errors);
         setStatus("Write rejected", true);
       }
@@ -1088,13 +1096,16 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
 
     async function deleteSelectedGate() {
       if (!state.workspace || !state.selectedGateId) return;
+      state.savePending = true;
       const result = await api("/api/gates/delete", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ gateId: state.selectedGateId, expectedRevision: state.workspace.revision })
       });
+      state.savePending = false;
       if (result.ok) {
         state.selectedGateId = null;
+        state.localDirty = false;
         await loadState("delete");
       } else {
         setErrors(result.errors);
@@ -1136,12 +1147,14 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       if (state.mode === "polygon") {
         if (!state.draft || state.draft.type !== "polygon") state.draft = { type: "polygon", vertices: [] };
         state.draft.vertices.push(data);
+        state.localDirty = true;
         draw();
         return;
       }
       if (state.mode === "rect") {
         state.draft = { type: "rect", xMin: data[0], xMax: data[0], yMin: data[1], yMax: data[1] };
         state.drag = { type: "draftRect" };
+        state.localDirty = true;
         draw();
         return;
       }
@@ -1171,6 +1184,7 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       if (state.drag.type === "draftRect" && state.draft && state.draft.type === "rect") {
         state.draft.xMax = data[0];
         state.draft.yMax = data[1];
+        state.localDirty = true;
         draw();
         return;
       }
@@ -1185,6 +1199,7 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
         if (state.drag.index === 0 || state.drag.index === 2) gate.yMin = data[1];
         if (state.drag.index === 1 || state.drag.index === 3) gate.yMax = data[1];
       }
+      state.localDirty = true;
       draw();
     });
 
@@ -1233,6 +1248,9 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
     });
     gateTrayToggle.addEventListener("click", () => setGateTrayOpen(gateTray.hidden));
     closeGateTray.addEventListener("click", () => setGateTrayOpen(false));
+    gateName.addEventListener("input", () => {
+      if (state.draft || selectedGate()) state.localDirty = true;
+    });
     document.getElementById("saveGate").addEventListener("click", saveGate);
     document.getElementById("deleteGate").addEventListener("click", deleteSelectedGate);
     document.getElementById("resetView").addEventListener("click", resetViewport);
@@ -1240,7 +1258,7 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
 
     if (isMcpApp()) {
       window.setInterval(async () => {
-        if (!state.workspace || state.savePending) return;
+        if (document.visibilityState === "hidden" || !state.workspace || hasLocalEditInProgress()) return;
         const workspacePath = appConfig.workspacePath || appConfig.workspace_path;
         if (!workspacePath) return;
         try {
@@ -1249,15 +1267,14 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
         } catch (error) {
           setStatus(error.message || String(error), true);
         }
-      }, 1200);
+      }, 750);
     } else {
       const events = new EventSource("/api/events");
       events.addEventListener("workspace_changed", async (event) => {
         const change = JSON.parse(event.data);
         if (!state.workspace || change.revision > state.workspace.revision) {
-          if (state.savePending) {
-            state.workspace = change.workspace;
-            setStatus("Workspace revision " + change.revision);
+          if (hasLocalEditInProgress()) {
+            setStatus("Workspace revision " + change.revision + " pending local edit");
             return;
           }
           await loadState("file");

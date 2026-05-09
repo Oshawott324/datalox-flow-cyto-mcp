@@ -309,6 +309,7 @@ export async function writeWorkspace(params: {
           "/revision",
           "stale_revision",
           `Workspace revision is ${current.revision} but write was based on revision ${params.expectedRevision}.`,
+          { currentRevision: current.revision, expectedRevision: params.expectedRevision },
         ),
       ],
     };

@@ -17,6 +17,21 @@ no bundled Chromium shell
 The macOS path already does this with `WKWebView`. Windows should do the same
 with Microsoft Edge WebView2.
 
+This helper is not the primary MCP product path. The primary agent path is:
+
+```text
+agent calls flowcyto.open_gate_editor
+MCP host renders ui://flowcyto/gate-editor-v1.html
+agent calls flowcyto.get_plot_context
+agent calls flowcyto.upsert_gate
+already-open compact app updates live
+```
+
+Windows WebView2 parity exists for hosts that cannot render MCP Apps resources
+inline and for local validation. It must preserve the same compact app,
+revision polling, and tool-driven workspace contract. It should not become a
+separate desktop product or a fork of the gate editor.
+
 Official WebView2 context:
 
 - Microsoft describes WebView2 as a way to embed web technologies in native apps.
@@ -67,7 +82,7 @@ Expected output on Windows:
 {
   "ok": true,
   "surface": {
-    "kind": "native_webview",
+    "kind": "native_window",
     "runtime": "windows_webview2",
     "preferredWidth": 620,
     "preferredHeight": 620
@@ -552,37 +567,51 @@ Dispatch explicitly:
 
 ```ts
 export function launchNativeGateEditorWindow(options: NativeGateEditorWindowOptions): NativeGateEditorWindow {
-  const runtime = nativeGateEditorRuntimeForPlatform();
-
-  if (runtime === "macos_wkwebview") {
-    return launchMacWebKitWindow(options);
-  }
-
-  if (runtime === "windows_webview2") {
-    return launchWindowsWebView2Window(options);
-  }
-
-  throw new FlowcytoError(
-    "native_window_unsupported",
-    "The local native gate editor window requires macOS WebKit or Windows WebView2.",
-    "/surface",
-  );
+  const plan = nativeGateEditorLaunchPlan(options);
+  const child = spawn(plan.command, plan.args, {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: plan.windowsHide,
+  });
+  return wrapNativeWindowChild(child, plan.runtime, plan.runtimeLabel);
 }
 ```
 
 Windows launcher:
 
 ```ts
-function launchWindowsWebView2Window(options: NativeGateEditorWindowOptions): NativeGateEditorWindow {
+export function nativeGateEditorLaunchPlan(
+  options: NativeGateEditorWindowOptions,
+  platform = process.platform,
+  arch = process.arch,
+  packageRoot = packageRootFromModule(),
+): NativeGateEditorLaunchPlan {
   if (!isLocalGateEditorPreviewUrl(options.url)) {
     throw new FlowcytoError(
       "native_window_url_not_local",
-      "Windows native preview only accepts the local /mcp-app-preview URL.",
+      "Native gate editor windows only accept the local /mcp-app-preview URL.",
       "/surface/url",
     );
   }
 
-  const helperPath = windowsWebView2HelperPath();
+  const runtime = nativeGateEditorRuntimeForPlatform(platform);
+  if (runtime === "macos_wkwebview") {
+    return {
+      runtime,
+      runtimeLabel: "WebKit",
+      command: "osascript",
+      args: ["-l", "JavaScript", "-e", macGateEditorWindowScript(), options.url, options.title ?? "Flowcyto Gate Editor", String(options.width ?? 620), String(options.height ?? 620)],
+    };
+  }
+
+  if (runtime !== "windows_webview2") {
+    throw new FlowcytoError(
+      "native_window_unsupported",
+      "The local native gate editor window requires macOS WebKit or Windows WebView2.",
+      "/surface",
+    );
+  }
+
+  const helperPath = windowsWebView2HelperPath(arch, packageRoot);
   if (!existsSync(helperPath)) {
     throw new FlowcytoError(
       "windows_webview2_helper_missing",
@@ -591,17 +620,13 @@ function launchWindowsWebView2Window(options: NativeGateEditorWindowOptions): Na
     );
   }
 
-  const child = spawn(helperPath, [
-    options.url,
-    options.title ?? "Flowcyto Gate Editor",
-    String(options.width ?? 620),
-    String(options.height ?? 640),
-  ], {
-    stdio: ["ignore", "pipe", "pipe"],
+  return {
+    runtime,
+    runtimeLabel: "WebView2",
+    command: helperPath,
+    args: [options.url, options.title ?? "Flowcyto Gate Editor", String(options.width ?? 620), String(options.height ?? 620)],
     windowsHide: true,
-  });
-
-  return wrapNativeWindowChild(child, "windows_webview2", "WebView2");
+  };
 }
 ```
 

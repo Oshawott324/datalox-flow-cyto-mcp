@@ -13,7 +13,9 @@ import { describe, expect, it } from "vitest";
 import {
   isLocalGateEditorPreviewUrl,
   macGateEditorWindowScript,
+  nativeGateEditorLaunchPlan,
   nativeGateEditorReadiness,
+  nativeGateEditorReadinessError,
   nativeGateEditorRuntimeForPlatform,
   parseNativeWindowErrorPayload,
   supportsNativeGateEditorWindow,
@@ -22,6 +24,7 @@ import {
 import { startGateEditorServer } from "../src/app/gate-editor/server.js";
 import {
   deleteGate,
+  FlowcytoError,
   getEventPreview,
   getSampleMetadata,
   initWorkspace,
@@ -397,6 +400,9 @@ describe("flowcyto core", () => {
     const createResult = await upsertGate({ workspacePath, gate: testGate(), expectedRevision: 0 });
     expect(createResult.ok).toBe(true);
     expect(createResult.revision).toBe(1);
+    expect(createResult.gate?.id).toBe("gate_1");
+    expect(createResult.gateCount).toBe(1);
+    expect(createResult.workspacePath).toBe(workspacePath);
     expect((await readWorkspace(workspacePath)).gates).toHaveLength(1);
 
     const staleResult = await upsertGate({
@@ -407,6 +413,7 @@ describe("flowcyto core", () => {
     expect(staleResult.ok).toBe(false);
     expect(staleResult.errors[0]?.path).toBe("/revision");
     expect(staleResult.errors[0]?.code).toBe("stale_revision");
+    expect(staleResult.errors[0]?.details).toEqual({ currentRevision: 1, expectedRevision: 0 });
 
     const updateResult = await upsertGate({
       workspacePath,
@@ -415,11 +422,14 @@ describe("flowcyto core", () => {
     });
     expect(updateResult.ok).toBe(true);
     expect(updateResult.revision).toBe(2);
+    expect(updateResult.gateCount).toBe(1);
     expect((await readWorkspace(workspacePath)).gates[0]?.name).toBe("Updated Gate");
 
     const deleteResult = await deleteGate({ workspacePath, gateId: "gate_1", expectedRevision: 2 });
     expect(deleteResult.ok).toBe(true);
     expect(deleteResult.revision).toBe(3);
+    expect(deleteResult.gateCount).toBe(0);
+    expect(deleteResult.workspacePath).toBe(workspacePath);
     expect((await readWorkspace(workspacePath)).gates).toEqual([]);
   });
 
@@ -459,6 +469,62 @@ describe("flowcyto core", () => {
 });
 
 describe("flowcyto CLI", () => {
+  it("creates the live gating demo harness without gate writer scripts", async () => {
+    const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-live-gating-demo-"));
+    const { stdout } = await execFileAsync("node", [
+      "scripts/create-live-gating-demo.mjs",
+      "--target",
+      targetDir,
+      "--force",
+    ], { cwd: path.resolve(".") });
+    const result = JSON.parse(stdout) as {
+      ok: boolean;
+      targetDir: string;
+      workspacePath: string;
+      samplePath: string;
+      mcpConfigPath: string;
+      revision: number;
+      gateCount: number;
+    };
+    expect(result.ok).toBe(true);
+    expect(result.targetDir).toBe(targetDir);
+    expect(result.revision).toBe(0);
+    expect(result.gateCount).toBe(0);
+
+    const entries = await fs.readdir(targetDir);
+    expect(entries.sort()).toEqual([
+      ".git",
+      ".gitignore",
+      ".mcp.json",
+      "AGENTS.md",
+      "README.md",
+      "data",
+      "flowcyto.workspace.json",
+    ]);
+    await expect(fs.access(result.samplePath)).resolves.toBeUndefined();
+
+    const workspace = await readWorkspace(result.workspacePath);
+    expect(workspace.revision).toBe(0);
+    expect(workspace.gates).toEqual([]);
+    expect(workspace.samples[0]?.path).toBe("data/sample_001.fcs");
+    const validation = await validateWorkspace(result.workspacePath);
+    expect(validation.ok).toBe(true);
+
+    const mcpConfig = JSON.parse(await fs.readFile(result.mcpConfigPath, "utf8")) as {
+      mcpServers?: { flowcyto?: { command?: string; args?: string[] } };
+    };
+    expect(mcpConfig.mcpServers?.flowcyto?.command).toBe("node");
+    expect(mcpConfig.mcpServers?.flowcyto?.args?.[0]).toContain("dist/src/mcp/server.js");
+
+    const agents = await fs.readFile(path.join(targetDir, "AGENTS.md"), "utf8");
+    expect(agents).toContain("flowcyto.open_gate_editor");
+    expect(agents).toContain("flowcyto.get_plot_context");
+    expect(agents).toContain("flowcyto.upsert_gate");
+    expect(agents).toContain("Do not patch `flowcyto.workspace.json` directly");
+    expect(agents).toContain("Do not write or run local gate-application scripts");
+    expect(agents).not.toContain("datalox_agent_live_gate");
+  });
+
   it("runs validate, metadata, and preview against a fixture workspace", async () => {
     const { workspacePath } = await makeWorkspace();
     const cliPath = path.resolve("dist/src/cli/main.js");
@@ -540,7 +606,7 @@ describe("flowcyto CLI", () => {
 describe("flowcyto gate editor server", () => {
   it("defines native preview platform contracts", async () => {
     const script = macGateEditorWindowScript();
-    expect(supportsNativeGateEditorWindow()).toBe(process.platform === "darwin");
+    expect(supportsNativeGateEditorWindow()).toBe(process.platform === "darwin" || process.platform === "win32");
     expect(supportsNativeGateEditorWindow("darwin")).toBe(true);
     expect(supportsNativeGateEditorWindow("win32")).toBe(true);
     expect(supportsNativeGateEditorWindow("linux")).toBe(false);
@@ -572,6 +638,66 @@ describe("flowcyto gate editor server", () => {
     const readyReadiness = nativeGateEditorReadiness("win32", "x64", packageRoot);
     expect(readyReadiness.ok).toBe(true);
     expect(readyReadiness.detail).toBe("windows_webview2");
+
+    const unsupportedError = nativeGateEditorReadinessError(nativeGateEditorReadiness("linux"));
+    expect(unsupportedError?.code).toBe("native_window_unsupported");
+    expect(unsupportedError?.path).toBe("/surface");
+
+    const missingHelperError = nativeGateEditorReadinessError(missingReadiness);
+    expect(missingHelperError?.code).toBe("windows_webview2_helper_missing");
+    expect(missingHelperError?.path).toBe("/surface/runtime");
+  });
+
+  it("builds native window launcher plans without opening browser chrome", async () => {
+    const url = "http://127.0.0.1:50514/mcp-app-preview";
+    const macPlan = nativeGateEditorLaunchPlan({
+      url,
+      title: "Mac Flowcyto",
+      width: 610,
+      height: 640,
+    }, "darwin");
+    expect(macPlan.runtime).toBe("macos_wkwebview");
+    expect(macPlan.runtimeLabel).toBe("WebKit");
+    expect(macPlan.command).toBe("osascript");
+    expect(macPlan.args[0]).toBe("-l");
+    expect(macPlan.args[1]).toBe("JavaScript");
+    expect(macPlan.args[2]).toBe("-e");
+    expect(macPlan.args[3]).toContain("WKWebView");
+    expect(macPlan.args.slice(4)).toEqual([url, "Mac Flowcyto", "610", "640"]);
+    expect(macPlan.args).not.toContain("open");
+
+    const packageRoot = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-webview2-plan-"));
+    const helperPath = windowsWebView2HelperPath("x64", packageRoot);
+    await fs.mkdir(path.dirname(helperPath), { recursive: true });
+    await fs.writeFile(helperPath, "");
+    const windowsPlan = nativeGateEditorLaunchPlan({
+      url,
+      title: "Windows Flowcyto",
+    }, "win32", "x64", packageRoot);
+    expect(windowsPlan.runtime).toBe("windows_webview2");
+    expect(windowsPlan.runtimeLabel).toBe("WebView2");
+    expect(windowsPlan.command).toBe(helperPath);
+    expect(windowsPlan.args).toEqual([url, "Windows Flowcyto", "620", "620"]);
+    expect(windowsPlan.windowsHide).toBe(true);
+
+    expect(() => nativeGateEditorLaunchPlan({ url }, "linux")).toThrow(FlowcytoError);
+    try {
+      nativeGateEditorLaunchPlan({ url }, "linux");
+      throw new Error("Expected unsupported native window platform to throw.");
+    } catch (error) {
+      expect(error).toBeInstanceOf(FlowcytoError);
+      expect((error as FlowcytoError).code).toBe("native_window_unsupported");
+      expect((error as FlowcytoError).path).toBe("/surface");
+    }
+
+    try {
+      nativeGateEditorLaunchPlan({ url: "https://example.com/mcp-app-preview" }, "darwin");
+      throw new Error("Expected public native preview URL to throw.");
+    } catch (error) {
+      expect(error).toBeInstanceOf(FlowcytoError);
+      expect((error as FlowcytoError).code).toBe("native_window_url_not_local");
+      expect((error as FlowcytoError).path).toBe("/surface/url");
+    }
   });
 
   it("defines the Windows WebView2 helper source contract", async () => {
@@ -627,6 +753,7 @@ describe("flowcyto gate editor server", () => {
       expect(previewText).toContain("window.__flowcytoMcpAppPreview = true");
       expect(previewText).toContain("window.openai");
       expect(previewText).toContain("callTool(name");
+      expect(previewText).toContain("get_plot_context");
 
       const stateResponse = await fetch(`${server.url}api/state`);
       const stateBody = await stateResponse.json() as { ok: boolean; workspace: FlowcytoWorkspace; preview: { sampledEvents: number } };
@@ -982,6 +1109,8 @@ describe("flowcyto MCP", () => {
       expect(transport.sessionId).toBeTruthy();
 
       const tools = await client.listTools();
+      expect(tools.tools.some((tool) => tool.name === "open_gate_editor")).toBe(true);
+      expect(tools.tools.some((tool) => tool.name === "get_plot_context")).toBe(true);
       expect(tools.tools.some((tool) => tool.name === "render_gate_editor")).toBe(true);
       expect(tools.tools.some((tool) => tool.name === "get_workspace_revision")).toBe(true);
 
@@ -1013,6 +1142,28 @@ describe("flowcyto MCP", () => {
       };
       expect(previewResult.sampledEvents).toBeLessThanOrEqual(16);
 
+      const context = await client.callTool({
+        name: "get_plot_context",
+        arguments: {
+          workspace_path: workspacePath,
+          sample_id: "sample_001",
+          x: metadataResult.parameters[0]?.name,
+          y: metadataResult.parameters[1]?.name,
+          max_events: 16,
+        },
+      });
+      const contextResult = (context.structuredContent as { result?: unknown } | undefined)?.result as {
+        ok: boolean;
+        revision: number;
+        bounds: { xMin: number; xMax: number; yMin: number; yMax: number };
+        gateSchema: { requiredRevisionField: string };
+      };
+      expect(contextResult.ok).toBe(true);
+      expect(contextResult.revision).toBe(0);
+      expect(contextResult.bounds.xMax).toBeGreaterThan(contextResult.bounds.xMin);
+      expect(contextResult.bounds.yMax).toBeGreaterThan(contextResult.bounds.yMin);
+      expect(contextResult.gateSchema.requiredRevisionField).toBe("expected_revision");
+
       const created = await client.callTool({
         name: "upsert_gate",
         arguments: { workspace_path: workspacePath, gate: testGate("http_gate"), expected_revision: 0 },
@@ -1020,9 +1171,13 @@ describe("flowcyto MCP", () => {
       const createdResult = (created.structuredContent as { result?: unknown } | undefined)?.result as {
         ok: boolean;
         revision: number;
+        gateCount: number;
+        workspacePath: string;
       };
       expect(createdResult.ok).toBe(true);
       expect(createdResult.revision).toBe(1);
+      expect(createdResult.gateCount).toBe(1);
+      expect(createdResult.workspacePath).toBe(workspacePath);
     } finally {
       await client.close().catch(() => undefined);
       await stopChild(child);
@@ -1036,12 +1191,13 @@ describe("flowcyto MCP", () => {
     const transport = new StdioClientTransport({ command: "node", args: [serverPath] });
     const browser = await chromium.launch({ headless: true });
     const page = await browser.newPage({ viewport: { width: 900, height: 680 } });
+    const toolCalls: string[] = [];
 
     try {
       await client.connect(transport);
       const rendered = await client.callTool({
-        name: "render_gate_editor",
-        arguments: { workspace_path: workspacePath, sample_id: "sample_001", max_events: 64 },
+        name: "open_gate_editor",
+        arguments: { workspace_path: workspacePath, surface: "mcp_app", sample_id: "sample_001", max_events: 64 },
       });
       const toolOutput = (rendered.structuredContent as { result?: unknown } | undefined)?.result as {
         ok: boolean;
@@ -1054,6 +1210,7 @@ describe("flowcyto MCP", () => {
       expect(html).toContain("window.openai.callTool");
 
       await page.exposeFunction("flowcytoCallTool", async (name: string, args: Record<string, unknown>) => {
+        toolCalls.push(name);
         const result = await client.callTool({ name, arguments: args ?? {} });
         return JSON.parse(JSON.stringify(result)) as unknown;
       });
@@ -1074,6 +1231,9 @@ describe("flowcyto MCP", () => {
         callTool: typeof (window as typeof window & { openai?: { callTool?: unknown } }).openai?.callTool,
       }));
       expect(branch).toEqual({ preview: false, callTool: "function" });
+      expect(toolCalls).toContain("get_plot_context");
+      expect(toolCalls).not.toContain("get_gate_editor_state");
+      const initialPlotContextCalls = toolCalls.filter((name) => name === "get_plot_context").length;
 
       await page.locator("#rectMode").click();
       const box = await page.locator("#plot").boundingBox();
@@ -1082,9 +1242,13 @@ describe("flowcyto MCP", () => {
       await page.mouse.down();
       await page.mouse.move(box.x + 410, box.y + 320);
       await page.mouse.up();
+      expect(await readWorkspace(workspacePath).then((workspace) => workspace.revision)).toBe(0);
       await page.locator("#gateName").fill("SDK Host Gate");
       await page.locator("#saveGate").click();
       await expect.poll(() => readWorkspace(workspacePath).then((workspace) => workspace.revision)).toBe(1);
+      await page.evaluate(() => {
+        (window as typeof window & { __flowcytoNoReloadMarker?: boolean }).__flowcytoNoReloadMarker = true;
+      });
 
       const external = await client.callTool({
         name: "upsert_gate",
@@ -1106,9 +1270,20 @@ describe("flowcyto MCP", () => {
           },
         },
       });
-      const externalResult = (external.structuredContent as { result?: unknown } | undefined)?.result as { ok: boolean };
+      const externalResult = (external.structuredContent as { result?: unknown } | undefined)?.result as {
+        ok: boolean;
+        revision: number;
+        gateCount: number;
+        workspacePath: string;
+      };
       expect(externalResult.ok).toBe(true);
-      await expect.poll(() => page.locator("#status").textContent(), { timeout: 4000 }).toContain("Workspace revision 2");
+      expect(externalResult.revision).toBe(2);
+      expect(externalResult.gateCount).toBe(2);
+      expect(externalResult.workspacePath).toBe(workspacePath);
+      await expect.poll(() => page.locator("#status").textContent(), { timeout: 1500 }).toContain("Workspace revision 2");
+      expect(await page.evaluate(() => (window as typeof window & { __flowcytoNoReloadMarker?: boolean }).__flowcytoNoReloadMarker)).toBe(true);
+      expect(toolCalls.filter((name) => name === "get_workspace_revision").length).toBeGreaterThan(0);
+      expect(toolCalls.filter((name) => name === "get_plot_context").length).toBeGreaterThan(initialPlotContextCalls);
       await page.locator("#gateTrayToggle").click();
       await expect.poll(() => page.locator("#gateList").textContent()).toContain("SDK Host Agent Gate");
     } finally {
@@ -1132,6 +1307,7 @@ describe("flowcyto MCP", () => {
         "delete_gate",
         "get_event_preview",
         "get_gate_editor_state",
+        "get_plot_context",
         "get_sample_metadata",
         "get_workspace_revision",
         "list_samples",
@@ -1143,11 +1319,15 @@ describe("flowcyto MCP", () => {
         "validate_workspace",
         "write_workspace",
       ]);
-      const renderTool = tools.tools.find((tool) => tool.name === "render_gate_editor") as {
+      const openTool = tools.tools.find((tool) => tool.name === "open_gate_editor") as {
         _meta?: Record<string, unknown>;
       } | undefined;
-      expect(renderTool?._meta?.["openai/outputTemplate"]).toBe("ui://flowcyto/gate-editor-v1.html");
-      expect((renderTool?._meta?.ui as { resourceUri?: string } | undefined)?.resourceUri).toBe("ui://flowcyto/gate-editor-v1.html");
+      expect(openTool?._meta?.["openai/outputTemplate"]).toBe("ui://flowcyto/gate-editor-v1.html");
+      expect((openTool?._meta?.ui as { resourceUri?: string } | undefined)?.resourceUri).toBe("ui://flowcyto/gate-editor-v1.html");
+      const renderTool = tools.tools.find((tool) => tool.name === "render_gate_editor");
+      expect(renderTool?.description).toContain("Deprecated alias");
+      const stateTool = tools.tools.find((tool) => tool.name === "get_gate_editor_state");
+      expect(stateTool?.description).toContain("Deprecated alias");
 
       const resources = await client.listResources();
       expect(resources.resources.some((resource) =>
@@ -1206,6 +1386,37 @@ describe("flowcyto MCP", () => {
       expect(badPreviewResult.errors[0]?.path).toBe("/x");
       expect(badPreviewResult.errors[0]?.code).toBe("unknown_parameter");
 
+      const plotContext = await client.callTool({
+        name: "get_plot_context",
+        arguments: {
+          workspace_path: workspacePath,
+          sample_id: "sample_001",
+          x: metadataResult.parameters[0]?.name,
+          y: metadataResult.parameters[1]?.name,
+          max_events: 16,
+        },
+      });
+      const plotContextResult = (plotContext.structuredContent as { result?: unknown } | undefined)?.result as {
+        ok: boolean;
+        revision: number;
+        workspace: FlowcytoWorkspace;
+        preview: { sampledEvents: number };
+        bounds: { xMin: number; xMax: number; yMin: number; yMax: number };
+        gates: WorkspaceGate[];
+        gateSchema: { preferredTypes: string[]; requiredRevisionField: string };
+        expected_revision: number;
+      };
+      expect(plotContextResult.ok).toBe(true);
+      expect(plotContextResult.revision).toBe(0);
+      expect(plotContextResult.workspace.revision).toBe(0);
+      expect(plotContextResult.preview.sampledEvents).toBeLessThanOrEqual(16);
+      expect(plotContextResult.bounds.xMax).toBeGreaterThan(plotContextResult.bounds.xMin);
+      expect(plotContextResult.bounds.yMax).toBeGreaterThan(plotContextResult.bounds.yMin);
+      expect(plotContextResult.gates).toEqual([]);
+      expect(plotContextResult.gateSchema.preferredTypes).toContain("polygon");
+      expect(plotContextResult.gateSchema.requiredRevisionField).toBe("expected_revision");
+      expect(plotContextResult.expected_revision).toBe(0);
+
       const editorState = await client.callTool({
         name: "get_gate_editor_state",
         arguments: {
@@ -1218,16 +1429,16 @@ describe("flowcyto MCP", () => {
       });
       const editorStateResult = (editorState.structuredContent as { result?: unknown } | undefined)?.result as {
         ok: boolean;
-        workspace: FlowcytoWorkspace;
+        revision: number;
         preview: { sampledEvents: number };
       };
       expect(editorStateResult.ok).toBe(true);
-      expect(editorStateResult.workspace.revision).toBe(0);
+      expect(editorStateResult.revision).toBe(0);
       expect(editorStateResult.preview.sampledEvents).toBeLessThanOrEqual(16);
 
       const rendered = await client.callTool({
-        name: "render_gate_editor",
-        arguments: { workspace_path: workspacePath, sample_id: "sample_001", max_events: 16 },
+        name: "open_gate_editor",
+        arguments: { workspace_path: workspacePath, surface: "mcp_app", sample_id: "sample_001", max_events: 16 },
       });
       const renderedResult = (rendered.structuredContent as { result?: unknown } | undefined)?.result as {
         ok: boolean;
@@ -1238,6 +1449,18 @@ describe("flowcyto MCP", () => {
       expect(renderedResult.surface.resourceUri).toBe("ui://flowcyto/gate-editor-v1.html");
       expect(renderedResult.surface.preferredWidth).toBe(620);
 
+      const aliasRendered = await client.callTool({
+        name: "render_gate_editor",
+        arguments: { workspace_path: workspacePath, sample_id: "sample_001", max_events: 16 },
+      });
+      const aliasRenderedResult = (aliasRendered.structuredContent as { result?: unknown } | undefined)?.result as {
+        ok: boolean;
+        surface: { kind: string; resourceUri: string };
+      };
+      expect(aliasRenderedResult.ok).toBe(true);
+      expect(aliasRenderedResult.surface.kind).toBe("mcp_app");
+      expect(aliasRenderedResult.surface.resourceUri).toBe("ui://flowcyto/gate-editor-v1.html");
+
       const mcpCreate = await client.callTool({
         name: "upsert_gate",
         arguments: { workspace_path: workspacePath, gate: testGate("mcp_gate"), expected_revision: 0 },
@@ -1245,9 +1468,26 @@ describe("flowcyto MCP", () => {
       const mcpCreateResult = (mcpCreate.structuredContent as { result?: unknown } | undefined)?.result as {
         ok: boolean;
         revision: number;
+        gateCount: number;
+        workspacePath: string;
       };
       expect(mcpCreateResult.ok).toBe(true);
       expect(mcpCreateResult.revision).toBe(1);
+      expect(mcpCreateResult.gateCount).toBe(1);
+      expect(mcpCreateResult.workspacePath).toBe(workspacePath);
+
+      const staleMcpCreate = await client.callTool({
+        name: "upsert_gate",
+        arguments: { workspace_path: workspacePath, gate: { ...testGate("mcp_gate"), name: "stale" }, expected_revision: 0 },
+      });
+      const staleMcpCreateResult = (staleMcpCreate.structuredContent as { result?: unknown } | undefined)?.result as {
+        ok: boolean;
+        errors: Array<{ code: string; path: string; details?: Record<string, unknown> }>;
+      };
+      expect(staleMcpCreateResult.ok).toBe(false);
+      expect(staleMcpCreateResult.errors[0]?.path).toBe("/revision");
+      expect(staleMcpCreateResult.errors[0]?.code).toBe("stale_revision");
+      expect(staleMcpCreateResult.errors[0]?.details).toEqual({ currentRevision: 1, expectedRevision: 0 });
 
       const revision = await client.callTool({
         name: "get_workspace_revision",
@@ -1269,9 +1509,13 @@ describe("flowcyto MCP", () => {
       const mcpDeleteResult = (mcpDelete.structuredContent as { result?: unknown } | undefined)?.result as {
         ok: boolean;
         revision: number;
+        gateCount: number;
+        workspacePath: string;
       };
       expect(mcpDeleteResult.ok).toBe(true);
       expect(mcpDeleteResult.revision).toBe(2);
+      expect(mcpDeleteResult.gateCount).toBe(0);
+      expect(mcpDeleteResult.workspacePath).toBe(workspacePath);
 
       const editor = await client.callTool({
         name: "open_gate_editor",
@@ -1279,28 +1523,12 @@ describe("flowcyto MCP", () => {
       });
       const editorResult = (editor.structuredContent as { result?: unknown } | undefined)?.result as {
         ok: boolean;
-        sessionId: string;
-        url: string;
-        port: number;
-        surface: { kind: string; url: string; preferredWidth: number; preferredHeight: number };
+        surface: { kind: string; resourceUri: string; preferredWidth: number; preferredHeight: number };
       };
       expect(editorResult.ok).toBe(true);
-      expect(editorResult.port).toBeGreaterThan(0);
-      expect(editorResult.surface.kind).toBe("webview");
-      expect(editorResult.surface.url).toBe(editorResult.url);
+      expect(editorResult.surface.kind).toBe("mcp_app");
+      expect(editorResult.surface.resourceUri).toBe("ui://flowcyto/gate-editor-v1.html");
       expect(editorResult.surface.preferredHeight).toBe(620);
-      const editorWorkspace = await fetch(`${editorResult.url}api/workspace`);
-      const editorWorkspaceBody = await editorWorkspace.json() as { ok: boolean };
-      expect(editorWorkspaceBody.ok).toBe(true);
-
-      const closed = await client.callTool({
-        name: "close_gate_editor",
-        arguments: { session_id: editorResult.sessionId },
-      });
-      const closedResult = (closed.structuredContent as { result?: unknown } | undefined)?.result as {
-        ok: boolean;
-      };
-      expect(closedResult.ok).toBe(true);
     } finally {
       await client.close();
     }

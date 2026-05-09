@@ -33,6 +33,14 @@ export type NativeGateEditorReadiness = {
   helperPath?: string;
 };
 
+export type NativeGateEditorLaunchPlan = {
+  runtime: NativeGateEditorRuntime;
+  runtimeLabel: "WebKit" | "WebView2";
+  command: string;
+  args: string[];
+  windowsHide?: boolean;
+};
+
 type NativeWindowErrorPayload = {
   code: string;
   path: string;
@@ -111,6 +119,25 @@ export function nativeGateEditorReadiness(
       : { ok: false, detail: "windows_webview2_helper_missing", runtime, helperPath };
   }
   return { ok: false, detail: "unsupported_platform", runtime: null };
+}
+
+export function nativeGateEditorReadinessError(readiness: NativeGateEditorReadiness = nativeGateEditorReadiness()): FlowcytoError | null {
+  if (readiness.ok) return null;
+  if (readiness.detail === "unsupported_platform") {
+    return new FlowcytoError(
+      "native_window_unsupported",
+      "The local native gate editor window requires macOS WebKit or Windows WebView2.",
+      "/surface",
+    );
+  }
+  if (readiness.detail === "windows_webview2_helper_missing") {
+    return new FlowcytoError(
+      "windows_webview2_helper_missing",
+      `Windows WebView2 helper was not found at ${readiness.helperPath}. Run the Windows native build before packaging.`,
+      "/surface/runtime",
+    );
+  }
+  return new FlowcytoError("native_window_failed", `Native gate editor is not ready: ${readiness.detail}.`, "/surface/runtime");
 }
 
 export function parseNativeWindowErrorPayload(raw: string): NativeWindowErrorPayload {
@@ -215,63 +242,75 @@ function nativeWindowError(message: string): FlowcytoError {
 }
 
 export function launchNativeGateEditorWindow(options: NativeGateEditorWindowOptions): NativeGateEditorWindow {
-  const runtime = nativeGateEditorRuntimeForPlatform();
-  if (runtime === "macos_wkwebview") return launchMacWebKitWindow(options);
-  if (runtime === "windows_webview2") return launchWindowsWebView2Window(options);
+  const plan = nativeGateEditorLaunchPlan(options);
+  const child: ChildProcess = spawn(plan.command, plan.args, {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: plan.windowsHide,
+  });
+  return wrapNativeWindowChild(child, plan.runtime, plan.runtimeLabel);
+}
+
+export function nativeGateEditorLaunchPlan(
+  options: NativeGateEditorWindowOptions,
+  platform: NodeJS.Platform = process.platform,
+  arch: NodeJS.Architecture = process.arch,
+  packageRoot = packageRootFromModule(),
+): NativeGateEditorLaunchPlan {
+  if (!isLocalGateEditorPreviewUrl(options.url)) {
+    throw new FlowcytoError(
+      "native_window_url_not_local",
+      "Native gate editor windows only accept the local /mcp-app-preview URL.",
+      "/surface/url",
+    );
+  }
+
+  const runtime = nativeGateEditorRuntimeForPlatform(platform);
+  if (runtime === "macos_wkwebview") {
+    return {
+      runtime,
+      runtimeLabel: "WebKit",
+      command: "osascript",
+      args: [
+        "-l",
+        "JavaScript",
+        "-e",
+        macGateEditorWindowScript(),
+        options.url,
+        options.title ?? "Flowcyto Gate Editor",
+        String(options.width ?? 620),
+        String(options.height ?? 620),
+      ],
+    };
+  }
+
+  if (runtime === "windows_webview2") {
+    const helperPath = windowsWebView2HelperPath(arch, packageRoot);
+    if (!existsSync(helperPath)) {
+      throw new FlowcytoError(
+        "windows_webview2_helper_missing",
+        `Windows WebView2 helper was not found at ${helperPath}. Run the Windows native build before packaging.`,
+        "/surface/runtime",
+      );
+    }
+    return {
+      runtime,
+      runtimeLabel: "WebView2",
+      command: helperPath,
+      args: [
+        options.url,
+        options.title ?? "Flowcyto Gate Editor",
+        String(options.width ?? 620),
+        String(options.height ?? 620),
+      ],
+      windowsHide: true,
+    };
+  }
 
   throw new FlowcytoError(
     "native_window_unsupported",
     "The local native gate editor window requires macOS WebKit or Windows WebView2.",
     "/surface",
   );
-}
-
-function launchMacWebKitWindow(options: NativeGateEditorWindowOptions): NativeGateEditorWindow {
-  const child: ChildProcess = spawn("osascript", [
-    "-l",
-    "JavaScript",
-    "-e",
-    macGateEditorWindowScript(),
-    options.url,
-    options.title ?? "Flowcyto Gate Editor",
-    String(options.width ?? 620),
-    String(options.height ?? 620),
-  ], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-
-  return wrapNativeWindowChild(child, "macos_wkwebview", "WebKit");
-}
-
-function launchWindowsWebView2Window(options: NativeGateEditorWindowOptions): NativeGateEditorWindow {
-  if (!isLocalGateEditorPreviewUrl(options.url)) {
-    throw new FlowcytoError(
-      "native_window_url_not_local",
-      "Windows native preview only accepts the local /mcp-app-preview URL.",
-      "/surface/url",
-    );
-  }
-
-  const helperPath = windowsWebView2HelperPath();
-  if (!existsSync(helperPath)) {
-    throw new FlowcytoError(
-      "windows_webview2_helper_missing",
-      `Windows WebView2 helper was not found at ${helperPath}. Run the Windows native build before packaging.`,
-      "/surface/runtime",
-    );
-  }
-
-  const child: ChildProcess = spawn(helperPath, [
-    options.url,
-    options.title ?? "Flowcyto Gate Editor",
-    String(options.width ?? 620),
-    String(options.height ?? 640),
-  ], {
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-  });
-
-  return wrapNativeWindowChild(child, "windows_webview2", "WebView2");
 }
 
 function extractNativeWindowError(stdout: string): FlowcytoError | null {

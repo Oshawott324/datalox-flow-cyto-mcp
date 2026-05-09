@@ -8,8 +8,14 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
+import {
+  isLocalGateEditorPreviewUrl,
+  launchNativeGateEditorWindow,
+  nativeGateEditorReadinessError,
+  type NativeGateEditorWindow,
+} from "../app/gate-editor/native-window.js";
 import { GATE_EDITOR_HTML } from "../app/gate-editor/ui.js";
-import { getGateEditorState, startGateEditorServer, type GateEditorServer } from "../app/gate-editor/server.js";
+import { getGateEditorState, getPlotContext, startGateEditorServer, type GateEditorServer } from "../app/gate-editor/server.js";
 import {
   FlowcytoError,
   deleteGate,
@@ -31,6 +37,20 @@ const MCP_APP_MIME_TYPE = "text/html;profile=mcp-app";
 const JsonObject = z.record(z.string(), z.unknown());
 const JsonResultSchema = {
   result: z.unknown(),
+};
+const GateEditorSurfaceSchema = z.enum(["auto", "mcp_app", "native_window"]);
+const GateEditorMcpAppMeta = {
+  ui: {
+    resourceUri: GATE_EDITOR_RESOURCE_URI,
+    visibility: ["model", "app"],
+  },
+  "openai/outputTemplate": GATE_EDITOR_RESOURCE_URI,
+  "openai/widgetAccessible": true,
+};
+
+type GateEditorSession = {
+  server: GateEditorServer;
+  nativeWindow?: NativeGateEditorWindow;
 };
 
 function resultContent(result: unknown, meta?: Record<string, unknown>) {
@@ -63,7 +83,20 @@ function gateEditorSurface(params: {
   x?: string;
   y?: string;
   maxEvents?: number;
+  runtime?: string;
+  pid?: number;
   kind: "webview" | "mcp_app";
+} | {
+  url: string;
+  workspacePath: string;
+  sampleId?: string;
+  parent?: string;
+  x?: string;
+  y?: string;
+  maxEvents?: number;
+  runtime: string;
+  pid?: number;
+  kind: "native_window";
 }) {
   const titleParts = [params.sampleId, params.parent ?? "Ungated"].filter(Boolean);
   return {
@@ -73,6 +106,7 @@ function gateEditorSurface(params: {
     preferredHeight: 620,
     ...(params.url ? { url: params.url } : {}),
     ...(params.kind === "mcp_app" ? { resourceUri: GATE_EDITOR_RESOURCE_URI } : {}),
+    ...(params.kind === "native_window" ? { runtime: params.runtime, pid: params.pid } : {}),
     workspacePath: params.workspacePath,
     sampleId: params.sampleId,
     parent: params.parent ?? "root",
@@ -82,12 +116,110 @@ function gateEditorSurface(params: {
   };
 }
 
+function mcpAppGateEditorResult(params: {
+  workspacePath: string;
+  sampleId?: string;
+  parent?: string;
+  x?: string;
+  y?: string;
+  maxEvents?: number;
+}) {
+  return {
+    ok: true,
+    workspacePath: params.workspacePath,
+    sampleId: params.sampleId,
+    parent: params.parent ?? "root",
+    x: params.x,
+    y: params.y,
+    maxEvents: params.maxEvents,
+    surface: gateEditorSurface({
+      kind: "mcp_app",
+      workspacePath: params.workspacePath,
+      sampleId: params.sampleId,
+      parent: params.parent,
+      x: params.x,
+      y: params.y,
+      maxEvents: params.maxEvents,
+    }),
+  };
+}
+
+async function nativeWindowGateEditorResult(
+  sessions: Map<string, GateEditorSession>,
+  params: {
+    workspacePath: string;
+    host?: string;
+    port?: number;
+    sampleId?: string;
+    parent?: string;
+    x?: string;
+    y?: string;
+    maxEvents?: number;
+    width?: number;
+    height?: number;
+  },
+) {
+  const readinessError = nativeGateEditorReadinessError();
+  if (readinessError) throw readinessError;
+
+  const gateEditor = await startGateEditorServer({
+    workspacePath: params.workspacePath,
+    host: params.host,
+    port: params.port,
+    sampleId: params.sampleId,
+    x: params.x,
+    y: params.y,
+    maxEvents: params.maxEvents,
+  });
+  try {
+    if (!isLocalGateEditorPreviewUrl(gateEditor.mcpAppPreviewUrl)) {
+      throw new FlowcytoError(
+        "native_window_url_not_local",
+        "Native gate editor windows only accept the local /mcp-app-preview URL.",
+        "/surface/url",
+      );
+    }
+    const nativeWindow = launchNativeGateEditorWindow({
+      url: gateEditor.mcpAppPreviewUrl,
+      title: `${params.sampleId ?? "Ungated"} - Flowcyto`,
+      width: params.width,
+      height: params.height,
+    });
+    await nativeWindow.ready;
+    sessions.set(gateEditor.sessionId, { server: gateEditor, nativeWindow });
+    return {
+      ok: true,
+      sessionId: gateEditor.sessionId,
+      workspacePath: gateEditor.workspacePath,
+      host: gateEditor.host,
+      port: gateEditor.port,
+      url: gateEditor.url,
+      mcpAppPreviewUrl: gateEditor.mcpAppPreviewUrl,
+      surface: gateEditorSurface({
+        kind: "native_window",
+        url: gateEditor.mcpAppPreviewUrl,
+        runtime: nativeWindow.runtime,
+        pid: nativeWindow.pid,
+        workspacePath: gateEditor.workspacePath,
+        sampleId: params.sampleId,
+        parent: params.parent,
+        x: params.x,
+        y: params.y,
+        maxEvents: params.maxEvents,
+      }),
+    };
+  } catch (error) {
+    await gateEditor.close().catch(() => undefined);
+    throw error;
+  }
+}
+
 function createFlowcytoMcpServer(): McpServer {
   const server = new McpServer({
     name: "flowcyto-mcp",
     version: "0.1.0",
   });
-  const gateEditorSessions = new Map<string, GateEditorServer>();
+  const gateEditorSessions = new Map<string, GateEditorSession>();
 
 server.registerResource(
   "flowcyto_gate_editor",
@@ -230,9 +362,41 @@ server.registerTool(
 );
 
 server.registerTool(
+  "get_plot_context",
+  {
+    description: "Return agent-ready plot context for the active gate editor view.",
+    inputSchema: {
+      workspace_path: z.string(),
+      sample_id: z.string().optional(),
+      parent_gate_id: z.string().optional(),
+      x: z.string().optional(),
+      y: z.string().optional(),
+      max_events: z.number().int().positive().optional(),
+      format: z.enum(["auto", "points", "bins"]).optional(),
+      bin_width: z.number().int().positive().optional(),
+      bin_height: z.number().int().positive().optional(),
+    },
+    outputSchema: JsonResultSchema,
+  },
+  async ({ workspace_path, sample_id, parent_gate_id, x, y, max_events, format, bin_width, bin_height }) => toolContent(() =>
+    getPlotContext({
+      workspacePath: workspace_path,
+      sampleId: sample_id,
+      parent: parent_gate_id,
+      x,
+      y,
+      maxEvents: max_events,
+      format,
+      binWidth: bin_width,
+      binHeight: bin_height,
+    }),
+  ),
+);
+
+server.registerTool(
   "get_gate_editor_state",
   {
-    description: "Return the complete render state for the embedded gate editor.",
+    description: "Deprecated alias for get_plot_context.",
     inputSchema: {
       workspace_path: z.string(),
       sample_id: z.string().optional(),
@@ -322,7 +486,7 @@ server.registerTool(
 server.registerTool(
   "render_gate_editor",
   {
-    description: "Render the compact gate editor as an MCP Apps component.",
+    description: "Deprecated alias for open_gate_editor with surface=mcp_app.",
     inputSchema: {
       workspace_path: z.string(),
       sample_id: z.string().optional(),
@@ -333,25 +497,9 @@ server.registerTool(
     },
     outputSchema: JsonResultSchema,
     annotations: { readOnlyHint: true },
-    _meta: {
-      ui: {
-        resourceUri: GATE_EDITOR_RESOURCE_URI,
-        visibility: ["model", "app"],
-      },
-      "openai/outputTemplate": GATE_EDITOR_RESOURCE_URI,
-      "openai/widgetAccessible": true,
-    },
   },
-  async ({ workspace_path, sample_id, parent_gate_id, x, y, max_events }) => toolContent(async () => ({
-    ok: true,
-    workspacePath: workspace_path,
-    sampleId: sample_id,
-    parent: parent_gate_id ?? "root",
-    x,
-    y,
-    maxEvents: max_events,
-    surface: gateEditorSurface({
-      kind: "mcp_app",
+  async ({ workspace_path, sample_id, parent_gate_id, x, y, max_events }) => toolContent(async () =>
+    mcpAppGateEditorResult({
       workspacePath: workspace_path,
       sampleId: sample_id,
       parent: parent_gate_id,
@@ -359,60 +507,56 @@ server.registerTool(
       y,
       maxEvents: max_events,
     }),
-  }), {
-    ui: {
-      resourceUri: GATE_EDITOR_RESOURCE_URI,
-    },
-    "openai/outputTemplate": GATE_EDITOR_RESOURCE_URI,
-  }),
+  GateEditorMcpAppMeta),
 );
 
 server.registerTool(
   "open_gate_editor",
   {
-    description: "Start a local live gate editor surface for a workspace.",
+    description: "Open the compact gate editor surface for a workspace.",
     inputSchema: {
       workspace_path: z.string(),
+      surface: GateEditorSurfaceSchema.optional(),
       host: z.string().optional(),
       port: z.number().int().min(0).max(65535).optional(),
       sample_id: z.string().optional(),
+      parent_gate_id: z.string().optional(),
       x: z.string().optional(),
       y: z.string().optional(),
       max_events: z.number().int().positive().optional(),
+      width: z.number().int().positive().optional(),
+      height: z.number().int().positive().optional(),
     },
     outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+    _meta: GateEditorMcpAppMeta,
   },
-  async ({ workspace_path, host, port, sample_id, x, y, max_events }) => toolContent(async () => {
-    const gateEditor = await startGateEditorServer({
-      workspacePath: workspace_path,
-      host,
-      port,
-      sampleId: sample_id,
-      x,
-      y,
-      maxEvents: max_events,
-    });
-    gateEditorSessions.set(gateEditor.sessionId, gateEditor);
-    return {
-      ok: true,
-      sessionId: gateEditor.sessionId,
-      workspacePath: gateEditor.workspacePath,
-      host: gateEditor.host,
-      port: gateEditor.port,
-      url: gateEditor.url,
-      mcpAppPreviewUrl: gateEditor.mcpAppPreviewUrl,
-      surface: gateEditorSurface({
-        kind: "webview",
-        url: gateEditor.url,
-        workspacePath: gateEditor.workspacePath,
+  async ({ workspace_path, surface, host, port, sample_id, parent_gate_id, x, y, max_events, width, height }) =>
+    toolContent(async () => {
+      const selectedSurface = surface ?? "auto";
+      if (selectedSurface === "native_window") {
+        return nativeWindowGateEditorResult(gateEditorSessions, {
+          workspacePath: workspace_path,
+          host,
+          port,
+          sampleId: sample_id,
+          parent: parent_gate_id,
+          x,
+          y,
+          maxEvents: max_events,
+          width,
+          height,
+        });
+      }
+      return mcpAppGateEditorResult({
+        workspacePath: workspace_path,
         sampleId: sample_id,
-        parent: "root",
+        parent: parent_gate_id,
         x,
         y,
         maxEvents: max_events,
-      }),
-    };
-  }),
+      });
+    }, GateEditorMcpAppMeta),
 );
 
 server.registerTool(
@@ -425,11 +569,12 @@ server.registerTool(
     outputSchema: JsonResultSchema,
   },
   async ({ session_id }) => toolContent(async () => {
-    const gateEditor = gateEditorSessions.get(session_id);
-    if (!gateEditor) {
+    const session = gateEditorSessions.get(session_id);
+    if (!session) {
       throw new FlowcytoError("unknown_gate_editor_session", `Gate editor session ${session_id} is not present.`, "/session_id");
     }
-    await gateEditor.close();
+    session.nativeWindow?.close();
+    await session.server.close();
     gateEditorSessions.delete(session_id);
     return { ok: true, sessionId: session_id };
   }),

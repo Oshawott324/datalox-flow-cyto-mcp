@@ -23,7 +23,7 @@ export async function upsertGate(params: {
   workspacePath: string;
   gate: WorkspaceGate;
   expectedRevision: number;
-}): Promise<ValidationResult & { revision?: number; gate?: WorkspaceGate }> {
+}): Promise<ValidationResult & { revision?: number; gate?: WorkspaceGate; gateCount?: number; workspacePath?: string }> {
   const expectedRevision = requireExpectedRevision(params.expectedRevision);
   const workspace = await readWorkspace(params.workspacePath);
   const next: FlowcytoWorkspace = {
@@ -37,14 +37,14 @@ export async function upsertGate(params: {
     next.gates[existingIndex] = params.gate;
   }
   const result = await writeWorkspace({ workspacePath: params.workspacePath, workspace: next, expectedRevision });
-  return result.ok ? { ...result, gate: params.gate } : result;
+  return result.ok ? { ...result, gate: params.gate, gateCount: next.gates.length, workspacePath: params.workspacePath } : result;
 }
 
 export async function deleteGate(params: {
   workspacePath: string;
   gateId: string;
   expectedRevision: number;
-}): Promise<ValidationResult & { revision?: number; gateId?: string }> {
+}): Promise<ValidationResult & { revision?: number; gateCount?: number; gateId?: string; workspacePath?: string }> {
   const expectedRevision = requireExpectedRevision(params.expectedRevision);
   const workspace = await readWorkspace(params.workspacePath);
   const existingIndex = workspace.gates.findIndex((gate) => gate.id === params.gateId);
@@ -56,5 +56,5 @@ export async function deleteGate(params: {
     gates: workspace.gates.filter((gate) => gate.id !== params.gateId),
   };
   const result = await writeWorkspace({ workspacePath: params.workspacePath, workspace: next, expectedRevision });
-  return result.ok ? { ...result, gateId: params.gateId } : result;
+  return result.ok ? { ...result, gateCount: next.gates.length, gateId: params.gateId, workspacePath: params.workspacePath } : result;
 }

@@ -306,7 +306,7 @@ program
         url: server.url,
         mcpAppPreviewUrl: server.mcpAppPreviewUrl,
         surface: {
-          kind: "native_webview",
+          kind: "native_window",
           runtime: nativeWindow.runtime,
           pid: nativeWindow.pid,
           url: server.mcpAppPreviewUrl,

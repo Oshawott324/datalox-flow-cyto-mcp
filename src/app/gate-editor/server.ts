@@ -50,6 +50,15 @@ export type GateEditorStateOptions = {
   binHeight?: number;
 };
 
+export type PlotContextOptions = GateEditorStateOptions;
+
+type PlotBounds = {
+  xMin: number;
+  xMax: number;
+  yMin: number;
+  yMax: number;
+};
+
 function jsonResponse(response: ServerResponse, status: number, value: unknown): void {
   response.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
@@ -110,7 +119,7 @@ function mcpAppPreviewHtml(options: GateEditorServerOptions): string {
           const body = await response.json();
           return result(body, !response.ok || body.ok === false);
         }
-        if (name === "get_gate_editor_state") {
+        if (name === "get_plot_context" || name === "get_gate_editor_state") {
           const params = new URLSearchParams();
           const sampleId = value("sample_id", ${scriptJson(options.sampleId)});
           const parent = value("parent_gate_id", "root");
@@ -234,7 +243,57 @@ function chooseSample(workspace: FlowcytoWorkspace, requested?: string): string 
   return sampleId;
 }
 
-export async function getGateEditorState(options: GateEditorStateOptions): Promise<unknown> {
+function includePoint(bounds: PlotBounds, point: [number, number]): void {
+  if (!Number.isFinite(point[0]) || !Number.isFinite(point[1])) return;
+  bounds.xMin = Math.min(bounds.xMin, point[0]);
+  bounds.xMax = Math.max(bounds.xMax, point[0]);
+  bounds.yMin = Math.min(bounds.yMin, point[1]);
+  bounds.yMax = Math.max(bounds.yMax, point[1]);
+}
+
+function plotBounds(preview: Awaited<ReturnType<typeof getEventPreview>>, gates: WorkspaceGate[]): PlotBounds {
+  const bounds: PlotBounds = {
+    xMin: Number.POSITIVE_INFINITY,
+    xMax: Number.NEGATIVE_INFINITY,
+    yMin: Number.POSITIVE_INFINITY,
+    yMax: Number.NEGATIVE_INFINITY,
+  };
+  preview.points?.forEach((point) => includePoint(bounds, point));
+  if (preview.bins) {
+    includePoint(bounds, [preview.bins.xMin, preview.bins.yMin]);
+    includePoint(bounds, [preview.bins.xMin, preview.bins.yMax]);
+    includePoint(bounds, [preview.bins.xMax, preview.bins.yMin]);
+    includePoint(bounds, [preview.bins.xMax, preview.bins.yMax]);
+  }
+  gates.forEach((gate) => {
+    if (gate.type === "polygon") gate.vertices.forEach((point) => includePoint(bounds, point));
+    if (gate.type === "rect") {
+      includePoint(bounds, [gate.xMin, gate.yMin]);
+      includePoint(bounds, [gate.xMin, gate.yMax]);
+      includePoint(bounds, [gate.xMax, gate.yMin]);
+      includePoint(bounds, [gate.xMax, gate.yMax]);
+    }
+  });
+  if (!Number.isFinite(bounds.xMin) || !Number.isFinite(bounds.xMax) || bounds.xMin === bounds.xMax) {
+    bounds.xMin = 0;
+    bounds.xMax = 1;
+  }
+  if (!Number.isFinite(bounds.yMin) || !Number.isFinite(bounds.yMax) || bounds.yMin === bounds.yMax) {
+    bounds.yMin = 0;
+    bounds.yMax = 1;
+  }
+  return bounds;
+}
+
+function activeGates(workspace: FlowcytoWorkspace, input: { sampleId: string; parent: string; x: string; y: string }): WorkspaceGate[] {
+  return workspace.gates.filter((gate) => {
+    if (gate.sample !== input.sampleId || gate.parent !== input.parent) return false;
+    if (gate.type === "polygon" || gate.type === "rect") return gate.x === input.x && gate.y === input.y;
+    return gate.x === input.x;
+  });
+}
+
+export async function getPlotContext(options: PlotContextOptions): Promise<unknown> {
   const workspace = await readWorkspace(options.workspacePath);
   const sampleId = chooseSample(workspace, options.sampleId);
   const metadata = await getSampleMetadata(options.workspacePath, sampleId);
@@ -255,22 +314,45 @@ export async function getGateEditorState(options: GateEditorStateOptions): Promi
     binHeight: options.binHeight,
   });
   const validation = await validateWorkspace(options.workspacePath);
+  const gates = activeGates(workspace, { sampleId, parent, x, y });
   return {
     ok: true,
     workspacePath: options.workspacePath,
+    revision: workspace.revision,
     workspace,
     validation,
     sampleId,
+    viewId: view?.id,
     parent,
     x,
     y,
+    scale: view?.scale ?? preview.scale,
+    bounds: plotBounds(preview, gates),
     metadata,
     preview,
+    previewSummary: {
+      format: preview.format,
+      totalEvents: preview.totalEvents,
+      sampledEvents: preview.sampledEvents,
+      pointCount: preview.points?.length ?? 0,
+      binWidth: preview.bins?.width,
+      binHeight: preview.bins?.height,
+    },
+    gates,
+    gateSchema: {
+      preferredTypes: ["polygon", "rect", "range"],
+      requiredRevisionField: "expected_revision",
+    },
+    expected_revision: workspace.revision,
   };
 }
 
+export async function getGateEditorState(options: GateEditorStateOptions): Promise<unknown> {
+  return getPlotContext(options);
+}
+
 async function statePayload(options: GateEditorServerOptions, url: URL): Promise<unknown> {
-  return getGateEditorState({
+  return getPlotContext({
     workspacePath: options.workspacePath,
     sampleId: stringParam(url, "sample_id") ?? options.sampleId,
     parent: stringParam(url, "parent"),
