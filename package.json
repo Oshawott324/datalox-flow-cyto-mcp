@@ -15,7 +15,7 @@
     "native/windows/**/*",
     "docs/**/*.md",
     "schemas/**/*",
-    "scripts/fetch-fcs-fixtures.mjs",
+    "scripts/*.mjs",
     "testdata/fixtures/manifest.json"
   ],
   "scripts": {

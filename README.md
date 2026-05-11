@@ -131,8 +131,17 @@ node scripts/create-live-gating-demo.mjs --target ../flowcyto-live-gating --forc
 ```
 
 That repo starts with `revision: 0`, no gates, one FCS file, `.mcp.json`,
-`README.md`, and `AGENTS.md`. It intentionally has no gate writer scripts; the
-agent path is `open_gate_editor` -> `get_plot_context` -> `upsert_gate`.
+`README.md`, and a thin optional `AGENTS.md` hint. It intentionally has no gate
+writer scripts; the product path is carried by MCP descriptors/results:
+`open_gate_editor` -> `get_plot_context` -> `upsert_gate` ->
+`get_workspace_revision`.
+
+Validate the final demo artifact after a host run:
+
+```bash
+node scripts/validate-live-demo-result.mjs \
+  --workspace ../flowcyto-live-gating/flowcyto.workspace.json
+```
 
 ## MCP Registration
 
@@ -170,6 +179,19 @@ delete_gate
 render_gate_editor (deprecated alias)
 get_gate_editor_state (deprecated alias)
 ```
+
+AGENTS.md is not part of the product contract. Hosts may read it, ignore it, or
+merge it with user-specific instructions. The portable agent contract is:
+
+```text
+open_gate_editor returns nextAction.tool = get_plot_context
+get_plot_context returns recommendedGate and nextAction.tool = upsert_gate
+upsert_gate returns nextAction.tool = get_workspace_revision
+```
+
+Agents should write gates through `upsert_gate` with the `expected_revision`
+returned by `get_plot_context`; they should not patch `flowcyto.workspace.json`
+directly or inspect local preview URLs as a data source.
 
 The embedded app resource is:
 

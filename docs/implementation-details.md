@@ -102,23 +102,27 @@ Milestone B is implemented.
 Milestone C is implemented.
 Milestone D is implemented.
 Milestone E is implemented.
+Milestone F has a passed Codex macOS native_window row.
+Milestone G is implemented.
 open_gate_editor owns the MCP Apps UI resource metadata.
 open_gate_editor(surface="auto" | "mcp_app") returns the MCP app resource contract.
 open_gate_editor(surface="native_window") launches the compact native window path.
 render_gate_editor remains as a deprecated compatibility alias.
-get_plot_context exists and returns revision, axes, bounds, preview, gates, and gateSchema.
+get_plot_context exists and returns revision, axes, bounds, preview, gates, gateSchema, recommendedGate, agentContract, and nextAction.
 get_gate_editor_state remains as a deprecated compatibility alias.
-agent-side upsert_gate/delete_gate return workspacePath, revision, and gateCount.
+agent-side upsert_gate returns workspacePath, revision, gateCount, agentContract, and nextAction.
+AGENTS.md is optional convenience guidance; the product loop is carried by MCP tool descriptors and tool results.
 the already-open embedded app polls get_workspace_revision and refreshes through get_plot_context.
 native_window fallback uses macOS WKWebView or Windows WebView2 launcher contracts, never a browser tab.
 flowcyto-live-gating is generated as a clean demo repo with no gate writer scripts.
+the demo harness can validate the Codex macOS host result artifact.
 ```
 
 Remaining gaps:
 
 ```text
-Milestone F is the next implementation gap: run the host matrix in named real
-agent hosts, including Windows WebView2 live validation.
+Milestone F still has host/platform rows that require external environments:
+Claude Code macOS, Windows WebView2, and OpenAI Apps-capable embedded host.
 ```
 
 The remaining implementation must close those gaps in this order.
@@ -351,20 +355,42 @@ no host app code changes are made during the demo
 
 ### Milestone F: Host Matrix
 
-The first real host matrix should be small:
+Status: Codex macOS row passed on 2026-05-10. Claude Code and Windows WebView2
+rows still require those hosts/platforms.
+
+Milestone F is a host validation milestone. It should not add another product
+path or a JSON writer workaround. It should prove that real agents can use the
+same MCP tools from the clean `flowcyto-live-gating` repo.
+
+Priority:
+
+```text
+P0:
+  Codex on macOS -> native_window WKWebView
+  Claude Code on macOS -> native_window WKWebView
+  Windows agent host -> native_window WebView2
+
+P1:
+  ChatGPT/OpenAI Apps-capable host -> embedded MCP Apps resource
+```
+
+The first real host matrix should stay small:
 
 ```text
 ChatGPT/OpenAI Apps-capable host:
   expected surface: embedded MCP Apps resource
   pass: host renders ui://flowcyto/gate-editor-v1.html after open_gate_editor
+  priority: P1
 
 Codex:
   expected surface: native_window until embedded MCP Apps UI exists
   pass: agent calls open_gate_editor(surface="native_window") and compact app opens
+  priority: P0
 
 Claude Code:
   expected surface: native_window until embedded MCP Apps UI exists
   pass: agent calls open_gate_editor(surface="native_window") and compact app opens
+  priority: P0
 ```
 
 Platform pass matrix:
@@ -377,6 +403,288 @@ macOS:
 Windows:
   native_window WebView2 pass required
   mcp_app host pass when available
+```
+
+Host-row validation setup:
+
+```text
+scripts/create-live-gating-demo.mjs
+  resets /Users/yifanjin/flowcyto-live-gating to revision 0 with no gates
+  writes a thin optional AGENTS.md hint that points at Flowcyto MCP and nextAction
+  removes old generated instruction/skill/event folders from the disposable demo repo
+
+scripts/validate-live-demo-result.mjs
+  validates the final workspace artifact after a real host run
+  requires revision 1
+  requires exactly one gate
+  requires gate id agent_main_population_gate
+  requires polygon type
+  requires sample_001, root, FSC-A, SSC-A
+  rejects scripts/ and prompts/ in the demo repo
+```
+
+Run a host row:
+
+```bash
+cd /Users/yifanjin/datalox-flow-cyto-mcp
+npm run build
+node scripts/create-live-gating-demo.mjs --target /Users/yifanjin/flowcyto-live-gating --force
+
+cd /Users/yifanjin/flowcyto-live-gating
+# In the selected host, ask exactly:
+# Open this FCS/workspace and gate the main population.
+
+node /Users/yifanjin/datalox-flow-cyto-mcp/scripts/validate-live-demo-result.mjs \
+  --workspace /Users/yifanjin/flowcyto-live-gating/flowcyto.workspace.json
+```
+
+Codex macOS command-line host result on 2026-05-10:
+
+```text
+result: passed
+command: codex exec --skip-git-repo-check -C /Users/yifanjin/flowcyto-live-gating
+         -m gpt-5.4-mini -s danger-full-access
+         -c mcp_servers.flowcyto.command="node"
+         -c mcp_servers.flowcyto.args=["/Users/yifanjin/datalox-flow-cyto-mcp/dist/src/mcp/server.js"]
+         --output-last-message /tmp/flowcyto-codex-host-last-message.txt
+         "Open this FCS/workspace and gate the main population."
+tool trace: open_gate_editor -> get_plot_context -> upsert_gate -> get_workspace_revision
+surface: native_window macOS WKWebView
+validator: scripts/validate-live-demo-result.mjs returned ok true
+artifact: revision 1, gateCount 1, gate id agent_main_population_gate, type polygon
+```
+
+Codex macOS command-line host result after Milestone G on 2026-05-11:
+
+```text
+result: passed
+command: codex exec --skip-git-repo-check -C /Users/yifanjin/flowcyto-live-gating
+         -m gpt-5.4-mini -s danger-full-access
+         -c mcp_servers.flowcyto.command="node"
+         -c mcp_servers.flowcyto.args=["/Users/yifanjin/datalox-flow-cyto-mcp/dist/src/mcp/server.js"]
+         --output-last-message /tmp/flowcyto-codex-host-last-message.txt
+         "Open this FCS/workspace and gate the main population."
+tool trace: open_workspace -> open_gate_editor -> get_plot_context -> get_event_preview -> upsert_gate -> get_workspace_revision
+surface: native_window macOS WKWebView
+AGENTS.md: thin optional hint only; no required gate sequence or gate geometry instructions
+validator: scripts/validate-live-demo-result.mjs returned ok true
+artifact: revision 1, gateCount 1, gate id agent_main_population_gate, type polygon
+note: the Datalox wrapper auto-added Datalox pack files to the disposable demo repo during this local run; that is host wrapper behavior, not a Flowcyto requirement.
+```
+
+Earlier Codex macOS attempt before Milestone G:
+
+```text
+result: blocked before correction
+reason: Codex opened the native Flowcyto window and called get_plot_context, then
+        drifted into Computer Use and local HTML/Python inspection before
+        upsert_gate.
+correction: the MCP descriptors/results now return agentContract, recommendedGate,
+            and nextAction so the product path does not depend on detailed
+            AGENTS.md gate instructions.
+```
+
+Unavailable rows in this environment:
+
+```text
+Claude Code macOS:
+  blocked here because `claude` is not installed.
+  run the same clean demo repo and validator when the host is available.
+
+Windows WebView2:
+  blocked here because this machine is macOS.
+  run the same clean demo repo and validator on Windows after building
+  npm run build:native:windows:x64 or npm run build:native:windows:arm64.
+
+ChatGPT/OpenAI Apps-capable host:
+  P1 only for this agent-first milestone.
+  validate separately when an Apps-capable MCP host is available.
+```
+
+Do not mark a host row passed unless all of these are true:
+
+```text
+tool trace includes open_gate_editor
+tool trace includes get_plot_context
+tool trace includes upsert_gate
+open_gate_editor is the command that opened the compact surface
+the final artifact passes scripts/validate-live-demo-result.mjs
+the already-open compact surface visibly refreshes after upsert_gate
+no host app source code changed
+```
+
+### Milestone G: Remove Product Dependence On AGENTS.md
+
+Status: passed on 2026-05-11.
+
+Problem:
+
+```text
+AGENTS.md is user-owned host guidance.
+Users may already have a custom AGENTS.md.
+Some hosts may ignore AGENTS.md.
+Some custom AGENTS.md files may conflict with Flowcyto's desired tool loop.
+Therefore Flowcyto cannot depend on AGENTS.md for product behavior.
+```
+
+Target boundary:
+
+```text
+AGENTS.md:
+  optional convenience hint only
+  may point to Flowcyto MCP registration
+  may say "follow Flowcyto tool nextAction fields"
+  must not be required for the product loop
+
+MCP tool descriptors:
+  primary agent-facing contract for which tools to call
+
+MCP tool results:
+  primary machine-readable contract for next steps
+
+workspace schema and gate validators:
+  artifact correctness contract
+```
+
+Exact code change plan:
+
+```text
+src/mcp/server.ts
+  added reusable agent workflow metadata helpers
+  strengthen open_gate_editor description:
+    "Open the compact gate editor, then call get_plot_context using
+     result.nextAction.arguments. Do not inspect local preview URLs or write the
+     workspace JSON directly."
+  strengthen get_plot_context description:
+    "Return revision, axes, bounds, preview, and recommended gate-write contract.
+     Call this before upsert_gate."
+  strengthen upsert_gate description:
+    "Write gates using expected_revision from get_plot_context. For FSC/SSC
+     main-population gating, prefer polygon unless the user explicitly requests
+     another shape."
+  open_gate_editor result includes:
+    agentContract.version
+    agentContract.intent = "open_then_context_then_gate"
+    agentContract.forbiddenActions = [
+      "do_not_write_workspace_json_directly",
+      "do_not_inspect_local_preview_server",
+      "do_not_use_browser_or_desktop_automation_for_gate_geometry",
+      "do_not_read_fcs_or_workspace_with_local_scripts_for_gate_geometry",
+      "do_not_use_local_python_or_plotting_for_gate_geometry"
+    ]
+    nextAction.tool = "get_plot_context"
+    nextAction.arguments = normalized workspace/sample/parent/x/y/max_events/format/bin dimensions
+  get_plot_context result includes:
+    agentContract.version
+    expected_revision
+    recommendedGate.id = "agent_main_population_gate" when no gate id is provided
+    recommendedGate.type = "polygon"
+    recommendedGate.writeTool = "upsert_gate"
+    recommendedGate.geometrySource = "preview_or_bins_from_get_plot_context"
+    recommendedGate.geometryInstructions explain to use the MCP-returned preview/bins rather than local FCS reads or local plots
+    recommendedGate.requiredFields = [
+      "id",
+      "name",
+      "sample",
+      "parent",
+      "type",
+      "x",
+      "y",
+      "vertices"
+    ]
+    nextAction.tool = "upsert_gate"
+    nextAction.arguments.workspace_path
+    nextAction.arguments.expected_revision
+    nextAction.arguments.gateTemplate
+  upsert_gate result includes:
+    nextAction.tool = "get_workspace_revision"
+    nextAction.arguments.workspace_path
+    agentContract.refresh = "already_open_app_refreshes_from_revision_poll"
+
+src/app/gate-editor/server.ts
+  implement getPlotContext agentContract/recommendedGate/nextAction fields
+  keep preview/bounds/gates unchanged
+  do not add gate geometry heuristics; the agent still decides geometry from
+  preview data
+
+src/core/gates.ts
+  validate revision strictly as today
+  validate polygon gates have at least three vertices
+  return agent-readable errors with code/path/message when required gate fields
+  are missing
+  do not reject rect globally; only make polygon the recommended default in
+  agentContract so explicit user requests still work
+
+scripts/create-live-gating-demo.mjs
+  reduce generated AGENTS.md to thin guidance:
+    "Use the registered Flowcyto MCP server. Follow nextAction fields returned
+     by Flowcyto tools."
+  remove detailed behavior rules from AGENTS.md once MCP contract tests pass
+  remove stale generated host instruction/skill/event folders when refreshing the disposable demo repo
+
+tests/core.test.ts
+  add MCP stdio test:
+    call open_gate_editor(surface="mcp_app")
+    assert result.nextAction.tool === "get_plot_context"
+    assert nextAction.arguments includes workspace_path, sample_id, x, y
+  add MCP stdio test:
+    call get_plot_context
+    assert recommendedGate.type === "polygon"
+    assert recommendedGate.writeTool === "upsert_gate"
+    assert nextAction.tool === "upsert_gate"
+    assert nextAction.arguments.expected_revision === result.expected_revision
+  add MCP stdio test:
+    call upsert_gate from the get_plot_context gateTemplate after filling
+    vertices
+    assert revision increments to 1
+    assert result.nextAction.tool === "get_workspace_revision"
+  add demo harness test:
+    generated AGENTS.md no longer contains detailed gate behavior rules
+    generated AGENTS.md does contain "follow nextAction"
+
+README.md
+  document that AGENTS.md is optional
+  document the portable MCP-native loop:
+    open_gate_editor -> get_plot_context -> upsert_gate -> get_workspace_revision
+
+docs/implementation-details.md
+  marked Milestone G passed after automated MCP contract tests and the Codex
+  macOS host row proved the loop works without detailed AGENTS.md instructions
+```
+
+Pass criteria:
+
+```text
+npm run verify:alpha passes
+
+Tool descriptor pass:
+  tools/list exposes open_gate_editor, get_plot_context, upsert_gate
+  each tool description contains the next required tool in the loop
+  open_gate_editor descriptor still exposes ui://flowcyto/gate-editor-v1.html
+
+Tool result pass:
+  open_gate_editor returns nextAction.tool = get_plot_context
+  get_plot_context returns recommendedGate.type = polygon
+  get_plot_context returns nextAction.tool = upsert_gate
+  upsert_gate returns nextAction.tool = get_workspace_revision
+
+AGENTS independence pass:
+  generated demo AGENTS.md is thin and optional
+  tests do not depend on detailed AGENTS.md gate instructions
+  a test proves the MCP results alone contain the full nextAction chain
+
+Host pass:
+  reset /Users/yifanjin/flowcyto-live-gating
+  run Codex with Flowcyto MCP registered
+  prompt is exactly: Open this FCS/workspace and gate the main population.
+  Codex completes without detailed AGENTS.md gate instructions
+  scripts/validate-live-demo-result.mjs returns ok true
+
+Non-goals:
+  no new JSON writer script
+  no browser-debug route as product path
+  no modification to Codex, Claude Code, ChatGPT, or Datalox UI source
+  no hard-coded gate geometry algorithm in Flowcyto MCP
 ```
 
 Global pass criteria:

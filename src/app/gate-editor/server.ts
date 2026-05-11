@@ -293,6 +293,57 @@ function activeGates(workspace: FlowcytoWorkspace, input: { sampleId: string; pa
   });
 }
 
+function flowcytoAgentContract(extra?: Record<string, unknown>) {
+  return {
+    version: 1,
+    intent: "open_then_context_then_gate",
+    forbiddenActions: [
+      "do_not_write_workspace_json_directly",
+      "do_not_inspect_local_preview_server",
+      "do_not_use_browser_or_desktop_automation_for_gate_geometry",
+      "do_not_read_fcs_or_workspace_with_local_scripts_for_gate_geometry",
+      "do_not_use_local_python_or_plotting_for_gate_geometry",
+    ],
+    ...extra,
+  };
+}
+
+function recommendedGateContract(input: { sampleId: string; parent: string; x: string; y: string }) {
+  return {
+    id: "agent_main_population_gate",
+    name: "Agent Main Population Gate",
+    type: "polygon",
+    writeTool: "upsert_gate",
+    reason: "FSC/SSC main-population gates are usually non-rectangular; polygon is the default unless the user explicitly requests another shape.",
+    geometrySource: "preview_or_bins_from_get_plot_context",
+    geometryInstructions: [
+      "Use the preview.points or preview.bins returned by get_plot_context to choose vertices.",
+      "Do not read the FCS file directly or create local plots for gate geometry.",
+      "Fill gateTemplate.vertices with at least three [x, y] pairs, then call nextAction.tool.",
+    ],
+    requiredFields: [
+      "id",
+      "name",
+      "sample",
+      "parent",
+      "type",
+      "x",
+      "y",
+      "vertices",
+    ],
+    gateTemplate: {
+      id: "agent_main_population_gate",
+      name: "Agent Main Population Gate",
+      sample: input.sampleId,
+      parent: input.parent,
+      type: "polygon",
+      x: input.x,
+      y: input.y,
+      vertices: [],
+    },
+  };
+}
+
 export async function getPlotContext(options: PlotContextOptions): Promise<unknown> {
   const workspace = await readWorkspace(options.workspacePath);
   const sampleId = chooseSample(workspace, options.sampleId);
@@ -315,6 +366,7 @@ export async function getPlotContext(options: PlotContextOptions): Promise<unkno
   });
   const validation = await validateWorkspace(options.workspacePath);
   const gates = activeGates(workspace, { sampleId, parent, x, y });
+  const recommendedGate = recommendedGateContract({ sampleId, parent, x, y });
   return {
     ok: true,
     workspacePath: options.workspacePath,
@@ -344,6 +396,19 @@ export async function getPlotContext(options: PlotContextOptions): Promise<unkno
       requiredRevisionField: "expected_revision",
     },
     expected_revision: workspace.revision,
+    recommendedGate,
+    agentContract: flowcytoAgentContract({
+      preferredGateType: "polygon",
+      writeTool: "upsert_gate",
+    }),
+    nextAction: {
+      tool: "upsert_gate",
+      arguments: {
+        workspace_path: options.workspacePath,
+        expected_revision: workspace.revision,
+        gateTemplate: recommendedGate.gateTemplate,
+      },
+    },
   };
 }
 

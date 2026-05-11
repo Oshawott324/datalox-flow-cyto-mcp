@@ -34,7 +34,23 @@ async function writeText(filePath, value) {
 }
 
 async function removeOldDemoArtifacts(targetDir) {
-  for (const entry of ["scripts", "prompts", ".datalox"]) {
+  for (const entry of [
+    "scripts",
+    "prompts",
+    ".datalox",
+    "agent-wiki",
+    ".claude",
+    ".cursor",
+    ".github",
+    ".windsurf",
+    "bin",
+    "skills",
+    "CLAUDE.md",
+    "DATALOX.md",
+    "GEMINI.md",
+    "START_HERE.md",
+    "WIKI.md",
+  ]) {
     await rm(path.join(targetDir, entry), { recursive: true, force: true });
   }
 }
@@ -180,13 +196,14 @@ function agentsText(targetDir) {
 
 This repo is a disposable Flowcyto MCP demo workspace.
 
-The user-facing demo prompt is exactly:
+The user-facing demo prompt is:
 
 \`\`\`text
 Open this FCS/workspace and gate the main population.
 \`\`\`
 
-Use Flowcyto MCP tools. Do not patch \`flowcyto.workspace.json\` directly. Do not write or run local gate-application scripts. Do not modify files outside this repo.
+Use the Flowcyto MCP server registered in \`.mcp.json\`. Follow the
+\`nextAction\` fields returned by Flowcyto tools.
 
 If the Flowcyto MCP server is unavailable, stop and report that the MCP server
 must be registered from \`.mcp.json\`.
@@ -197,38 +214,12 @@ Canonical workspace:
 ${workspacePath}
 \`\`\`
 
-Required tool sequence:
-
-1. Call \`flowcyto.open_gate_editor\`.
-   - In Codex, Claude Code, or any non-UI MCP host, pass \`surface:
-     "native_window"\`.
-   - In an MCP Apps capable host, \`surface: "mcp_app"\` is acceptable.
-   - Use \`sample_id: "sample_001"\`, \`x: "FSC-A"\`, \`y: "SSC-A"\`,
-     and \`max_events: 10000\`.
-2. Call \`flowcyto.get_plot_context\` for the same workspace/sample/axes.
-3. Design a biologically plausible polygon gate around the main visible
-   FSC-A/SSC-A population using the returned preview, bounds, and existing
-   gates. Do not use a rectangle unless the user explicitly asks for one.
-4. Call \`flowcyto.upsert_gate\` with:
-   - \`expected_revision\` equal to the revision from \`get_plot_context\`.
-   - \`id: "agent_main_population_gate"\`.
-   - \`name: "Agent Main Population Gate"\`.
-   - \`sample: "sample_001"\`.
-   - \`parent: "root"\`.
-   - \`type: "polygon"\`.
-   - \`x: "FSC-A"\`.
-   - \`y: "SSC-A"\`.
-5. Call \`flowcyto.get_workspace_revision\` or \`flowcyto.read_workspace\` and
-   report the new revision and gate id.
-
 Pass criteria:
 
-- The tool trace includes \`open_gate_editor\`, \`get_plot_context\`, and
-  \`upsert_gate\`.
-- The compact app was opened by the MCP tool call, not by a browser command.
-- The already-open compact app updates live after \`upsert_gate\`.
+- The compact app opens from the MCP tool call.
+- The Flowcyto tool result chain is followed through \`nextAction\`.
+- A single gate is written through Flowcyto MCP tools.
 - The workspace revision increments exactly once for the agent gate write.
-- No host app source code is changed.
 `;
 }
 
@@ -253,6 +244,7 @@ await writeText(path.join(targetDir, "flowcyto.workspace.json"), workspaceJson()
 await writeText(path.join(targetDir, ".mcp.json"), mcpJson());
 await writeText(path.join(targetDir, ".gitignore"), `.DS_Store
 .datalox/
+agent-wiki/
 node_modules/
 `);
 await writeText(path.join(targetDir, "README.md"), readmeText(targetDir));

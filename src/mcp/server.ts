@@ -53,6 +53,15 @@ type GateEditorSession = {
   nativeWindow?: NativeGateEditorWindow;
 };
 
+type GateEditorSelection = {
+  workspacePath: string;
+  sampleId: string;
+  parent: string;
+  x: string;
+  y: string;
+  maxEvents: number;
+};
+
 function resultContent(result: unknown, meta?: Record<string, unknown>) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify({ result }, null, 2) }],
@@ -72,6 +81,77 @@ function errorResult(error: unknown) {
   return {
     ok: false,
     errors: [{ path: "/", code: "tool_failed", message }],
+  };
+}
+
+function flowcytoAgentContract(extra?: Record<string, unknown>) {
+  return {
+    version: 1,
+    intent: "open_then_context_then_gate",
+    forbiddenActions: [
+      "do_not_write_workspace_json_directly",
+      "do_not_inspect_local_preview_server",
+      "do_not_use_browser_or_desktop_automation_for_gate_geometry",
+      "do_not_read_fcs_or_workspace_with_local_scripts_for_gate_geometry",
+      "do_not_use_local_python_or_plotting_for_gate_geometry",
+    ],
+    ...extra,
+  };
+}
+
+function plotContextNextAction(selection: GateEditorSelection) {
+  return {
+    tool: "get_plot_context",
+    arguments: {
+      workspace_path: selection.workspacePath,
+      sample_id: selection.sampleId,
+      parent_gate_id: selection.parent,
+      x: selection.x,
+      y: selection.y,
+      max_events: selection.maxEvents,
+      format: "bins",
+      bin_width: 64,
+      bin_height: 64,
+    },
+  };
+}
+
+function workspaceRevisionNextAction(workspacePath: string) {
+  return {
+    tool: "get_workspace_revision",
+    arguments: {
+      workspace_path: workspacePath,
+    },
+  };
+}
+
+async function resolveGateEditorSelection(params: {
+  workspacePath: string;
+  sampleId?: string;
+  parent?: string;
+  x?: string;
+  y?: string;
+  maxEvents?: number;
+}): Promise<GateEditorSelection> {
+  const workspace = await readWorkspace(params.workspacePath);
+  const sampleId = params.sampleId ?? workspace.samples[0]?.id;
+  if (!sampleId) {
+    throw new FlowcytoError("missing_sample", "Workspace must contain at least one sample.", "/samples");
+  }
+  const metadata = await getSampleMetadata(params.workspacePath, sampleId);
+  const view = workspace.views.find((entry) => entry.sample === sampleId);
+  const x = params.x ?? view?.x ?? metadata.parameters[0]?.name;
+  const y = params.y ?? view?.y ?? metadata.parameters[1]?.name;
+  if (!x || !y) {
+    throw new FlowcytoError("missing_axes", "Both x and y axes are required.", "/views");
+  }
+  return {
+    workspacePath: params.workspacePath,
+    sampleId,
+    parent: params.parent ?? view?.parent ?? "root",
+    x,
+    y,
+    maxEvents: params.maxEvents ?? 10000,
   };
 }
 
@@ -118,29 +198,29 @@ function gateEditorSurface(params: {
 
 function mcpAppGateEditorResult(params: {
   workspacePath: string;
-  sampleId?: string;
-  parent?: string;
-  x?: string;
-  y?: string;
-  maxEvents?: number;
+  selection: GateEditorSelection;
 }) {
   return {
     ok: true,
     workspacePath: params.workspacePath,
-    sampleId: params.sampleId,
-    parent: params.parent ?? "root",
-    x: params.x,
-    y: params.y,
-    maxEvents: params.maxEvents,
+    sampleId: params.selection.sampleId,
+    parent: params.selection.parent,
+    x: params.selection.x,
+    y: params.selection.y,
+    maxEvents: params.selection.maxEvents,
     surface: gateEditorSurface({
       kind: "mcp_app",
       workspacePath: params.workspacePath,
-      sampleId: params.sampleId,
-      parent: params.parent,
-      x: params.x,
-      y: params.y,
-      maxEvents: params.maxEvents,
+      sampleId: params.selection.sampleId,
+      parent: params.selection.parent,
+      x: params.selection.x,
+      y: params.selection.y,
+      maxEvents: params.selection.maxEvents,
     }),
+    agentContract: flowcytoAgentContract({
+      refresh: "already_open_app_refreshes_from_revision_poll",
+    }),
+    nextAction: plotContextNextAction(params.selection),
   };
 }
 
@@ -155,6 +235,7 @@ async function nativeWindowGateEditorResult(
     x?: string;
     y?: string;
     maxEvents?: number;
+    selection: GateEditorSelection;
     width?: number;
     height?: number;
   },
@@ -201,12 +282,16 @@ async function nativeWindowGateEditorResult(
         runtime: nativeWindow.runtime,
         pid: nativeWindow.pid,
         workspacePath: gateEditor.workspacePath,
-        sampleId: params.sampleId,
-        parent: params.parent,
-        x: params.x,
-        y: params.y,
-        maxEvents: params.maxEvents,
+        sampleId: params.selection.sampleId,
+        parent: params.selection.parent,
+        x: params.selection.x,
+        y: params.selection.y,
+        maxEvents: params.selection.maxEvents,
       }),
+      agentContract: flowcytoAgentContract({
+        refresh: "already_open_app_refreshes_from_revision_poll",
+      }),
+      nextAction: plotContextNextAction(params.selection),
     };
   } catch (error) {
     await gateEditor.close().catch(() => undefined);
@@ -332,7 +417,7 @@ server.registerTool(
 server.registerTool(
   "get_event_preview",
   {
-    description: "Return capped renderable preview points for two sample channels.",
+    description: "Return capped renderable preview points or bins for two sample channels. Use this MCP result instead of reading FCS files with local Python or plotting scripts.",
     inputSchema: {
       workspace_path: z.string(),
       sample_id: z.string(),
@@ -357,14 +442,33 @@ server.registerTool(
       format,
       binWidth: bin_width,
       binHeight: bin_height,
-    }),
+    }).then((result) => ({
+      ...result,
+      agentContract: flowcytoAgentContract({
+        geometrySource: "preview_from_this_tool_result",
+      }),
+      nextAction: {
+        tool: "get_plot_context",
+        arguments: {
+          workspace_path,
+          sample_id,
+          parent_gate_id: parent_gate_id ?? "root",
+          x,
+          y,
+          max_events,
+          format,
+          bin_width,
+          bin_height,
+        },
+      },
+    })),
   ),
 );
 
 server.registerTool(
   "get_plot_context",
   {
-    description: "Return agent-ready plot context for the active gate editor view.",
+    description: "Return revision, axes, bounds, preview, and recommended gate-write contract for the active gate editor view. Call this before upsert_gate. Use the returned preview/bins for gate geometry; do not read FCS files with local scripts.",
     inputSchema: {
       workspace_path: z.string(),
       sample_id: z.string().optional(),
@@ -439,6 +543,7 @@ server.registerTool(
       workspacePath: workspace_path,
       revision: workspace.revision,
       gateCount: Array.isArray(workspace.gates) ? workspace.gates.length : 0,
+      nextAction: null,
     };
   }),
 );
@@ -446,7 +551,7 @@ server.registerTool(
 server.registerTool(
   "upsert_gate",
   {
-    description: "Create or update a gate in the canonical workspace artifact using revision-safe writes.",
+    description: "Create or update a gate in the canonical workspace artifact using revision-safe writes. Use expected_revision from get_plot_context. For FSC/SSC main-population gating, prefer polygon unless the user explicitly requests another shape. Do not patch workspace JSON directly. After this, call get_workspace_revision.",
     inputSchema: {
       workspace_path: z.string(),
       gate: JsonObject,
@@ -459,7 +564,13 @@ server.registerTool(
       workspacePath: workspace_path,
       gate: gate as WorkspaceGate,
       expectedRevision: expected_revision,
-    }),
+    }).then((result) => ({
+      ...result,
+      agentContract: flowcytoAgentContract({
+        refresh: "already_open_app_refreshes_from_revision_poll",
+      }),
+      nextAction: result.ok ? workspaceRevisionNextAction(workspace_path) : null,
+    })),
   ),
 );
 
@@ -501,11 +612,14 @@ server.registerTool(
   async ({ workspace_path, sample_id, parent_gate_id, x, y, max_events }) => toolContent(async () =>
     mcpAppGateEditorResult({
       workspacePath: workspace_path,
-      sampleId: sample_id,
-      parent: parent_gate_id,
-      x,
-      y,
-      maxEvents: max_events,
+      selection: await resolveGateEditorSelection({
+        workspacePath: workspace_path,
+        sampleId: sample_id,
+        parent: parent_gate_id,
+        x,
+        y,
+        maxEvents: max_events,
+      }),
     }),
   GateEditorMcpAppMeta),
 );
@@ -513,7 +627,7 @@ server.registerTool(
 server.registerTool(
   "open_gate_editor",
   {
-    description: "Open the compact gate editor surface for a workspace.",
+    description: "Open the compact gate editor surface for a workspace. In CLI or non-UI agent hosts, pass surface=\"native_window\" so a compact native window opens. After this call, call get_plot_context using result.nextAction.arguments. Do not inspect local preview URLs, run local FCS analysis scripts, or write the workspace JSON directly.",
     inputSchema: {
       workspace_path: z.string(),
       surface: GateEditorSurfaceSchema.optional(),
@@ -533,28 +647,33 @@ server.registerTool(
   },
   async ({ workspace_path, surface, host, port, sample_id, parent_gate_id, x, y, max_events, width, height }) =>
     toolContent(async () => {
-      const selectedSurface = surface ?? "auto";
-      if (selectedSurface === "native_window") {
-        return nativeWindowGateEditorResult(gateEditorSessions, {
-          workspacePath: workspace_path,
-          host,
-          port,
-          sampleId: sample_id,
-          parent: parent_gate_id,
-          x,
-          y,
-          maxEvents: max_events,
-          width,
-          height,
-        });
-      }
-      return mcpAppGateEditorResult({
+      const selection = await resolveGateEditorSelection({
         workspacePath: workspace_path,
         sampleId: sample_id,
         parent: parent_gate_id,
         x,
         y,
         maxEvents: max_events,
+      });
+      const selectedSurface = surface ?? "auto";
+      if (selectedSurface === "native_window") {
+        return nativeWindowGateEditorResult(gateEditorSessions, {
+          workspacePath: workspace_path,
+          host,
+          port,
+          sampleId: selection.sampleId,
+          parent: selection.parent,
+          x: selection.x,
+          y: selection.y,
+          maxEvents: selection.maxEvents,
+          selection,
+          width,
+          height,
+        });
+      }
+      return mcpAppGateEditorResult({
+        workspacePath: workspace_path,
+        selection,
       });
     }, GateEditorMcpAppMeta),
 );

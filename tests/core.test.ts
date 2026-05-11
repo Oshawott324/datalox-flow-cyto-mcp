@@ -517,12 +517,62 @@ describe("flowcyto CLI", () => {
     expect(mcpConfig.mcpServers?.flowcyto?.args?.[0]).toContain("dist/src/mcp/server.js");
 
     const agents = await fs.readFile(path.join(targetDir, "AGENTS.md"), "utf8");
-    expect(agents).toContain("flowcyto.open_gate_editor");
-    expect(agents).toContain("flowcyto.get_plot_context");
-    expect(agents).toContain("flowcyto.upsert_gate");
-    expect(agents).toContain("Do not patch `flowcyto.workspace.json` directly");
-    expect(agents).toContain("Do not write or run local gate-application scripts");
+    expect(agents).toContain("Use the Flowcyto MCP server registered in `.mcp.json`");
+    expect(agents).toContain("Follow the");
+    expect(agents).toContain("`nextAction` fields returned by Flowcyto tools");
+    expect(agents).not.toContain("Required tool sequence");
+    expect(agents).not.toContain("Do not use Computer Use");
+    expect(agents).not.toContain("Allowed tools for the demo turn");
     expect(agents).not.toContain("datalox_agent_live_gate");
+  });
+
+  it("validates the live demo result artifact", async () => {
+    const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-live-gating-result-"));
+    const { stdout } = await execFileAsync("node", [
+      "scripts/create-live-gating-demo.mjs",
+      "--target",
+      targetDir,
+      "--force",
+    ], { cwd: path.resolve(".") });
+    const result = JSON.parse(stdout) as { workspacePath: string };
+
+    await expect(execFileAsync("node", [
+      "scripts/validate-live-demo-result.mjs",
+      "--workspace",
+      result.workspacePath,
+    ], { cwd: path.resolve(".") })).rejects.toThrow();
+
+    await upsertGate({
+      workspacePath: result.workspacePath,
+      expectedRevision: 0,
+      gate: {
+        id: "agent_main_population_gate",
+        name: "Agent Main Population Gate",
+        sample: "sample_001",
+        parent: "root",
+        type: "polygon",
+        x: "FSC-A",
+        y: "SSC-A",
+        vertices: [
+          [-600, 250],
+          [650, 250],
+          [650, 4400],
+          [-350, 4400],
+          [-700, 900],
+        ],
+      },
+    });
+
+    const validation = await execFileAsync("node", [
+      "scripts/validate-live-demo-result.mjs",
+      "--workspace",
+      result.workspacePath,
+    ], { cwd: path.resolve(".") });
+    const body = JSON.parse(validation.stdout) as { ok: boolean; revision: number; gateCount: number; gateType: string };
+    expect(body.ok).toBe(true);
+    expect(body.revision).toBe(1);
+    expect(body.gateCount).toBe(1);
+    expect(body.gateType).toBe("polygon");
   });
 
   it("runs validate, metadata, and preview against a fixture workspace", async () => {
@@ -1289,6 +1339,108 @@ describe("flowcyto MCP", () => {
     } finally {
       await page.close();
       await browser.close();
+      await client.close();
+    }
+  });
+
+  it("exposes the full agent workflow through MCP descriptors and nextAction results", async () => {
+    const { workspacePath } = await makeWorkspace();
+    const serverPath = path.resolve("dist/src/mcp/server.js");
+    const client = new Client({ name: "flowcyto-agent-contract-test", version: "0.0.0" });
+    const transport = new StdioClientTransport({ command: "node", args: [serverPath] });
+
+    try {
+      await client.connect(transport);
+      const tools = await client.listTools();
+      const openTool = tools.tools.find((tool) => tool.name === "open_gate_editor");
+      const contextTool = tools.tools.find((tool) => tool.name === "get_plot_context");
+      const upsertTool = tools.tools.find((tool) => tool.name === "upsert_gate");
+      expect(openTool?.description).toContain("get_plot_context");
+      expect(openTool?.description).toContain("surface=\"native_window\"");
+      expect(contextTool?.description).toContain("upsert_gate");
+      expect(contextTool?.description).toContain("do not read FCS files");
+      expect(upsertTool?.description).toContain("get_workspace_revision");
+      expect((openTool?._meta?.ui as { resourceUri?: string } | undefined)?.resourceUri).toBe("ui://flowcyto/gate-editor-v1.html");
+
+      const opened = await client.callTool({
+        name: "open_gate_editor",
+        arguments: { workspace_path: workspacePath, surface: "mcp_app" },
+      });
+      const openedResult = (opened.structuredContent as { result?: unknown } | undefined)?.result as {
+        ok: boolean;
+        agentContract: { version: number; forbiddenActions: string[] };
+        nextAction: { tool: string; arguments: Record<string, unknown> };
+      };
+      expect(openedResult.ok).toBe(true);
+      expect(openedResult.agentContract.version).toBe(1);
+      expect(openedResult.agentContract.forbiddenActions).toContain("do_not_write_workspace_json_directly");
+      expect(openedResult.agentContract.forbiddenActions).toContain("do_not_use_local_python_or_plotting_for_gate_geometry");
+      expect(openedResult.nextAction.tool).toBe("get_plot_context");
+      expect(openedResult.nextAction.arguments.workspace_path).toBe(workspacePath);
+      expect(openedResult.nextAction.arguments.sample_id).toBe("sample_001");
+      expect(openedResult.nextAction.arguments.x).toBeTruthy();
+      expect(openedResult.nextAction.arguments.y).toBeTruthy();
+      expect(openedResult.nextAction.arguments.format).toBe("bins");
+
+      const context = await client.callTool({
+        name: openedResult.nextAction.tool,
+        arguments: openedResult.nextAction.arguments,
+      });
+      const contextResult = (context.structuredContent as { result?: unknown } | undefined)?.result as {
+        ok: boolean;
+        expected_revision: number;
+        bounds: { xMin: number; xMax: number; yMin: number; yMax: number };
+        recommendedGate: {
+          type: string;
+          writeTool: string;
+          geometrySource: string;
+          geometryInstructions: string[];
+          requiredFields: string[];
+          gateTemplate: Record<string, unknown>;
+        };
+        nextAction: { tool: string; arguments: { workspace_path: string; expected_revision: number; gateTemplate: Record<string, unknown> } };
+      };
+      expect(contextResult.ok).toBe(true);
+      expect(contextResult.expected_revision).toBe(0);
+      expect(contextResult.recommendedGate.type).toBe("polygon");
+      expect(contextResult.recommendedGate.writeTool).toBe("upsert_gate");
+      expect(contextResult.recommendedGate.geometrySource).toBe("preview_or_bins_from_get_plot_context");
+      expect(contextResult.recommendedGate.geometryInstructions.join(" ")).toContain("Do not read the FCS file directly");
+      expect(contextResult.recommendedGate.requiredFields).toContain("vertices");
+      expect(contextResult.nextAction.tool).toBe("upsert_gate");
+      expect(contextResult.nextAction.arguments.workspace_path).toBe(workspacePath);
+      expect(contextResult.nextAction.arguments.expected_revision).toBe(contextResult.expected_revision);
+      expect(contextResult.nextAction.arguments.gateTemplate.type).toBe("polygon");
+
+      const gate = {
+        ...contextResult.nextAction.arguments.gateTemplate,
+        vertices: [
+          [contextResult.bounds.xMin, contextResult.bounds.yMin],
+          [contextResult.bounds.xMax, contextResult.bounds.yMin],
+          [contextResult.bounds.xMax, contextResult.bounds.yMax],
+          [contextResult.bounds.xMin, contextResult.bounds.yMax],
+        ],
+      };
+      const created = await client.callTool({
+        name: contextResult.nextAction.tool,
+        arguments: {
+          workspace_path: contextResult.nextAction.arguments.workspace_path,
+          expected_revision: contextResult.nextAction.arguments.expected_revision,
+          gate,
+        },
+      });
+      const createdResult = (created.structuredContent as { result?: unknown } | undefined)?.result as {
+        ok: boolean;
+        revision: number;
+        gateCount: number;
+        nextAction: { tool: string; arguments: { workspace_path: string } };
+      };
+      expect(createdResult.ok).toBe(true);
+      expect(createdResult.revision).toBe(1);
+      expect(createdResult.gateCount).toBe(1);
+      expect(createdResult.nextAction.tool).toBe("get_workspace_revision");
+      expect(createdResult.nextAction.arguments.workspace_path).toBe(workspacePath);
+    } finally {
       await client.close();
     }
   });
