@@ -33,6 +33,7 @@ const expectedGateId = argValue("--expected-gate-id", "agent_main_population_gat
 const expectedSample = argValue("--expected-sample", "sample_001");
 const expectedX = argValue("--expected-x", "FSC-A");
 const expectedY = argValue("--expected-y", "SSC-A");
+const allowNoAgents = process.argv.includes("--allow-no-agents");
 
 if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {
   throw new Error("--expected-revision must be a non-negative integer.");
@@ -80,6 +81,16 @@ for (const forbidden of ["scripts", "prompts"]) {
   );
 }
 
+if (allowNoAgents) {
+  check(
+    errors,
+    !(await exists(path.join(rootDir, "AGENTS.md"))),
+    "/AGENTS.md",
+    "forbidden_demo_artifact",
+    "No-AGENTS demo validation requires AGENTS.md to be absent.",
+  );
+}
+
 process.stdout.write(JSON.stringify({
   ok: errors.length === 0,
   workspacePath,
@@ -87,6 +98,7 @@ process.stdout.write(JSON.stringify({
   gateCount: gates.length,
   gateId: gate?.id,
   gateType: gate?.type,
+  agentsAbsent: !(await exists(path.join(rootDir, "AGENTS.md"))),
   errors,
 }, null, 2) + "\n");
 

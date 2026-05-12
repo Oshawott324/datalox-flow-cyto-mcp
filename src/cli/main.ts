@@ -11,6 +11,7 @@ import {
   getEventPreview,
   getSampleMetadata,
   initWorkspace,
+  openFcsArtifact,
   openWorkspace,
   readWorkspace,
   validateWorkspace,
@@ -43,7 +44,39 @@ function handleError(error: unknown): never {
 program
   .name("flowcyto")
   .description("Flow cytometry workspace CLI for the Flowcyto MCP core.")
-  .version("0.1.0");
+  .version("0.1.3");
+
+program
+  .command("open-fcs")
+  .description("Open an .fcs file or flowcyto.workspace.json, creating or reusing a Flowcyto workspace.")
+  .argument("<path>")
+  .option("--workspace-dir <dir>", "Directory where flowcyto.workspace.json should be created or reused")
+  .option("--sample-id <id>", "Sample id for a new FCS sample")
+  .action(async (inputPath: string, options: { workspaceDir?: string; sampleId?: string }) => {
+    try {
+      const result = await openFcsArtifact({
+        path: inputPath,
+        workspaceDir: options.workspaceDir,
+        sampleId: options.sampleId,
+      });
+      const view = result.recommendedViews[0];
+      printJson({
+        ...result,
+        nextAction: {
+          command: "flowcyto preview",
+          arguments: {
+            workspace_path: result.workspacePath,
+            sample_id: result.sampleId,
+            x: view?.x ?? result.channels[0]?.name,
+            y: view?.y ?? result.channels[1]?.name,
+            format: "bins",
+          },
+        },
+      });
+    } catch (error) {
+      handleError(error);
+    }
+  });
 
 program
   .command("init")

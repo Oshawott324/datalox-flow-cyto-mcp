@@ -1,19 +1,27 @@
 {
   "name": "@datalox/flowcyto-mcp",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "description": "Alpha flow cytometry MCP server, CLI, and compact gate editor.",
   "license": "AGPL-3.0-or-later",
-  "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "bin": {
-    "flowcyto": "./dist/src/cli/main.js",
-    "flowcyto-mcp": "./dist/src/mcp/server.js"
+    "flowcyto": "dist/src/cli/main.js",
+    "flowcyto-mcp": "dist/src/mcp/server.js"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "alpha",
+    "registry": "https://registry.npmjs.org/"
   },
   "files": [
     "dist/src/**/*",
     "dist/native/windows/**/*",
     "native/windows/**/*",
     "docs/**/*.md",
+    "skills/flowcyto/SKILL.md",
     "schemas/**/*",
     "scripts/*.mjs",
     "testdata/fixtures/manifest.json"
@@ -24,9 +32,12 @@
     "build:native:windows:arm64": "dotnet publish native/windows/FlowcytoGateEditorWindow/FlowcytoGateEditorWindow.csproj -c Release -r win-arm64 --self-contained false -p:PublishSingleFile=true -o dist/native/windows/win-arm64",
     "check": "tsc --noEmit -p tsconfig.json",
     "fixtures:fetch": "node scripts/fetch-fcs-fixtures.mjs",
+    "prepack": "npm run build",
+    "smoke:package": "node scripts/smoke-package.mjs",
     "test": "vitest run",
     "pretest": "npm run build",
-    "verify:alpha": "npm run check && npm test && node dist/src/cli/main.js doctor && npm pack --dry-run --json > /dev/null"
+    "verify:alpha": "npm run check && npm test && node dist/src/cli/main.js doctor && npm pack --dry-run --json > /dev/null",
+    "verify:publish": "npm run verify:alpha && npm run smoke:package"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

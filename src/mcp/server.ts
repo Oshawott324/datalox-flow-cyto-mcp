@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import process from "node:process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -22,6 +23,7 @@ import {
   getEventPreview,
   getSampleMetadata,
   listSamples,
+  openFcsArtifact,
   openWorkspace,
   readWorkspace,
   upsertGate,
@@ -32,6 +34,8 @@ import {
 } from "../core/index.js";
 
 const GATE_EDITOR_RESOURCE_URI = "ui://flowcyto/gate-editor-v1.html";
+const CAPABILITIES_RESOURCE_URI = "flowcyto://capabilities";
+const OPEN_FCS_WORKFLOW_RESOURCE_URI = "flowcyto://workflow/open-fcs-and-gate";
 const MCP_APP_MIME_TYPE = "text/html;profile=mcp-app";
 
 const JsonObject = z.record(z.string(), z.unknown());
@@ -39,6 +43,7 @@ const JsonResultSchema = {
   result: z.unknown(),
 };
 const GateEditorSurfaceSchema = z.enum(["auto", "mcp_app", "native_window"]);
+const OpenFcsSurfaceSchema = z.enum(["auto", "mcp_app", "native_window", "none"]);
 const GateEditorMcpAppMeta = {
   ui: {
     resourceUri: GATE_EDITOR_RESOURCE_URI,
@@ -61,6 +66,39 @@ type GateEditorSelection = {
   y: string;
   maxEvents: number;
 };
+
+const FlowcytoCapabilities = {
+  supportsFileTypes: [".fcs", "flowcyto.workspace.json"],
+  canParseMetadata: true,
+  canRenderPlots: true,
+  canOpenCompactApp: true,
+  canWriteStructuredGates: true,
+  liveRefreshAfterUpsertGate: true,
+  canonicalArtifact: "flowcyto.workspace.json",
+  primaryTools: ["open_fcs", "render_plot", "open_gate_editor", "get_plot_context", "upsert_gate"],
+  preferredWorkflowResource: OPEN_FCS_WORKFLOW_RESOURCE_URI,
+};
+
+const OpenFcsAndGateWorkflow = {
+  orderedTools: [
+    "open_fcs",
+    "open_gate_editor",
+    "render_plot",
+    "upsert_gate",
+    "get_workspace_revision",
+  ],
+  notes: [
+    "Call open_fcs when the user asks to open, inspect, render, analyze, or gate an .fcs file.",
+    "Use render_plot or get_plot_context results for gate geometry.",
+    "Write gates through upsert_gate with expected_revision.",
+    "Do not patch flowcyto.workspace.json directly when upsert_gate is available.",
+    "AGENTS.md is optional convenience guidance, not the product contract.",
+  ],
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 function resultContent(result: unknown, meta?: Record<string, unknown>) {
   return {
@@ -123,6 +161,94 @@ function workspaceRevisionNextAction(workspacePath: string) {
       workspace_path: workspacePath,
     },
   };
+}
+
+function firstRecommendedView(result: Awaited<ReturnType<typeof openFcsArtifact>>) {
+  const view = result.recommendedViews[0];
+  return {
+    x: view?.x ?? result.channels[0]?.name,
+    y: view?.y ?? result.channels[1]?.name,
+  };
+}
+
+function openFcsNextAction(result: Awaited<ReturnType<typeof openFcsArtifact>>, surface: "auto" | "mcp_app" | "native_window" | "none") {
+  const view = firstRecommendedView(result);
+  if (surface === "none") {
+    return {
+      tool: "render_plot",
+      arguments: {
+        workspace_path: result.workspacePath,
+        sample_id: result.sampleId,
+        x: view.x,
+        y: view.y,
+        parent_gate_id: "root",
+        format: "bins",
+        bin_width: 64,
+        bin_height: 64,
+      },
+    };
+  }
+  return {
+    tool: "open_gate_editor",
+    arguments: {
+      workspace_path: result.workspacePath,
+      sample_id: result.sampleId,
+      x: view.x,
+      y: view.y,
+      surface,
+    },
+  };
+}
+
+function promptText(title: string, lines: string[]): string {
+  return [
+    `# ${title}`,
+    "",
+    ...lines,
+  ].join("\n");
+}
+
+function workflowPrompt(pathPlaceholder: string): string {
+  return promptText("Open FCS And Gate Main Population", [
+    `Use Flowcyto MCP tools for ${pathPlaceholder}.`,
+    "",
+    "Tool order:",
+    "1. open_fcs with path set to the .fcs file or flowcyto.workspace.json.",
+    "2. open_gate_editor with workspace_path and sample_id from open_fcs; use surface=\"native_window\" in non-UI hosts.",
+    "3. render_plot or get_plot_context with the returned workspace_path, sample_id, x, and y.",
+    "4. upsert_gate with expected_revision from render_plot/get_plot_context.",
+    "5. get_workspace_revision to confirm the already-open compact app can refresh.",
+    "",
+    "Do not patch flowcyto.workspace.json directly when upsert_gate is available.",
+    "Do not infer gate geometry from screenshots when render_plot/get_plot_context returns preview data.",
+    "AGENTS.md is optional convenience guidance, not required product behavior.",
+  ]);
+}
+
+function renderPlotPrompt(pathPlaceholder: string): string {
+  return promptText("Render FCS Plot", [
+    `Use Flowcyto MCP tools for ${pathPlaceholder}.`,
+    "",
+    "Tool order:",
+    "1. open_fcs if the input is a raw .fcs file.",
+    "2. render_plot with workspace_path, sample_id, x, y, and format=\"bins\" unless raw points are explicitly needed.",
+    "3. Use the returned preview, bounds, gates, recommendedGate, and nextAction for follow-up gating.",
+    "",
+    "Do not create local Python plots or inspect local preview URLs for gate geometry.",
+  ]);
+}
+
+function reviewWorkspacePrompt(pathPlaceholder: string): string {
+  return promptText("Review Workspace Gates", [
+    `Use Flowcyto MCP tools for ${pathPlaceholder}.`,
+    "",
+    "Tool order:",
+    "1. open_fcs with the workspace path.",
+    "2. render_plot or get_plot_context for each relevant sample/view.",
+    "3. read_workspace only for reviewing canonical gate JSON after tool-based context is available.",
+    "",
+    "Do not modify gates unless the user asks for a write; if writing, use upsert_gate with expected_revision.",
+  ]);
 }
 
 async function resolveGateEditorSelection(params: {
@@ -302,7 +428,7 @@ async function nativeWindowGateEditorResult(
 function createFlowcytoMcpServer(): McpServer {
   const server = new McpServer({
     name: "flowcyto-mcp",
-    version: "0.1.0",
+    version: "0.1.3",
   });
   const gateEditorSessions = new Map<string, GateEditorSession>();
 
@@ -333,6 +459,94 @@ server.registerResource(
   }),
 );
 
+server.registerResource(
+  "flowcyto_capabilities",
+  CAPABILITIES_RESOURCE_URI,
+  {
+    title: "Flowcyto Capabilities",
+    description: "Machine-readable Flowcyto MCP file, rendering, compact app, and gate-writing capabilities.",
+    mimeType: "application/json",
+  },
+  async () => ({
+    contents: [{
+      uri: CAPABILITIES_RESOURCE_URI,
+      mimeType: "application/json",
+      text: JSON.stringify(FlowcytoCapabilities, null, 2),
+    }],
+  }),
+);
+
+server.registerResource(
+  "flowcyto_open_fcs_and_gate_workflow",
+  OPEN_FCS_WORKFLOW_RESOURCE_URI,
+  {
+    title: "Flowcyto Open FCS And Gate Workflow",
+    description: "Ordered MCP tool workflow for opening an FCS file, rendering a plot, and writing a revision-safe gate.",
+    mimeType: "application/json",
+  },
+  async () => ({
+    contents: [{
+      uri: OPEN_FCS_WORKFLOW_RESOURCE_URI,
+      mimeType: "application/json",
+      text: JSON.stringify(OpenFcsAndGateWorkflow, null, 2),
+    }],
+  }),
+);
+
+server.registerPrompt(
+  "open-fcs-and-gate-main-population",
+  {
+    title: "Open FCS And Gate Main Population",
+    description: "Use Flowcyto MCP tools to open an .fcs/workspace, render the main population, and write a revision-safe gate.",
+    argsSchema: { path: z.string().optional() },
+  },
+  ({ path }) => ({
+    messages: [{
+      role: "user",
+      content: {
+        type: "text",
+        text: workflowPrompt(path ?? "the user-provided .fcs or workspace"),
+      },
+    }],
+  }),
+);
+
+server.registerPrompt(
+  "render-fcs-plot",
+  {
+    title: "Render FCS Plot",
+    description: "Use Flowcyto MCP tools to render FSC/SSC or marker plot data without local plotting scripts.",
+    argsSchema: { path: z.string().optional() },
+  },
+  ({ path }) => ({
+    messages: [{
+      role: "user",
+      content: {
+        type: "text",
+        text: renderPlotPrompt(path ?? "the user-provided .fcs or workspace"),
+      },
+    }],
+  }),
+);
+
+server.registerPrompt(
+  "review-workspace-gates",
+  {
+    title: "Review Workspace Gates",
+    description: "Use Flowcyto MCP tools to inspect a workspace and review gates without direct JSON patching.",
+    argsSchema: { path: z.string().optional() },
+  },
+  ({ path }) => ({
+    messages: [{
+      role: "user",
+      content: {
+        type: "text",
+        text: reviewWorkspacePrompt(path ?? "the user-provided flowcyto.workspace.json"),
+      },
+    }],
+  }),
+);
+
 async function toolContent(action: () => Promise<unknown>, meta?: Record<string, unknown>) {
   try {
     return resultContent(await action(), meta);
@@ -343,6 +557,36 @@ async function toolContent(action: () => Promise<unknown>, meta?: Record<string,
     };
   }
 }
+
+server.registerTool(
+  "open_fcs",
+  {
+    description: "Open an .fcs file or flowcyto.workspace.json workspace, create or reuse a Flowcyto workspace, parse FCS metadata, and return the next tool to render or gate it. Use this when the user asks to open, inspect, render, analyze, or gate an FCS file.",
+    inputSchema: {
+      path: z.string(),
+      workspace_dir: z.string().optional(),
+      sample_id: z.string().optional(),
+      surface: OpenFcsSurfaceSchema.optional(),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: false },
+  },
+  async ({ path, workspace_dir, sample_id, surface }) => toolContent(async () => {
+    const result = await openFcsArtifact({
+      path,
+      workspaceDir: workspace_dir,
+      sampleId: sample_id,
+    });
+    const selectedSurface = surface ?? "auto";
+    return {
+      ...result,
+      agentContract: flowcytoAgentContract({
+        discovery: "open_fcs_is_the_entry_tool_for_raw_fcs_or_workspace_inputs",
+      }),
+      nextAction: openFcsNextAction(result, selectedSurface),
+    };
+  }),
+);
 
 server.registerTool(
   "open_workspace",
@@ -417,7 +661,7 @@ server.registerTool(
 server.registerTool(
   "get_event_preview",
   {
-    description: "Return capped renderable preview points or bins for two sample channels. Use this MCP result instead of reading FCS files with local Python or plotting scripts.",
+    description: "Lower-level preview primitive for two sample channels. Prefer render_plot when the user asks to show, render, plot, inspect, or compare FSC/SSC or marker channels. Use this MCP result instead of reading FCS files with local Python or plotting scripts.",
     inputSchema: {
       workspace_path: z.string(),
       sample_id: z.string(),
@@ -468,7 +712,7 @@ server.registerTool(
 server.registerTool(
   "get_plot_context",
   {
-    description: "Return revision, axes, bounds, preview, and recommended gate-write contract for the active gate editor view. Call this before upsert_gate. Use the returned preview/bins for gate geometry; do not read FCS files with local scripts.",
+    description: "Return revision, axes, bounds, preview, and recommended gate-write contract for the active gate editor view. Call this before upsert_gate. Use render_plot for user-intent plotting and this tool for active editor context. Use the returned preview/bins for gate geometry; do not read FCS files with local scripts.",
     inputSchema: {
       workspace_path: z.string(),
       sample_id: z.string().optional(),
@@ -495,6 +739,55 @@ server.registerTool(
       binHeight: bin_height,
     }),
   ),
+);
+
+server.registerTool(
+  "render_plot",
+  {
+    description: "Return renderable flow cytometry plot data for FSC/SSC or marker channels. Use this when the user asks to show, render, plot, inspect, or compare cytometry channels. This wraps the same point/bin preview contract as the compact app and returns the next gate-writing action.",
+    inputSchema: {
+      workspace_path: z.string(),
+      sample_id: z.string().optional(),
+      parent_gate_id: z.string().optional(),
+      x: z.string().optional(),
+      y: z.string().optional(),
+      max_events: z.number().int().positive().optional(),
+      format: z.enum(["auto", "points", "bins"]).optional(),
+      bin_width: z.number().int().positive().optional(),
+      bin_height: z.number().int().positive().optional(),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, sample_id, parent_gate_id, x, y, max_events, format, bin_width, bin_height }) => toolContent(async () => {
+    const context = await getPlotContext({
+      workspacePath: workspace_path,
+      sampleId: sample_id,
+      parent: parent_gate_id,
+      x,
+      y,
+      maxEvents: max_events,
+      format,
+      binWidth: bin_width,
+      binHeight: bin_height,
+    });
+    if (!isRecord(context)) return context;
+    const recommendedGate = isRecord(context.recommendedGate)
+      ? {
+        ...context.recommendedGate,
+        geometrySource: "preview_or_bins_from_render_plot",
+      }
+      : context.recommendedGate;
+    return {
+      ...context,
+      renderIntent: "plot",
+      recommendedGate,
+      agentContract: flowcytoAgentContract({
+        geometrySource: "preview_or_bins_from_render_plot",
+        writeTool: "upsert_gate",
+      }),
+    };
+  }),
 );
 
 server.registerTool(
@@ -551,7 +844,7 @@ server.registerTool(
 server.registerTool(
   "upsert_gate",
   {
-    description: "Create or update a gate in the canonical workspace artifact using revision-safe writes. Use expected_revision from get_plot_context. For FSC/SSC main-population gating, prefer polygon unless the user explicitly requests another shape. Do not patch workspace JSON directly. After this, call get_workspace_revision.",
+    description: "Create or update a gate in the canonical workspace artifact using revision-safe writes. Use expected_revision from render_plot or get_plot_context. For FSC/SSC main-population gating, prefer polygon unless the user explicitly requests another shape. Do not patch workspace JSON directly. After this, call get_workspace_revision.",
     inputSchema: {
       workspace_path: z.string(),
       gate: JsonObject,
@@ -627,7 +920,7 @@ server.registerTool(
 server.registerTool(
   "open_gate_editor",
   {
-    description: "Open the compact gate editor surface for a workspace. In CLI or non-UI agent hosts, pass surface=\"native_window\" so a compact native window opens. After this call, call get_plot_context using result.nextAction.arguments. Do not inspect local preview URLs, run local FCS analysis scripts, or write the workspace JSON directly.",
+    description: "Open the compact gate editor surface for a workspace, including workspaces created by open_fcs. In CLI or non-UI agent hosts, pass surface=\"native_window\" so a compact native window opens. After this call, call get_plot_context using result.nextAction.arguments. Do not inspect local preview URLs, run local FCS analysis scripts, or write the workspace JSON directly.",
     inputSchema: {
       workspace_path: z.string(),
       surface: GateEditorSurfaceSchema.optional(),

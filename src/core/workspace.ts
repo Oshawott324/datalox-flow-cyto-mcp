@@ -6,6 +6,7 @@ import {
   FlowcytoError,
   type FlowcytoSample,
   type FlowcytoWorkspace,
+  type SampleParameter,
   type SampleMetadata,
   type ValidationError,
   type ValidationResult,
@@ -44,6 +45,214 @@ function samplePathForWorkspace(rootDir: string, samplePath: string): string {
     return relativeSamplePath;
   }
   return resolvedSamplePath;
+}
+
+export type OpenFcsRecommendedView = {
+  x: string;
+  y: string;
+  intent: "main_population" | "marker_pair";
+  parent: "root";
+  scale: { x: "linear"; y: "linear" };
+};
+
+export type OpenFcsArtifactResult = {
+  ok: true;
+  workspacePath: string;
+  sampleId: string;
+  sourcePath: string;
+  sourceKind: "fcs" | "workspace";
+  workspaceCreated: boolean;
+  sampleAdded: boolean;
+  revision: number;
+  channels: SampleParameter[];
+  recommendedViews: OpenFcsRecommendedView[];
+};
+
+function sampleIdFromPath(samplePath: string): string {
+  const base = path.basename(samplePath, path.extname(samplePath)).replace(/[^A-Za-z0-9._-]+/g, "_");
+  return base.length > 0 ? base : "sample_001";
+}
+
+function uniqueSampleId(workspace: FlowcytoWorkspace, preferred: string): string {
+  const used = new Set(workspace.samples.map((sample) => sample.id));
+  if (!used.has(preferred)) return preferred;
+  for (let index = 2; ; index += 1) {
+    const candidate = `${preferred}_${index}`;
+    if (!used.has(candidate)) return candidate;
+  }
+}
+
+function sampleForResolvedPath(workspacePath: string, workspace: FlowcytoWorkspace, samplePath: string): FlowcytoSample | undefined {
+  const resolvedSamplePath = path.resolve(samplePath);
+  return workspace.samples.find((sample) => path.resolve(resolveSamplePath(workspacePath, sample.path)) === resolvedSamplePath);
+}
+
+function channelNamed(parameters: SampleParameter[], names: string[]): SampleParameter | undefined {
+  const lowerNames = new Set(names.map((name) => name.toLowerCase()));
+  return parameters.find((parameter) => lowerNames.has(parameter.name.toLowerCase()));
+}
+
+function channelWithPrefix(parameters: SampleParameter[], prefix: string): SampleParameter | undefined {
+  const lowerPrefix = prefix.toLowerCase();
+  return parameters.find((parameter) => parameter.name.toLowerCase().startsWith(lowerPrefix));
+}
+
+function recommendedViewsForMetadata(metadata: SampleMetadata): OpenFcsRecommendedView[] {
+  const parameters = metadata.parameters;
+  const fsc = channelNamed(parameters, ["FSC-A"]) ?? channelWithPrefix(parameters, "FSC") ?? parameters[0];
+  const ssc = channelNamed(parameters, ["SSC-A"]) ?? channelWithPrefix(parameters, "SSC") ?? parameters.find((parameter) => parameter.name !== fsc?.name);
+  const views: OpenFcsRecommendedView[] = [];
+  if (fsc && ssc) {
+    views.push({
+      x: fsc.name,
+      y: ssc.name,
+      intent: "main_population",
+      parent: "root",
+      scale: { x: "linear", y: "linear" },
+    });
+  }
+
+  const markerParameters = parameters.filter((parameter) =>
+    parameter.marker
+    && parameter.name !== fsc?.name
+    && parameter.name !== ssc?.name
+    && !parameter.name.toLowerCase().startsWith("time"),
+  );
+  if (markerParameters.length >= 2) {
+    views.push({
+      x: markerParameters[0].name,
+      y: markerParameters[1].name,
+      intent: "marker_pair",
+      parent: "root",
+      scale: { x: "linear", y: "linear" },
+    });
+  }
+  return views;
+}
+
+function compactChannels(metadata: SampleMetadata): SampleParameter[] {
+  return metadata.parameters.map((parameter) => ({
+    name: parameter.name,
+    index: parameter.index,
+    ...(parameter.detector ? { detector: parameter.detector } : {}),
+    ...(parameter.marker ? { marker: parameter.marker } : {}),
+    ...(parameter.range !== undefined ? { range: parameter.range } : {}),
+  }));
+}
+
+async function openWorkspaceArtifact(workspacePath: string, requestedSampleId?: string): Promise<OpenFcsArtifactResult> {
+  const resolvedWorkspacePath = path.resolve(workspacePath);
+  const workspace = await readWorkspace(resolvedWorkspacePath);
+  const sample = requestedSampleId
+    ? workspace.samples.find((entry) => entry.id === requestedSampleId)
+    : workspace.samples[0];
+  if (!sample) {
+    throw new FlowcytoError(
+      requestedSampleId ? "unknown_sample" : "workspace_has_no_samples",
+      requestedSampleId ? `Sample ${requestedSampleId} is not present.` : "Workspace has no samples.",
+      "/samples",
+    );
+  }
+  const metadata = await getSampleMetadata(resolvedWorkspacePath, sample.id);
+  return {
+    ok: true,
+    workspacePath: resolvedWorkspacePath,
+    sampleId: sample.id,
+    sourcePath: resolvedWorkspacePath,
+    sourceKind: "workspace",
+    workspaceCreated: false,
+    sampleAdded: false,
+    revision: workspace.revision,
+    channels: compactChannels(metadata),
+    recommendedViews: recommendedViewsForMetadata(metadata),
+  };
+}
+
+async function openFcsFileArtifact(params: {
+  path: string;
+  workspaceDir?: string;
+  sampleId?: string;
+}): Promise<OpenFcsArtifactResult> {
+  const sourcePath = path.resolve(params.path);
+  const rootDir = path.resolve(params.workspaceDir ?? path.dirname(sourcePath));
+  const workspacePath = path.join(rootDir, "flowcyto.workspace.json");
+  const relativeSamplePath = samplePathForWorkspace(rootDir, sourcePath);
+  let workspace: FlowcytoWorkspace;
+  let workspaceCreated = false;
+  let sampleAdded = false;
+  try {
+    workspace = await readWorkspace(workspacePath);
+  } catch (error) {
+    const nodeError = error as NodeJS.ErrnoException;
+    if (!(nodeError && nodeError.code === "ENOENT")) throw error;
+    const initialized = await initWorkspace({
+      rootDir,
+      samplePath: sourcePath,
+      sampleId: params.sampleId ?? sampleIdFromPath(sourcePath),
+    });
+    workspace = initialized.workspace;
+    workspaceCreated = true;
+  }
+
+  const existingByPath = sampleForResolvedPath(workspacePath, workspace, sourcePath);
+  if (params.sampleId) {
+    const existingById = workspace.samples.find((sample) => sample.id === params.sampleId);
+    if (existingById && path.resolve(resolveSamplePath(workspacePath, existingById.path)) !== sourcePath) {
+      throw new FlowcytoError("sample_id_conflict", `Sample id ${params.sampleId} already points at another file.`, "/sample_id");
+    }
+  }
+
+  let sampleId = existingByPath?.id;
+  if (!sampleId) {
+    sampleId = uniqueSampleId(workspace, params.sampleId ?? sampleIdFromPath(sourcePath));
+    const next: FlowcytoWorkspace = {
+      ...workspace,
+      samples: [
+        ...workspace.samples,
+        { id: sampleId, path: relativeSamplePath },
+      ],
+    };
+    const write = await writeWorkspace({ workspacePath, workspace: next, expectedRevision: workspace.revision });
+    if (!write.ok || write.revision === undefined) {
+      throw new FlowcytoError("workspace_sample_add_failed", "Unable to add FCS sample to workspace.", "/samples");
+    }
+    workspace = await readWorkspace(workspacePath);
+    sampleAdded = true;
+  }
+
+  const metadata = await getSampleMetadata(workspacePath, sampleId);
+  return {
+    ok: true,
+    workspacePath,
+    sampleId,
+    sourcePath,
+    sourceKind: "fcs",
+    workspaceCreated,
+    sampleAdded,
+    revision: workspace.revision,
+    channels: compactChannels(metadata),
+    recommendedViews: recommendedViewsForMetadata(metadata),
+  };
+}
+
+export async function openFcsArtifact(params: {
+  path: string;
+  workspaceDir?: string;
+  sampleId?: string;
+}): Promise<OpenFcsArtifactResult> {
+  const inputPath = path.resolve(params.path);
+  const extension = path.extname(inputPath).toLowerCase();
+  if (extension === ".fcs") {
+    return openFcsFileArtifact({ path: inputPath, workspaceDir: params.workspaceDir, sampleId: params.sampleId });
+  }
+  if (path.basename(inputPath) === "flowcyto.workspace.json") {
+    return openWorkspaceArtifact(inputPath, params.sampleId);
+  }
+  throw new FlowcytoError(
+    "unsupported_open_fcs_path",
+    "open_fcs accepts .fcs files or flowcyto.workspace.json workspace files.",
+    "/path",
+  );
 }
 
 export async function readWorkspace(workspacePath: string): Promise<FlowcytoWorkspace> {

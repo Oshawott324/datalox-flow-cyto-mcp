@@ -20,6 +20,10 @@ testdata/fixtures/downloaded/
 agent-wiki/
 bin/
 skills/
+!skills/
+skills/*
+!skills/flowcyto/
+!skills/flowcyto/SKILL.md
 AGENTS.md
 CLAUDE.md
 DATALOX.md

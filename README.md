@@ -16,6 +16,46 @@ JSON, and reflect agent-side changes live in the open surface.
 
 Use Node.js 20 or newer.
 
+Register the published alpha package directly in an MCP host:
+
+```json
+{
+  "mcpServers": {
+    "flowcyto": {
+      "command": "npx",
+      "args": ["-y", "-p", "@datalox/flowcyto-mcp@alpha", "flowcyto-mcp"]
+    }
+  }
+}
+```
+
+On Windows, wrap `npx` with `cmd /c`:
+
+```json
+{
+  "mcpServers": {
+    "flowcyto": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "-p", "@datalox/flowcyto-mcp@alpha", "flowcyto-mcp"]
+    }
+  }
+}
+```
+
+Use the CLI from the package without a global install:
+
+```bash
+npx -y -p @datalox/flowcyto-mcp@alpha flowcyto doctor
+```
+
+Maintainers can smoke-test the local tarball before each publish:
+
+```bash
+npm run verify:publish
+```
+
+## Contributor Setup
+
 From a checkout:
 
 ```bash
@@ -25,16 +65,15 @@ npm run fixtures:fetch
 npm run verify:alpha
 ```
 
-Create an installable alpha tarball:
+Create and inspect an installable alpha tarball:
 
 ```bash
-npm pack
-npm install -g ./datalox-flowcyto-mcp-0.1.0.tgz
-flowcyto doctor
+npm run smoke:package -- --keep-tarball
 ```
 
-The package name is set to `@datalox/flowcyto-mcp`, but publishing is disabled
-with `private: true` until the real MCP-host validation gate passes.
+The npm package exposes two bins: `flowcyto` for CLI workflows and
+`flowcyto-mcp` for MCP stdio hosts. MCP host configs should call
+`flowcyto-mcp` explicitly.
 
 ## Workspace
 
@@ -72,6 +111,12 @@ structured JSON with a `revision` field so the UI and agent can reject stale
 writes instead of overwriting each other.
 
 ## CLI
+
+Open or create a workspace from a raw FCS file:
+
+```bash
+flowcyto open-fcs /path/to/sample_001.fcs --workspace-dir /path/to/my-cytometry-run
+```
 
 Read metadata:
 
@@ -122,6 +167,36 @@ flowcyto open-gate-editor /path/to/my-cytometry-run/flowcyto.workspace.json
 The browser route is for debugging and Playwright coverage. The intended user
 surface is the MCP embedded app or the compact native preview.
 
+## Agent Discovery
+
+No `AGENTS.md` file is required for the product path. Agents should discover the
+workflow from MCP tool descriptors, resources, prompts, and `nextAction`
+results.
+
+Example user prompts:
+
+```text
+Open this FCS file and gate the main population.
+Render FSC-A versus SSC-A for this sample.
+Review the gates in this flowcyto.workspace.json.
+```
+
+Primary tool path:
+
+```text
+open_fcs -> open_gate_editor -> render_plot or get_plot_context -> upsert_gate -> get_workspace_revision
+```
+
+The MCP server also exposes:
+
+```text
+flowcyto://capabilities
+flowcyto://workflow/open-fcs-and-gate
+open-fcs-and-gate-main-population prompt
+render-fcs-plot prompt
+review-workspace-gates prompt
+```
+
 ## Live Gating Demo
 
 Create the disposable demo repo used for recording:
@@ -166,6 +241,8 @@ http://127.0.0.1:8787/mcp
 The host should discover these tools:
 
 ```text
+open_fcs
+render_plot
 open_gate_editor
 get_plot_context
 get_workspace_revision

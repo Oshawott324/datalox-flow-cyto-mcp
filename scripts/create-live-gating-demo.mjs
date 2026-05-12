@@ -45,6 +45,7 @@ async function removeOldDemoArtifacts(targetDir) {
     ".windsurf",
     "bin",
     "skills",
+    "AGENTS.md",
     "CLAUDE.md",
     "DATALOX.md",
     "GEMINI.md",
@@ -95,7 +96,44 @@ function mcpJson() {
   }, null, 2);
 }
 
-function readmeText(targetDir) {
+function readmeText(targetDir, noAgents) {
+  if (noAgents) {
+    return `# flowcyto-live-gating
+
+Disposable Flowcyto data repo for validating an MCP host against a real FCS
+file and canonical workspace artifact.
+
+## Files
+
+\`\`\`text
+flowcyto.workspace.json
+data/sample_001.fcs
+.mcp.json
+README.md
+\`\`\`
+
+The workspace starts at revision 0 and contains no gates. The local MCP
+registration is in:
+
+\`\`\`text
+${path.join(targetDir, ".mcp.json")}
+\`\`\`
+
+Build Flowcyto MCP from the source repo before using this local registration:
+
+\`\`\`bash
+cd ${repoRoot}
+npm run build
+\`\`\`
+
+Manual validation:
+
+\`\`\`bash
+node ${path.join(repoRoot, "dist", "src", "cli", "main.js")} validate flowcyto.workspace.json
+node ${path.join(repoRoot, "dist", "src", "cli", "main.js")} read-workspace flowcyto.workspace.json
+\`\`\`
+`;
+  }
   return `# flowcyto-live-gating
 
 Disposable demo repo for proving the real Flowcyto MCP live gating loop.
@@ -226,6 +264,7 @@ Pass criteria:
 const targetDir = path.resolve(argValue("--target", defaultTarget));
 const fixturePath = path.resolve(argValue("--fixture", defaultFixture));
 const force = process.argv.includes("--force");
+const noAgents = process.argv.includes("--no-agents");
 
 if ((await exists(targetDir)) && !force) {
   throw new Error(`Target already exists: ${targetDir}. Pass --force to refresh known demo files.`);
@@ -247,8 +286,10 @@ await writeText(path.join(targetDir, ".gitignore"), `.DS_Store
 agent-wiki/
 node_modules/
 `);
-await writeText(path.join(targetDir, "README.md"), readmeText(targetDir));
-await writeText(path.join(targetDir, "AGENTS.md"), agentsText(targetDir));
+await writeText(path.join(targetDir, "README.md"), readmeText(targetDir, noAgents));
+if (!noAgents) {
+  await writeText(path.join(targetDir, "AGENTS.md"), agentsText(targetDir));
+}
 
 if (!(await exists(path.join(targetDir, ".git")))) {
   execFileSync("git", ["init"], { cwd: targetDir, stdio: "ignore" });
@@ -261,6 +302,7 @@ process.stdout.write(JSON.stringify({
   workspacePath: path.join(targetDir, "flowcyto.workspace.json"),
   samplePath: path.join(targetDir, "data", "sample_001.fcs"),
   mcpConfigPath: path.join(targetDir, ".mcp.json"),
+  agentsPath: noAgents ? null : path.join(targetDir, "AGENTS.md"),
   revision: workspace.revision,
   gateCount: workspace.gates.length,
 }, null, 2) + "\n");

@@ -104,6 +104,8 @@ Milestone D is implemented.
 Milestone E is implemented.
 Milestone F has a passed Codex macOS native_window row.
 Milestone G is implemented.
+Milestone H is implemented and @datalox/flowcyto-mcp@0.1.1 is published under the alpha tag.
+Milestone I is implemented and @datalox/flowcyto-mcp@0.1.3 is published under the alpha tag.
 open_gate_editor owns the MCP Apps UI resource metadata.
 open_gate_editor(surface="auto" | "mcp_app") returns the MCP app resource contract.
 open_gate_editor(surface="native_window") launches the compact native window path.
@@ -685,6 +687,633 @@ Non-goals:
   no browser-debug route as product path
   no modification to Codex, Claude Code, ChatGPT, or Datalox UI source
   no hard-coded gate geometry algorithm in Flowcyto MCP
+```
+
+### Milestone H: One-Command `npx` Distribution
+
+Status: passed on 2026-05-12. `@datalox/flowcyto-mcp@0.1.1` is published
+to npm under the `alpha` tag.
+
+Problem:
+
+```text
+The product is an MCP server, so users should not need to clone this repository,
+install dependencies, run TypeScript builds, or point a host at dist/src/mcp/server.js.
+
+The shipped experience should match normal MCP server distribution:
+  TypeScript MCP servers -> npx package command
+  Python MCP servers -> uvx or pip command
+  Docker MCP servers -> docker run command
+
+The MCP client configuration should be command + args, not a build recipe.
+```
+
+Reference behavior:
+
+```text
+Official MCP reference servers:
+  TypeScript servers can be used directly with npx.
+  Python servers can be used directly with uvx or pip.
+  Claude Desktop-style client config is command + args.
+  Windows wraps npx through cmd /c.
+
+Fetch reference server:
+  uv users can run uvx mcp-server-fetch with no separate installation step.
+```
+
+Source links:
+
+```text
+https://github.com/modelcontextprotocol/servers/blob/main/README.md
+https://github.com/modelcontextprotocol/servers/blob/main/src/fetch/README.md
+```
+
+Target user configuration:
+
+```json
+{
+  "mcpServers": {
+    "flowcyto": {
+      "command": "npx",
+      "args": ["-y", "-p", "@datalox/flowcyto-mcp@alpha", "flowcyto-mcp"]
+    }
+  }
+}
+```
+
+Use explicit `-p ... flowcyto-mcp` instead of relying on `npx
+@datalox/flowcyto-mcp` because this package exposes two bins:
+
+```text
+flowcyto      -> CLI for humans, scripts, and validation
+flowcyto-mcp  -> MCP stdio server for agent hosts
+```
+
+Windows target configuration:
+
+```json
+{
+  "mcpServers": {
+    "flowcyto": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "-p", "@datalox/flowcyto-mcp@alpha", "flowcyto-mcp"]
+    }
+  }
+}
+```
+
+Current repo state:
+
+```text
+package name is already @datalox/flowcyto-mcp
+package has bin.flowcyto
+package has bin.flowcyto-mcp
+package has a files allowlist
+package no longer has private: true
+src/cli/main.ts has #!/usr/bin/env node
+src/mcp/server.ts has #!/usr/bin/env node
+publishConfig.registry points to https://registry.npmjs.org/
+local tarball smoke passes through npm exec and MCP SDK startup
+public package smoke passes through npx and MCP SDK startup
+```
+
+Implementation details:
+
+```text
+src/mcp/server.ts
+  add a first-line shebang:
+    #!/usr/bin/env node
+  keep the file ESM-compatible
+  ensure the compiled dist/src/mcp/server.js also starts with the shebang
+  keep stdio as the default transport when no --http flag is present
+
+package.json
+  remove private: true only when the package is ready for npm alpha publish
+  keep name = @datalox/flowcyto-mcp
+  keep bin.flowcyto = dist/src/cli/main.js
+  keep bin.flowcyto-mcp = dist/src/mcp/server.js
+  add engines:
+    "node": ">=20"
+  add publishConfig:
+    "access": "public"
+    "tag": "alpha"
+    "registry": "https://registry.npmjs.org/"
+  add prepack:
+    "npm run build"
+  add verify:publish:
+    "npm run verify:alpha && npm run smoke:package"
+  keep files allowlist tight:
+    dist/src/**/*
+    dist/native/windows/**/*
+    native/windows/**/*
+    docs/**/*.md
+    schemas/**/*
+    scripts/*.mjs
+    testdata/fixtures/manifest.json
+
+README.md
+  make npx MCP registration the first install path
+  move clone/npm ci/npm run build to Contributor Setup
+  show macOS/Linux config
+  show Windows cmd /c config
+  show local tarball smoke-test commands for maintainers
+  document that --http remains localhost-only alpha/debug mode
+
+docs/implementation-details.md
+  keep this milestone as the release gate for npx distribution
+  do not mark passed until published-package smoke tests pass
+
+tests or scripts
+  add a package smoke script if repeated manually:
+    npm pack
+    npm exec --yes --package ./datalox-flowcyto-mcp-0.1.1.tgz -- flowcyto doctor
+    MCP SDK starts flowcyto-mcp from the tarball and calls tools/list
+  avoid tests that depend on the public npm registry for normal local CI
+
+CI/release
+  build TypeScript before npm pack
+  run npm run verify:publish on macOS
+  build Windows WebView2 helpers on Windows if native_window parity is claimed
+  upload/publish alpha only after package smoke passes
+```
+
+Published result:
+
+```text
+command:
+  npm publish --access public --tag alpha
+
+result:
+  + @datalox/flowcyto-mcp@0.1.1
+
+public version:
+  npm view @datalox/flowcyto-mcp@alpha version -> 0.1.1
+
+public CLI smoke:
+  npx -y -p @datalox/flowcyto-mcp@alpha flowcyto doctor -> ok true
+
+public MCP smoke:
+  npx -y -p @datalox/flowcyto-mcp@alpha flowcyto-mcp
+  MCP SDK tools/list exposes open_gate_editor, get_plot_context, and upsert_gate
+  MCP SDK resources/read exposes ui://flowcyto/gate-editor-v1.html
+```
+
+Local tarball smoke commands:
+
+```bash
+npm run verify:publish
+npm pack
+
+npm exec --yes --package ./datalox-flowcyto-mcp-0.1.1.tgz -- flowcyto doctor
+npm exec --yes --package ./datalox-flowcyto-mcp-0.1.1.tgz -- flowcyto validate \
+  /path/to/flowcyto.workspace.json
+```
+
+MCP stdio smoke should use an MCP client, not a long-running naked command:
+
+```text
+start command:
+  npm exec --yes --package ./datalox-flowcyto-mcp-0.1.1.tgz -- flowcyto-mcp
+
+client assertions:
+  initialize succeeds
+  tools/list includes open_gate_editor
+  tools/list includes get_plot_context
+  tools/list includes upsert_gate
+  resources/list or resources/read exposes ui://flowcyto/gate-editor-v1.html
+```
+
+Published alpha smoke commands:
+
+```bash
+npm view @datalox/flowcyto-mcp@alpha version
+npx -y -p @datalox/flowcyto-mcp@alpha flowcyto doctor
+```
+
+Published MCP host config smoke:
+
+```text
+create a fresh flowcyto-live-gating repo
+configure host with npx -p @datalox/flowcyto-mcp@alpha flowcyto-mcp
+ask exactly: Open this FCS/workspace and gate the main population.
+verify the compact surface opens
+verify the agent writes through upsert_gate
+verify scripts/validate-live-demo-result.mjs passes
+```
+
+Windows native_window parity decision:
+
+```text
+Option A: claim MCP tools on Windows, but not native_window parity yet
+  npx config works
+  get_plot_context/upsert_gate work
+  open_gate_editor(surface="native_window") returns structured unsupported or missing-helper error
+  README says Windows native helper is not bundled in this alpha
+
+Option B: claim full Windows native_window parity
+  CI builds dist/native/windows/win-x64 helper
+  CI builds dist/native/windows/win-arm64 helper
+  npm tarball includes those helpers
+  Windows host validation opens WebView2 compact window from npx-installed package
+```
+
+Prefer Option A until real Windows host validation passes. It is better to ship
+honest MCP functionality than to imply native desktop parity that has not been
+validated on Windows.
+
+Pass criteria:
+
+```text
+Package metadata pass:
+  src/mcp/server.ts has #!/usr/bin/env node
+  dist/src/mcp/server.js has #!/usr/bin/env node after npm run build
+  package.json has engines.node >=20
+  package.json has publishConfig.access public
+  package.json has publishConfig.tag alpha
+  package.json has publishConfig.registry https://registry.npmjs.org/
+  package.json has no private: true when publishing
+  npm pack --dry-run contains dist/src/mcp/server.js
+  npm pack --dry-run contains dist/src/cli/main.js
+  npm pack --dry-run excludes src/**/*.ts, tests, .datalox, agent-wiki, and local run logs
+
+Local tarball pass:
+  npm exec --yes --package ./datalox-flowcyto-mcp-*.tgz -- flowcyto doctor returns ok true
+  MCP SDK can start flowcyto-mcp from the tarball
+  MCP SDK tools/list contains open_gate_editor, get_plot_context, upsert_gate
+  MCP SDK resources/read can fetch ui://flowcyto/gate-editor-v1.html
+
+Published alpha pass:
+  npm publish --access public --tag alpha succeeds
+  npm view @datalox/flowcyto-mcp@alpha version returns the published version
+  npx config works in at least one named real host on macOS
+  host row validates with scripts/validate-live-demo-result.mjs
+
+Documentation pass:
+  README first install path is npx config
+  build-from-source is under Contributor Setup
+  Windows config uses cmd /c npx
+  docs state whether Windows native_window is bundled or intentionally unsupported in alpha
+
+Security boundary pass:
+  --http examples bind to 127.0.0.1
+  docs continue to say not to expose --http publicly without auth/TLS
+  no public network listener is introduced by the npx path
+```
+
+Non-goals:
+
+```text
+do not require global npm install
+do not require git clone for users
+do not require npm run build for users
+do not make the browser debug route the release path
+do not claim Windows native_window support until a real Windows run passes
+do not publish latest; use alpha until host matrix and fixture coverage improve
+```
+
+### Milestone I: MCP Self-Discovery For FCS Gating
+
+Status: passed on 2026-05-12. Implemented and published in `@datalox/flowcyto-mcp@0.1.3`.
+
+Problem:
+
+```text
+Publishing an MCP server is not enough for agent usability.
+
+If the user says:
+  "Open this FCS file and gate the main population."
+
+the agent must discover from the MCP server itself that Flowcyto can:
+  parse/open .fcs files
+  create or open flowcyto.workspace.json
+  render FSC/SSC and marker plots through tool results
+  open the compact Flowcyto app
+  write gates with revision-safe JSON updates
+
+This must work without AGENTS.md, demo scripts, local plotting scripts, or
+host-specific prompt injection.
+```
+
+How mature MCP servers solve this:
+
+```text
+Tool names match user intent:
+  a user asks to fetch, search, read, browse, open, or render;
+  the MCP exposes tools with those verbs, not only internal primitives.
+
+Tool descriptions are model-facing routing hints:
+  each important tool says when to use it, what input it accepts, and the next
+  expected tool in the workflow.
+
+Prompts expose reusable workflows:
+  prompts are optional but discoverable. They give the host/model a named
+  recipe such as "open this file and summarize it" or "review this artifact."
+
+Resources expose durable facts/capabilities:
+  resources can tell the model what the server supports without requiring the
+  model to infer it from package docs.
+
+Host docs or AGENTS.md are convenience layers:
+  useful for demos and local repos, but not the product contract.
+```
+
+Target MCP discovery contract:
+
+```text
+User asks:
+  Open this FCS/workspace and gate the main population.
+
+Agent discovers:
+  flowcyto.open_fcs
+  flowcyto.render_plot
+  flowcyto.open_gate_editor
+  flowcyto.get_plot_context
+  flowcyto.upsert_gate
+
+Agent calls:
+  open_fcs(file_path or workspace_path)
+  open_gate_editor(workspace_path, surface?)
+  get_plot_context(workspace_path, sample_id, x, y)
+  upsert_gate(workspace_path, expected_revision, gate)
+
+Already-open compact app:
+  polls get_workspace_revision
+  refreshes through get_plot_context
+```
+
+Required product changes:
+
+```text
+src/mcp/server.ts
+  add open_fcs
+    description:
+      "Open an .fcs file or flowcyto.workspace.json, create or reuse a
+       Flowcyto workspace, parse FCS metadata, and return the next tool to
+       render or gate it. Use this when the user asks to open, inspect,
+       render, analyze, or gate an FCS file."
+
+    input:
+      path: string
+      workspace_dir?: string
+      sample_id?: string
+      surface?: "auto" | "mcp_app" | "native_window" | "none"
+
+    behavior:
+      if path ends with .fcs:
+        create/reuse flowcyto.workspace.json under workspace_dir or parent dir
+        add the FCS as sample_id
+        parse metadata only, not all events
+      if path ends with flowcyto.workspace.json:
+        open existing workspace
+      return:
+        workspacePath
+        sampleId
+        channels
+        recommendedViews
+        nextAction.tool = "render_plot" or "open_gate_editor"
+
+  add render_plot
+    description:
+      "Return renderable flow cytometry plot data for FSC/SSC or marker
+       channels. Use this when the user asks to show, render, plot, inspect,
+       or compare cytometry channels."
+
+    behavior:
+      wraps get_event_preview/get_plot_context
+      returns the same point/bin preview contract the compact app uses
+      does not create PNGs unless a future explicit image export tool exists
+
+  keep get_plot_context
+    role:
+      lower-level active editor view context
+    description:
+      still references render_plot/open_gate_editor/upsert_gate
+
+  update existing descriptions
+    open_gate_editor:
+      mention it accepts workspaces created by open_fcs
+    get_event_preview:
+      mention render_plot is the user-intent alias
+    upsert_gate:
+      mention expected_revision comes from render_plot/get_plot_context
+
+  add resources/list support for:
+    flowcyto://capabilities
+    flowcyto://workflow/open-fcs-and-gate
+
+  add resources/read:
+    flowcyto://capabilities returns JSON:
+      supportsFileTypes: [".fcs", "flowcyto.workspace.json"]
+      canParseMetadata: true
+      canRenderPlots: true
+      canOpenCompactApp: true
+      canWriteStructuredGates: true
+      liveRefreshAfterUpsertGate: true
+      canonicalArtifact: "flowcyto.workspace.json"
+
+    flowcyto://workflow/open-fcs-and-gate returns text or JSON:
+      orderedTools:
+        open_fcs
+        open_gate_editor
+        get_plot_context or render_plot
+        upsert_gate
+        get_workspace_revision
+
+  add prompts/list support for:
+    open-fcs-and-gate-main-population
+    render-fcs-plot
+    review-workspace-gates
+
+  add prompts/get:
+    each prompt should include concrete tool-call order and forbid direct JSON
+    patching when upsert_gate is available.
+
+src/cli/main.ts
+  add CLI alias:
+    flowcyto open-fcs <path> [--workspace-dir <dir>] [--sample-id <id>]
+
+  keep CLI secondary:
+    the MCP path is primary for agents, but CLI should allow maintainers to
+    validate the same behavior outside a host.
+
+skills/flowcyto/SKILL.md
+  add an optional agent skill for hosts that support repo/package skills.
+  This skill is not the product contract; MCP discovery must work without it.
+
+  purpose:
+    teach agents when Flowcyto is relevant:
+      .fcs files
+      flow cytometry
+      FSC/SSC plots
+      marker plots
+      manual or agent-assisted gating
+      flowcyto.workspace.json artifacts
+
+  required guidance:
+    prefer MCP tools when an MCP host is available
+    use CLI only for setup, validation, fixture checks, or hosts without MCP
+    never patch flowcyto.workspace.json directly when upsert_gate is available
+    use preview/render outputs from Flowcyto rather than local Python plotting
+    preserve revision-safe writes
+
+  MCP path:
+    open_fcs -> open_gate_editor -> get_plot_context or render_plot ->
+    upsert_gate -> get_workspace_revision
+
+  CLI fallback examples:
+    npx -y -p @datalox/flowcyto-mcp@alpha flowcyto doctor
+    npx -y -p @datalox/flowcyto-mcp@alpha flowcyto open-fcs sample.fcs
+    npx -y -p @datalox/flowcyto-mcp@alpha flowcyto metadata flowcyto.workspace.json --sample sample_001
+    npx -y -p @datalox/flowcyto-mcp@alpha flowcyto preview flowcyto.workspace.json --sample sample_001 --x FSC-A --y SSC-A --format bins
+    npx -y -p @datalox/flowcyto-mcp@alpha flowcyto validate flowcyto.workspace.json
+
+  anti-patterns:
+    do not create a separate gate writer script
+    do not infer gates from screenshots when render_plot/get_plot_context is available
+    do not use AGENTS.md as the only way to teach this workflow
+    do not tell the user to install FlowJo
+
+README.md
+  add "Agent Discovery" section:
+    no AGENTS.md required
+    user prompt examples
+    exact MCP config using npx
+    exact expected tool path
+
+docs/implementation-details.md
+  keep this milestone separate from host matrix and packaging.
+```
+
+Concrete tool-result requirements:
+
+```text
+open_fcs result:
+  ok: true
+  workspacePath: absolute path
+  sampleId: string
+  sourcePath: absolute .fcs or workspace path
+  channels: compact metadata list
+  recommendedViews:
+    - { x: "FSC-A", y: "SSC-A", intent: "main_population" }
+    - marker pairs when obvious from metadata
+  nextAction:
+    tool: "open_gate_editor"
+    arguments:
+      workspace_path: workspacePath
+      sample_id: sampleId
+      x: "FSC-A"
+      y: "SSC-A"
+      surface: "native_window" or "auto"
+
+render_plot result:
+  ok: true
+  workspacePath
+  sampleId
+  revision
+  x
+  y
+  bounds
+  preview:
+    format: "points" | "bins"
+    points? or bins?
+  gates
+  recommendedGate:
+    type: "polygon"
+    geometrySource: "preview_or_bins_from_render_plot"
+  nextAction:
+    tool: "upsert_gate"
+```
+
+No-AGENTS demo harness:
+
+```text
+scripts/create-live-gating-demo.mjs
+  add --no-agents
+  when set:
+    do not write AGENTS.md
+    do not write prompt guidance files
+    do not write gate scripts
+    only write:
+      flowcyto.workspace.json or raw .fcs depending on test mode
+      data/*.fcs
+      .mcp.json
+      README.md with human-neutral description only
+
+scripts/validate-live-demo-result.mjs
+  add --allow-no-agents
+  assert no AGENTS.md exists when validating no-AGENTS run
+
+tests/core.test.ts
+  unit test tools/list includes open_fcs and render_plot
+  unit test tool descriptions include .fcs, render, gate, and next tool hints
+  unit test resources/list includes flowcyto://capabilities
+  unit test prompts/list includes open-fcs-and-gate-main-population
+  unit test skills/flowcyto/SKILL.md exists and contains MCP-first guidance
+  integration test open_fcs on fixture .fcs creates/opens a workspace
+  integration test render_plot returns bins or points for FSC-A/SSC-A
+  integration test no-AGENTS demo harness contains no gate scripts or AGENTS.md
+```
+
+Pass criteria:
+
+```text
+MCP discovery pass:
+  tools/list includes open_fcs
+  tools/list includes render_plot
+  open_fcs description contains ".fcs", "workspace", "render", "gate"
+  render_plot description contains "FSC/SSC", "marker", "render", "plot"
+  open_gate_editor description points back to open_fcs-created workspaces
+  upsert_gate description references expected_revision from render_plot/get_plot_context
+
+Resource pass:
+  resources/list includes flowcyto://capabilities
+  resources/read flowcyto://capabilities returns supportsFileTypes including .fcs
+  capabilities says canRenderPlots true
+  capabilities says canWriteStructuredGates true
+  capabilities says canonicalArtifact flowcyto.workspace.json
+
+Prompt pass:
+  prompts/list includes open-fcs-and-gate-main-population
+  prompts/get open-fcs-and-gate-main-population names the tool order
+  prompt text does not depend on AGENTS.md
+
+Skill-doc pass:
+  skills/flowcyto/SKILL.md exists
+  skill says MCP is preferred over CLI when available
+  skill documents CLI fallback commands with npx
+  skill says do not patch flowcyto.workspace.json directly when upsert_gate exists
+  skill says AGENTS.md is optional convenience, not required product behavior
+
+Functional pass:
+  open_fcs on a real fixture .fcs returns workspacePath, sampleId, channels, and nextAction
+  render_plot using open_fcs result returns revision, bounds, preview, recommendedGate, and nextAction
+  upsert_gate using render_plot expected_revision writes a gate and increments revision
+  already-open compact app refreshes after upsert_gate
+
+No-AGENTS host pass:
+  create fresh demo repo with --no-agents
+  register published or local Flowcyto MCP through npx
+  ask a real agent host:
+    "Open this FCS file and gate the main population."
+  pass only if the trace uses Flowcyto MCP tools without AGENTS.md, scripts,
+  Python plotting, direct JSON patching, or browser inspection
+  validate final artifact with scripts/validate-live-demo-result.mjs --allow-no-agents
+
+Release pass:
+  npm run verify:publish passes
+  public alpha package is bumped and published after implementation
+  public npx MCP SDK smoke confirms open_fcs, render_plot, open_gate_editor,
+  get_plot_context, and upsert_gate are exposed
+```
+
+Non-goals:
+
+```text
+do not build a full analysis engine into Flowcyto MCP
+do not hard-code the main-population gate algorithm
+do not rely on AGENTS.md for product correctness
+do not add a JSON-writing demo script as the agent path
+do not require users to know the workspace format before opening an FCS file
 ```
 
 Global pass criteria:

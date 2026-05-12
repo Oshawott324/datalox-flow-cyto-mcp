@@ -469,6 +469,32 @@ describe("flowcyto core", () => {
 });
 
 describe("flowcyto CLI", () => {
+  it("defines npx-ready package metadata", async () => {
+    const packageJson = JSON.parse(await fs.readFile(path.resolve("package.json"), "utf8")) as {
+      private?: boolean;
+      engines?: { node?: string };
+      publishConfig?: { access?: string; tag?: string; registry?: string };
+      bin?: Record<string, string>;
+      scripts?: Record<string, string>;
+      files?: string[];
+    };
+    expect(packageJson.private).toBeUndefined();
+    expect(packageJson.engines?.node).toBe(">=20");
+    expect(packageJson.publishConfig?.access).toBe("public");
+    expect(packageJson.publishConfig?.tag).toBe("alpha");
+    expect(packageJson.publishConfig?.registry).toBe("https://registry.npmjs.org/");
+    expect(packageJson.bin?.flowcyto).toBe("dist/src/cli/main.js");
+    expect(packageJson.bin?.["flowcyto-mcp"]).toBe("dist/src/mcp/server.js");
+    expect(packageJson.files).toContain("skills/flowcyto/SKILL.md");
+    expect(packageJson.scripts?.prepack).toBe("npm run build");
+    expect(packageJson.scripts?.["verify:publish"]).toContain("smoke:package");
+
+    const sourceServer = await fs.readFile(path.resolve("src/mcp/server.ts"), "utf8");
+    expect(sourceServer.startsWith("#!/usr/bin/env node\n")).toBe(true);
+    const builtServer = await fs.readFile(path.resolve("dist/src/mcp/server.js"), "utf8");
+    expect(builtServer.startsWith("#!/usr/bin/env node\n")).toBe(true);
+  });
+
   it("creates the live gating demo harness without gate writer scripts", async () => {
     const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-live-gating-demo-"));
     const { stdout } = await execFileAsync("node", [
@@ -524,6 +550,75 @@ describe("flowcyto CLI", () => {
     expect(agents).not.toContain("Do not use Computer Use");
     expect(agents).not.toContain("Allowed tools for the demo turn");
     expect(agents).not.toContain("datalox_agent_live_gate");
+  });
+
+  it("creates a no-AGENTS live gating demo harness", async () => {
+    const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-live-gating-no-agents-"));
+    const { stdout } = await execFileAsync("node", [
+      "scripts/create-live-gating-demo.mjs",
+      "--target",
+      targetDir,
+      "--force",
+      "--no-agents",
+    ], { cwd: path.resolve(".") });
+    const result = JSON.parse(stdout) as {
+      ok: boolean;
+      targetDir: string;
+      workspacePath: string;
+      agentsPath: string | null;
+    };
+    expect(result.ok).toBe(true);
+    expect(result.targetDir).toBe(targetDir);
+    expect(result.agentsPath).toBeNull();
+
+    const entries = await fs.readdir(targetDir);
+    expect(entries.sort()).toEqual([
+      ".git",
+      ".gitignore",
+      ".mcp.json",
+      "README.md",
+      "data",
+      "flowcyto.workspace.json",
+    ]);
+    await expect(fs.access(path.join(targetDir, "AGENTS.md"))).rejects.toThrow();
+    await expect(fs.access(path.join(targetDir, "scripts"))).rejects.toThrow();
+    await expect(fs.access(path.join(targetDir, "prompts"))).rejects.toThrow();
+
+    const readme = await fs.readFile(path.join(targetDir, "README.md"), "utf8");
+    expect(readme).toContain("Disposable Flowcyto data repo");
+    expect(readme).not.toContain("Expected Tool Trace");
+    expect(readme).not.toContain("The agent must use");
+
+    await upsertGate({
+      workspacePath: result.workspacePath,
+      expectedRevision: 0,
+      gate: {
+        id: "agent_main_population_gate",
+        name: "Agent Main Population Gate",
+        sample: "sample_001",
+        parent: "root",
+        type: "polygon",
+        x: "FSC-A",
+        y: "SSC-A",
+        vertices: [
+          [-600, 250],
+          [650, 250],
+          [650, 4400],
+          [-350, 4400],
+          [-700, 900],
+        ],
+      },
+    });
+
+    const validation = await execFileAsync("node", [
+      "scripts/validate-live-demo-result.mjs",
+      "--workspace",
+      result.workspacePath,
+      "--allow-no-agents",
+    ], { cwd: path.resolve(".") });
+    const body = JSON.parse(validation.stdout) as { ok: boolean; agentsAbsent: boolean };
+    expect(body.ok).toBe(true);
+    expect(body.agentsAbsent).toBe(true);
   });
 
   it("validates the live demo result artifact", async () => {
@@ -604,6 +699,28 @@ describe("flowcyto CLI", () => {
     const parsedPreview = JSON.parse(preview.stdout);
     expect(parsedPreview.ok).toBe(true);
     expect(parsedPreview.preview.sampledEvents).toBeLessThanOrEqual(32);
+
+    const openDir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-open-fcs-cli-"));
+    const opened = await execFileAsync("node", [
+      cliPath,
+      "open-fcs",
+      fixturePath,
+      "--workspace-dir",
+      openDir,
+    ]);
+    const parsedOpened = JSON.parse(opened.stdout) as {
+      ok: boolean;
+      workspacePath: string;
+      sampleId: string;
+      channels: Array<{ name: string }>;
+      nextAction: { command: string; arguments: { x: string; y: string } };
+    };
+    expect(parsedOpened.ok).toBe(true);
+    expect(parsedOpened.workspacePath).toBe(path.join(openDir, "flowcyto.workspace.json"));
+    expect(parsedOpened.sampleId).toBe("CFP_Well_A4");
+    expect(parsedOpened.channels.some((channel) => channel.name === "FSC-A")).toBe(true);
+    expect(parsedOpened.nextAction.command).toBe("flowcyto preview");
+    expect(parsedOpened.nextAction.arguments).toMatchObject({ x: "FSC-A", y: "SSC-A" });
   });
 
   it("reports alpha install readiness through doctor", async () => {
@@ -1159,6 +1276,8 @@ describe("flowcyto MCP", () => {
       expect(transport.sessionId).toBeTruthy();
 
       const tools = await client.listTools();
+      expect(tools.tools.some((tool) => tool.name === "open_fcs")).toBe(true);
+      expect(tools.tools.some((tool) => tool.name === "render_plot")).toBe(true);
       expect(tools.tools.some((tool) => tool.name === "open_gate_editor")).toBe(true);
       expect(tools.tools.some((tool) => tool.name === "get_plot_context")).toBe(true);
       expect(tools.tools.some((tool) => tool.name === "render_gate_editor")).toBe(true);
@@ -1445,6 +1564,151 @@ describe("flowcyto MCP", () => {
     }
   });
 
+  it("exposes self-discovery for opening FCS files, rendering plots, and writing gates", async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-open-fcs-mcp-"));
+    const serverPath = path.resolve("dist/src/mcp/server.js");
+    const client = new Client({ name: "flowcyto-self-discovery-test", version: "0.0.0" });
+    const transport = new StdioClientTransport({ command: "node", args: [serverPath] });
+
+    try {
+      await client.connect(transport);
+      const tools = await client.listTools();
+      const openFcsTool = tools.tools.find((tool) => tool.name === "open_fcs");
+      const renderPlotTool = tools.tools.find((tool) => tool.name === "render_plot");
+      const openGateEditorTool = tools.tools.find((tool) => tool.name === "open_gate_editor");
+      const upsertGateTool = tools.tools.find((tool) => tool.name === "upsert_gate");
+      expect(openFcsTool?.description).toContain(".fcs");
+      expect(openFcsTool?.description).toContain("workspace");
+      expect(openFcsTool?.description).toContain("render");
+      expect(openFcsTool?.description).toContain("gate");
+      expect(renderPlotTool?.description).toContain("FSC/SSC");
+      expect(renderPlotTool?.description).toContain("marker");
+      expect(renderPlotTool?.description).toContain("render");
+      expect(renderPlotTool?.description).toContain("plot");
+      expect(openGateEditorTool?.description).toContain("open_fcs");
+      expect(upsertGateTool?.description).toContain("expected_revision from render_plot or get_plot_context");
+
+      const resources = await client.listResources();
+      expect(resources.resources.some((resource) => resource.uri === "flowcyto://capabilities")).toBe(true);
+      expect(resources.resources.some((resource) => resource.uri === "flowcyto://workflow/open-fcs-and-gate")).toBe(true);
+      const capabilities = await client.readResource({ uri: "flowcyto://capabilities" });
+      const capabilitiesResult = JSON.parse("text" in capabilities.contents[0] ? capabilities.contents[0].text as string : "{}") as {
+        supportsFileTypes: string[];
+        canRenderPlots: boolean;
+        canWriteStructuredGates: boolean;
+        canonicalArtifact: string;
+      };
+      expect(capabilitiesResult.supportsFileTypes).toContain(".fcs");
+      expect(capabilitiesResult.canRenderPlots).toBe(true);
+      expect(capabilitiesResult.canWriteStructuredGates).toBe(true);
+      expect(capabilitiesResult.canonicalArtifact).toBe("flowcyto.workspace.json");
+
+      const prompts = await client.listPrompts();
+      expect(prompts.prompts.some((prompt) => prompt.name === "open-fcs-and-gate-main-population")).toBe(true);
+      expect(prompts.prompts.some((prompt) => prompt.name === "render-fcs-plot")).toBe(true);
+      expect(prompts.prompts.some((prompt) => prompt.name === "review-workspace-gates")).toBe(true);
+      const prompt = await client.getPrompt({
+        name: "open-fcs-and-gate-main-population",
+        arguments: { path: "sample.fcs" },
+      });
+      const promptText = "text" in prompt.messages[0].content ? prompt.messages[0].content.text : "";
+      expect(promptText).toContain("open_fcs");
+      expect(promptText).toContain("open_gate_editor");
+      expect(promptText).toContain("render_plot or get_plot_context");
+      expect(promptText).toContain("upsert_gate");
+      expect(promptText).toContain("AGENTS.md is optional convenience guidance");
+
+      const skill = await fs.readFile(path.resolve("skills/flowcyto/SKILL.md"), "utf8");
+      expect(skill).toContain("Prefer Flowcyto MCP tools");
+      expect(skill).toContain("npx -y -p @datalox/flowcyto-mcp@alpha flowcyto open-fcs sample.fcs");
+      expect(skill).toContain("Do not patch `flowcyto.workspace.json` directly");
+      expect(skill).toContain("AGENTS.md");
+      expect(skill).toContain("optional convenience guidance");
+
+      const opened = await client.callTool({
+        name: "open_fcs",
+        arguments: {
+          path: fixturePath,
+          workspace_dir: workspaceDir,
+          surface: "none",
+        },
+      });
+      const openedResult = (opened.structuredContent as { result?: unknown } | undefined)?.result as {
+        ok: boolean;
+        workspacePath: string;
+        sampleId: string;
+        sourcePath: string;
+        channels: Array<{ name: string }>;
+        recommendedViews: Array<{ x: string; y: string; intent: string }>;
+        nextAction: { tool: string; arguments: Record<string, unknown> };
+      };
+      expect(openedResult.ok).toBe(true);
+      expect(openedResult.workspacePath).toBe(path.join(workspaceDir, "flowcyto.workspace.json"));
+      expect(openedResult.sampleId).toBe("CFP_Well_A4");
+      expect(openedResult.sourcePath).toBe(fixturePath);
+      expect(openedResult.channels.length).toBeGreaterThan(2);
+      expect(openedResult.recommendedViews[0]).toMatchObject({ x: "FSC-A", y: "SSC-A", intent: "main_population" });
+      expect(openedResult.nextAction.tool).toBe("render_plot");
+
+      const plot = await client.callTool({
+        name: openedResult.nextAction.tool,
+        arguments: openedResult.nextAction.arguments,
+      });
+      const plotResult = (plot.structuredContent as { result?: unknown } | undefined)?.result as {
+        ok: boolean;
+        revision: number;
+        sampleId: string;
+        x: string;
+        y: string;
+        bounds: { xMin: number; xMax: number; yMin: number; yMax: number };
+        preview: { format: "points" | "bins"; sampledEvents: number };
+        recommendedGate: { type: string; geometrySource: string };
+        expected_revision: number;
+        nextAction: { tool: string; arguments: { workspace_path: string; expected_revision: number; gateTemplate: Record<string, unknown> } };
+      };
+      expect(plotResult.ok).toBe(true);
+      expect(plotResult.revision).toBe(0);
+      expect(plotResult.sampleId).toBe(openedResult.sampleId);
+      expect(plotResult.x).toBe("FSC-A");
+      expect(plotResult.y).toBe("SSC-A");
+      expect(plotResult.bounds.xMax).toBeGreaterThan(plotResult.bounds.xMin);
+      expect(plotResult.bounds.yMax).toBeGreaterThan(plotResult.bounds.yMin);
+      expect(plotResult.preview.format).toBe("bins");
+      expect(plotResult.preview.sampledEvents).toBeGreaterThan(0);
+      expect(plotResult.recommendedGate.type).toBe("polygon");
+      expect(plotResult.recommendedGate.geometrySource).toBe("preview_or_bins_from_render_plot");
+      expect(plotResult.nextAction.tool).toBe("upsert_gate");
+
+      const gate = {
+        ...plotResult.nextAction.arguments.gateTemplate,
+        vertices: [
+          [plotResult.bounds.xMin, plotResult.bounds.yMin],
+          [plotResult.bounds.xMax, plotResult.bounds.yMin],
+          [plotResult.bounds.xMax, plotResult.bounds.yMax],
+          [plotResult.bounds.xMin, plotResult.bounds.yMax],
+        ],
+      };
+      const created = await client.callTool({
+        name: plotResult.nextAction.tool,
+        arguments: {
+          workspace_path: plotResult.nextAction.arguments.workspace_path,
+          expected_revision: plotResult.nextAction.arguments.expected_revision,
+          gate,
+        },
+      });
+      const createdResult = (created.structuredContent as { result?: unknown } | undefined)?.result as {
+        ok: boolean;
+        revision: number;
+        gateCount: number;
+      };
+      expect(createdResult.ok).toBe(true);
+      expect(createdResult.revision).toBe(1);
+      expect(createdResult.gateCount).toBe(1);
+    } finally {
+      await client.close();
+    }
+  });
+
   it("exposes metadata and preview tools over stdio", async () => {
     const { workspacePath } = await makeWorkspace();
     const serverPath = path.resolve("dist/src/mcp/server.js");
@@ -1463,10 +1727,12 @@ describe("flowcyto MCP", () => {
         "get_sample_metadata",
         "get_workspace_revision",
         "list_samples",
+        "open_fcs",
         "open_gate_editor",
         "open_workspace",
         "read_workspace",
         "render_gate_editor",
+        "render_plot",
         "upsert_gate",
         "validate_workspace",
         "write_workspace",
