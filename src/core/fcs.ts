@@ -260,9 +260,14 @@ export async function readPreviewColumns(input: {
     return acc;
   }, []);
   const { begin, end } = dataBounds(header, text);
-  const dataLength = end - begin + 1;
+  const declaredLength = end - begin + 1;
+  const expectedDataLength = totalEvents * rowSize;
   const buffer = await fs.readFile(path);
-  const view = new DataView(buffer.buffer, buffer.byteOffset + begin, dataLength);
+  const availableLength = buffer.byteLength - begin;
+  if (begin < 0 || expectedDataLength < 0 || availableLength < expectedDataLength || declaredLength < expectedDataLength) {
+    throw new FlowcytoError("invalid_fcs_data_segment", "FCS DATA segment is shorter than $TOT and parameter byte widths require.");
+  }
+  const view = new DataView(buffer.buffer, buffer.byteOffset + begin, expectedDataLength);
   const targetEvents = maxEvents && maxEvents > 0 ? Math.min(maxEvents, totalEvents) : totalEvents;
   const stride = Math.max(1, Math.ceil(totalEvents / targetEvents));
   const sampledEvents = Math.ceil(totalEvents / stride);

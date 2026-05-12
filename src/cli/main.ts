@@ -44,7 +44,7 @@ function handleError(error: unknown): never {
 program
   .name("flowcyto")
   .description("Flow cytometry workspace CLI for the Flowcyto MCP core.")
-  .version("0.1.3");
+  .version("0.1.4");
 
 program
   .command("open-fcs")

@@ -28,6 +28,7 @@ import {
   getEventPreview,
   getSampleMetadata,
   initWorkspace,
+  readPreviewColumns,
   readWorkspace,
   upsertGate,
   validateWorkspace,
@@ -279,6 +280,49 @@ describe("flowcyto core", () => {
       expect(bins.bins?.counts, fixture.id).toHaveLength(32 * 24);
       expect(bins.bins?.counts.reduce((sum, count) => sum + count, 0), fixture.id).toBe(bins.sampledEvents);
     }
+  });
+
+  it("reads FCS data when vendor $ENDDATA is one past EOF but $TOT and row width match", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-off-by-one-fcs-"));
+    const fcsPath = path.join(dir, "vendor-enddata-one-past-eof.fcs");
+    const data = Buffer.alloc(8);
+    data.writeUInt16LE(10, 0);
+    data.writeUInt16LE(20, 2);
+    data.writeUInt16LE(30, 4);
+    data.writeUInt16LE(40, 6);
+    const textSegment = (beginData: number, endData: number) => `|${[
+      "$BEGINANALYSIS", "0",
+      "$BEGINDATA", String(beginData).padStart(12, "0"),
+      "$BYTEORD", "1,2,3,4",
+      "$DATATYPE", "I",
+      "$ENDANALYSIS", "0",
+      "$ENDDATA", String(endData).padStart(12, "0"),
+      "$MODE", "L",
+      "$NEXTDATA", "0",
+      "$PAR", "2",
+      "$TOT", "2",
+      "$P1B", "16",
+      "$P1N", "FSC-A",
+      "$P1R", "65535",
+      "$P2B", "16",
+      "$P2N", "SSC-A",
+      "$P2R", "65535",
+    ].join("|")}|`;
+
+    const firstText = textSegment(0, 0);
+    const textStart = 58;
+    const textEnd = textStart + firstText.length - 1;
+    const dataStart = textEnd + 1;
+    const dataEndOnePastEof = dataStart + data.length;
+    const text = textSegment(dataStart, dataEndOnePastEof);
+    const header = `FCS3.1    ${String(textStart).padStart(8)}${String(textStart + text.length - 1).padStart(8)}${String(dataStart).padStart(8)}${String(dataEndOnePastEof).padStart(8)}${String(0).padStart(8)}${String(0).padStart(8)}`;
+    expect(Buffer.byteLength(header, "ascii")).toBe(58);
+    await fs.writeFile(fcsPath, Buffer.concat([Buffer.from(header, "ascii"), Buffer.from(text, "latin1"), data]));
+
+    const columns = await readPreviewColumns({ path: fcsPath, x: "FSC-A", y: "SSC-A" });
+    expect(Array.from(columns.x)).toEqual([10, 30]);
+    expect(Array.from(columns.y)).toEqual([20, 40]);
+    expect(columns.totalEvents).toBe(2);
   });
 
   it("returns a capped deterministic event preview", async () => {
@@ -1214,7 +1258,7 @@ describe("flowcyto gate editor server", () => {
       await browser.close();
       await server.close();
     }
-  });
+  }, 15000);
 
   it("streams workspace change and error events over SSE", async () => {
     const { workspacePath } = await makeWorkspace();

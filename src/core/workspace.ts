@@ -97,10 +97,18 @@ function channelWithPrefix(parameters: SampleParameter[], prefix: string): Sampl
   return parameters.find((parameter) => parameter.name.toLowerCase().startsWith(lowerPrefix));
 }
 
+function channelWithPrefixAndArea(parameters: SampleParameter[], prefix: string): SampleParameter | undefined {
+  const lowerPrefix = prefix.toLowerCase();
+  return parameters.find((parameter) => {
+    const name = parameter.name.toLowerCase();
+    return name.startsWith(lowerPrefix) && (name.endsWith("-a") || name.includes("-a "));
+  });
+}
+
 function recommendedViewsForMetadata(metadata: SampleMetadata): OpenFcsRecommendedView[] {
   const parameters = metadata.parameters;
-  const fsc = channelNamed(parameters, ["FSC-A"]) ?? channelWithPrefix(parameters, "FSC") ?? parameters[0];
-  const ssc = channelNamed(parameters, ["SSC-A"]) ?? channelWithPrefix(parameters, "SSC") ?? parameters.find((parameter) => parameter.name !== fsc?.name);
+  const fsc = channelNamed(parameters, ["FSC-A"]) ?? channelWithPrefixAndArea(parameters, "FSC") ?? channelWithPrefix(parameters, "FSC") ?? parameters[0];
+  const ssc = channelNamed(parameters, ["SSC-A"]) ?? channelWithPrefixAndArea(parameters, "SSC") ?? channelWithPrefix(parameters, "SSC") ?? parameters.find((parameter) => parameter.name !== fsc?.name);
   const views: OpenFcsRecommendedView[] = [];
   if (fsc && ssc) {
     views.push({

@@ -428,7 +428,7 @@ async function nativeWindowGateEditorResult(
 function createFlowcytoMcpServer(): McpServer {
   const server = new McpServer({
     name: "flowcyto-mcp",
-    version: "0.1.3",
+    version: "0.1.4",
   });
   const gateEditorSessions = new Map<string, GateEditorSession>();
 

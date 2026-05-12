@@ -105,7 +105,8 @@ Milestone E is implemented.
 Milestone F has a passed Codex macOS native_window row.
 Milestone G is implemented.
 Milestone H is implemented and @datalox/flowcyto-mcp@0.1.1 is published under the alpha tag.
-Milestone I is implemented and @datalox/flowcyto-mcp@0.1.3 is published under the alpha tag.
+Milestone I is implemented and @datalox/flowcyto-mcp@0.1.4 is published under the alpha tag.
+Real dataset live test fixes are documented in `docs/real-dataset-live-test-2026-05-12.md`.
 open_gate_editor owns the MCP Apps UI resource metadata.
 open_gate_editor(surface="auto" | "mcp_app") returns the MCP app resource contract.
 open_gate_editor(surface="native_window") launches the compact native window path.
