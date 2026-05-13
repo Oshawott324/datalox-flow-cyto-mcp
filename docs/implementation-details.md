@@ -2887,3 +2887,58 @@ build a fresh small GateEditor around the JSON workspace artifact
 ```
 
 Do not copy the full Datalox `GatingPlot` or backend preview/runtime code. Those are tied to Datalox workflow state rather than this MCP's file-backed artifact model.
+
+## Milestone J: Agent-Opened Compact Viewer Live Test
+
+Status:
+
+```text
+passed on 2026-05-12 for Codex and direct MCP.
+Claude CLI was not available on this machine, so Claude remains a documented
+manual validation item.
+```
+
+Product requirement:
+
+```text
+When a user asks an agent to open, inspect, or gate an FCS file, the agent should
+open the compact Flowcyto surface as part of the tool chain. The user should not
+need a second prompt such as "now open the viewer".
+```
+
+Implementation:
+
+```text
+open_fcs default nextAction now opens open_gate_editor
+nextAction.required = true
+viewerPolicy.compactViewerRequired = true
+non-UI agent default surface = native_window
+MCP Apps-capable host surface = mcp_app
+surface="none" remains the explicit render-only automation path
+```
+
+Agent result chain:
+
+```text
+open_fcs
+  -> open_gate_editor
+  -> get_plot_context
+  -> upsert_gate
+  -> get_workspace_revision
+```
+
+Live-test evidence is recorded in:
+
+```text
+docs/compact-viewer-auto-open-live-test-2026-05-12.md
+```
+
+Pass criteria:
+
+```text
+npm test passes
+direct MCP live test follows open_fcs.nextAction and opens native_window
+fresh Codex run from an empty directory succeeds without AGENTS.md
+fresh Codex tool trace includes open_gate_editor before get_plot_context
+get_plot_context returns compact metadata without raw FCS keywords
+```

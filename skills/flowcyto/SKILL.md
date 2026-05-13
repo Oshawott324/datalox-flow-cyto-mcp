@@ -16,6 +16,11 @@ open_fcs -> open_gate_editor -> render_plot or get_plot_context -> upsert_gate -
 Use `open_fcs` when the user asks to open, inspect, render, analyze, or gate a
 raw `.fcs` file or an existing `flowcyto.workspace.json`.
 
+Do not stop after `open_fcs` when the user asked to gate, draw, edit, or inspect
+the main population. Follow the returned `nextAction` immediately so the compact
+viewer opens. In fresh CLI agents this defaults to `open_gate_editor` with
+`surface="native_window"`; in MCP Apps hosts use `surface="mcp_app"`.
+
 Use `render_plot` for user-intent plot requests such as FSC/SSC, marker plots,
 or comparing channels. Use `get_plot_context` for the active compact editor
 view.

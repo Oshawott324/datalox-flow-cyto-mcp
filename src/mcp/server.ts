@@ -77,18 +77,27 @@ const FlowcytoCapabilities = {
   canonicalArtifact: "flowcyto.workspace.json",
   primaryTools: ["open_fcs", "render_plot", "open_gate_editor", "get_plot_context", "upsert_gate"],
   preferredWorkflowResource: OPEN_FCS_WORKFLOW_RESOURCE_URI,
+  compactViewer: {
+    entryTool: "open_gate_editor",
+    requiredFor: ["gate", "draw", "edit", "inspect_population"],
+    defaultSurfaceForAgentHosts: "native_window",
+    surfaceForMcpAppsHosts: "mcp_app",
+    liveRefresh: "upsert_gate increments the workspace revision and the already-open compact app refreshes by polling.",
+  },
 };
 
 const OpenFcsAndGateWorkflow = {
   orderedTools: [
     "open_fcs",
     "open_gate_editor",
-    "render_plot",
+    "get_plot_context",
     "upsert_gate",
     "get_workspace_revision",
   ],
   notes: [
     "Call open_fcs when the user asks to open, inspect, render, analyze, or gate an .fcs file.",
+    "Do not stop after open_fcs for gating or population inspection; follow result.nextAction immediately.",
+    "By default open_fcs returns open_gate_editor(surface=native_window) so non-UI agent hosts open a compact viewer without another user request.",
     "Use render_plot or get_plot_context results for gate geometry.",
     "Write gates through upsert_gate with expected_revision.",
     "Do not patch flowcyto.workspace.json directly when upsert_gate is available.",
@@ -176,6 +185,8 @@ function openFcsNextAction(result: Awaited<ReturnType<typeof openFcsArtifact>>, 
   if (surface === "none") {
     return {
       tool: "render_plot",
+      required: false,
+      reason: "surface=none requested the render-only path instead of opening the compact viewer.",
       arguments: {
         workspace_path: result.workspacePath,
         sample_id: result.sampleId,
@@ -190,6 +201,10 @@ function openFcsNextAction(result: Awaited<ReturnType<typeof openFcsArtifact>>, 
   }
   return {
     tool: "open_gate_editor",
+    required: true,
+    reason: "Opening the compact viewer is part of the FCS gating and population inspection workflow.",
+    requiredFor: ["gate", "draw", "edit", "inspect_population"],
+    liveRefresh: "The opened compact viewer refreshes when upsert_gate updates the workspace revision.",
     arguments: {
       workspace_path: result.workspacePath,
       sample_id: result.sampleId,
@@ -197,6 +212,20 @@ function openFcsNextAction(result: Awaited<ReturnType<typeof openFcsArtifact>>, 
       y: view.y,
       surface,
     },
+  };
+}
+
+function openFcsViewerPolicy(surface: "auto" | "mcp_app" | "native_window" | "none") {
+  return {
+    compactViewerRequired: surface !== "none",
+    requestedSurface: surface,
+    openTool: "open_gate_editor",
+    defaultSurfaceForAgentHosts: "native_window",
+    surfaceForMcpAppsHosts: "mcp_app",
+    requiredFor: ["gate", "draw", "edit", "inspect_population"],
+    reason: surface === "none"
+      ? "surface=none is the explicit render-only path."
+      : "Agents should open the compact viewer before drawing or editing gates so user-visible state updates live.",
   };
 }
 
@@ -214,11 +243,12 @@ function workflowPrompt(pathPlaceholder: string): string {
     "",
     "Tool order:",
     "1. open_fcs with path set to the .fcs file or flowcyto.workspace.json.",
-    "2. open_gate_editor with workspace_path and sample_id from open_fcs; use surface=\"native_window\" in non-UI hosts.",
-    "3. render_plot or get_plot_context with the returned workspace_path, sample_id, x, and y.",
-    "4. upsert_gate with expected_revision from render_plot/get_plot_context.",
+    "2. Follow open_fcs result.nextAction immediately. For fresh non-UI agent hosts this opens open_gate_editor(surface=\"native_window\").",
+    "3. get_plot_context with result.nextAction.arguments from open_gate_editor.",
+    "4. upsert_gate with expected_revision from get_plot_context.",
     "5. get_workspace_revision to confirm the already-open compact app can refresh.",
     "",
+    "Do not stop after open_fcs when the user asked to inspect, gate, draw, or edit a population.",
     "Do not patch flowcyto.workspace.json directly when upsert_gate is available.",
     "Do not infer gate geometry from screenshots when render_plot/get_plot_context returns preview data.",
     "AGENTS.md is optional convenience guidance, not required product behavior.",
@@ -561,7 +591,7 @@ async function toolContent(action: () => Promise<unknown>, meta?: Record<string,
 server.registerTool(
   "open_fcs",
   {
-    description: "Open an .fcs file or flowcyto.workspace.json workspace, create or reuse a Flowcyto workspace, parse FCS metadata, and return the next tool to render or gate it. Use this when the user asks to open, inspect, render, analyze, or gate an FCS file.",
+    description: "Open an .fcs file or flowcyto.workspace.json workspace, create or reuse a Flowcyto workspace, parse FCS metadata, and return the required nextAction. Use this when the user asks to open, inspect, render, analyze, or gate an FCS file. For gating or population inspection, follow nextAction immediately so the compact viewer opens; omit surface in fresh CLI agents to use native_window, pass surface=mcp_app in MCP Apps hosts, or surface=none only for render-only automation.",
     inputSchema: {
       path: z.string(),
       workspace_dir: z.string().optional(),
@@ -577,12 +607,14 @@ server.registerTool(
       workspaceDir: workspace_dir,
       sampleId: sample_id,
     });
-    const selectedSurface = surface ?? "auto";
+    const selectedSurface = surface ?? "native_window";
     return {
       ...result,
       agentContract: flowcytoAgentContract({
         discovery: "open_fcs_is_the_entry_tool_for_raw_fcs_or_workspace_inputs",
+        viewer: "follow_nextAction_to_open_compact_viewer_before_gate_writes",
       }),
+      viewerPolicy: openFcsViewerPolicy(selectedSurface),
       nextAction: openFcsNextAction(result, selectedSurface),
     };
   }),

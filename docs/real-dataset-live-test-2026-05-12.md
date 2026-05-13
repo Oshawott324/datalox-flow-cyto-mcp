@@ -20,6 +20,12 @@ The UI path is the compact MCP app preview:
   already-open app refreshes by workspace revision polling
 ```
 
+Follow-up auto-open live test:
+
+```text
+docs/compact-viewer-auto-open-live-test-2026-05-12.md
+```
+
 ## Files Tested
 
 The dataset contains one FlowJo workspace and 12 FCS files:

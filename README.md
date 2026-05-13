@@ -187,6 +187,12 @@ Primary tool path:
 open_fcs -> open_gate_editor -> render_plot or get_plot_context -> upsert_gate -> get_workspace_revision
 ```
 
+For gating or population inspection, agents should not stop after `open_fcs`.
+The `open_fcs` result includes a required `nextAction` that opens the compact
+viewer. In fresh CLI agents this defaults to
+`open_gate_editor(surface="native_window")`; MCP Apps hosts can request
+`surface="mcp_app"` for the embedded resource.
+
 The MCP server also exposes:
 
 ```text
@@ -261,6 +267,7 @@ AGENTS.md is not part of the product contract. Hosts may read it, ignore it, or
 merge it with user-specific instructions. The portable agent contract is:
 
 ```text
+open_fcs returns required nextAction.tool = open_gate_editor for gating/inspection
 open_gate_editor returns nextAction.tool = get_plot_context
 get_plot_context returns recommendedGate and nextAction.tool = upsert_gate
 upsert_gate returns nextAction.tool = get_workspace_revision

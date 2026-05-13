@@ -12,6 +12,7 @@ import {
   watchWorkspaceFile,
   type PreviewFormat,
   type FlowcytoWorkspace,
+  type SampleMetadata,
   type WorkspaceGate,
 } from "../../core/index.js";
 import { GATE_EDITOR_HTML } from "./ui.js";
@@ -293,6 +294,15 @@ function activeGates(workspace: FlowcytoWorkspace, input: { sampleId: string; pa
   });
 }
 
+function compactContextMetadata(metadata: SampleMetadata) {
+  return {
+    sampleId: metadata.sampleId,
+    path: metadata.path,
+    eventCount: metadata.eventCount,
+    parameters: metadata.parameters,
+  };
+}
+
 function flowcytoAgentContract(extra?: Record<string, unknown>) {
   return {
     version: 1,
@@ -380,7 +390,7 @@ export async function getPlotContext(options: PlotContextOptions): Promise<unkno
     y,
     scale: view?.scale ?? preview.scale,
     bounds: plotBounds(preview, gates),
-    metadata,
+    metadata: compactContextMetadata(metadata),
     preview,
     previewSummary: {
       format: preview.format,

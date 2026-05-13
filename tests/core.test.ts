@@ -757,14 +757,20 @@ describe("flowcyto CLI", () => {
       workspacePath: string;
       sampleId: string;
       channels: Array<{ name: string }>;
-      nextAction: { command: string; arguments: { x: string; y: string } };
+      viewerPolicy: { compactViewerRequired: boolean; openCommand: string };
+      nextAction: { command: string; required: boolean; arguments: { sample_id: string; x: string; y: string } };
     };
     expect(parsedOpened.ok).toBe(true);
     expect(parsedOpened.workspacePath).toBe(path.join(openDir, "flowcyto.workspace.json"));
     expect(parsedOpened.sampleId).toBe("CFP_Well_A4");
     expect(parsedOpened.channels.some((channel) => channel.name === "FSC-A")).toBe(true);
-    expect(parsedOpened.nextAction.command).toBe("flowcyto preview");
-    expect(parsedOpened.nextAction.arguments).toMatchObject({ x: "FSC-A", y: "SSC-A" });
+    expect(parsedOpened.viewerPolicy).toMatchObject({
+      compactViewerRequired: true,
+      openCommand: "flowcyto open-gate-editor-window",
+    });
+    expect(parsedOpened.nextAction.command).toBe("flowcyto open-gate-editor-window");
+    expect(parsedOpened.nextAction.required).toBe(true);
+    expect(parsedOpened.nextAction.arguments).toMatchObject({ sample_id: "CFP_Well_A4", x: "FSC-A", y: "SSC-A" });
   });
 
   it("reports alpha install readiness through doctor", async () => {
@@ -1641,11 +1647,23 @@ describe("flowcyto MCP", () => {
         canRenderPlots: boolean;
         canWriteStructuredGates: boolean;
         canonicalArtifact: string;
+        compactViewer: {
+          entryTool: string;
+          requiredFor: string[];
+          defaultSurfaceForAgentHosts: string;
+          surfaceForMcpAppsHosts: string;
+        };
       };
       expect(capabilitiesResult.supportsFileTypes).toContain(".fcs");
       expect(capabilitiesResult.canRenderPlots).toBe(true);
       expect(capabilitiesResult.canWriteStructuredGates).toBe(true);
       expect(capabilitiesResult.canonicalArtifact).toBe("flowcyto.workspace.json");
+      expect(capabilitiesResult.compactViewer).toMatchObject({
+        entryTool: "open_gate_editor",
+        defaultSurfaceForAgentHosts: "native_window",
+        surfaceForMcpAppsHosts: "mcp_app",
+      });
+      expect(capabilitiesResult.compactViewer.requiredFor).toEqual(["gate", "draw", "edit", "inspect_population"]);
 
       const prompts = await client.listPrompts();
       expect(prompts.prompts.some((prompt) => prompt.name === "open-fcs-and-gate-main-population")).toBe(true);
@@ -1658,16 +1676,47 @@ describe("flowcyto MCP", () => {
       const promptText = "text" in prompt.messages[0].content ? prompt.messages[0].content.text : "";
       expect(promptText).toContain("open_fcs");
       expect(promptText).toContain("open_gate_editor");
-      expect(promptText).toContain("render_plot or get_plot_context");
+      expect(promptText).toContain("Follow open_fcs result.nextAction immediately");
+      expect(promptText).toContain("Do not stop after open_fcs");
       expect(promptText).toContain("upsert_gate");
       expect(promptText).toContain("AGENTS.md is optional convenience guidance");
 
       const skill = await fs.readFile(path.resolve("skills/flowcyto/SKILL.md"), "utf8");
       expect(skill).toContain("Prefer Flowcyto MCP tools");
       expect(skill).toContain("npx -y -p @datalox/flowcyto-mcp@alpha flowcyto open-fcs sample.fcs");
+      expect(skill).toContain("Do not stop after `open_fcs`");
       expect(skill).toContain("Do not patch `flowcyto.workspace.json` directly");
       expect(skill).toContain("AGENTS.md");
       expect(skill).toContain("optional convenience guidance");
+
+      const openedDefault = await client.callTool({
+        name: "open_fcs",
+        arguments: {
+          path: fixturePath,
+          workspace_dir: workspaceDir,
+        },
+      });
+      const openedDefaultResult = (openedDefault.structuredContent as { result?: unknown } | undefined)?.result as {
+        ok: boolean;
+        viewerPolicy: {
+          compactViewerRequired: boolean;
+          defaultSurfaceForAgentHosts: string;
+          surfaceForMcpAppsHosts: string;
+          requiredFor: string[];
+        };
+        nextAction: { tool: string; required: boolean; reason: string; arguments: Record<string, unknown> };
+      };
+      expect(openedDefaultResult.ok).toBe(true);
+      expect(openedDefaultResult.viewerPolicy).toMatchObject({
+        compactViewerRequired: true,
+        defaultSurfaceForAgentHosts: "native_window",
+        surfaceForMcpAppsHosts: "mcp_app",
+      });
+      expect(openedDefaultResult.viewerPolicy.requiredFor).toContain("gate");
+      expect(openedDefaultResult.nextAction.tool).toBe("open_gate_editor");
+      expect(openedDefaultResult.nextAction.required).toBe(true);
+      expect(openedDefaultResult.nextAction.reason).toContain("compact viewer");
+      expect(openedDefaultResult.nextAction.arguments.surface).toBe("native_window");
 
       const opened = await client.callTool({
         name: "open_fcs",
@@ -1684,7 +1733,8 @@ describe("flowcyto MCP", () => {
         sourcePath: string;
         channels: Array<{ name: string }>;
         recommendedViews: Array<{ x: string; y: string; intent: string }>;
-        nextAction: { tool: string; arguments: Record<string, unknown> };
+        viewerPolicy: { compactViewerRequired: boolean; requestedSurface: string };
+        nextAction: { tool: string; required: boolean; arguments: Record<string, unknown> };
       };
       expect(openedResult.ok).toBe(true);
       expect(openedResult.workspacePath).toBe(path.join(workspaceDir, "flowcyto.workspace.json"));
@@ -1692,7 +1742,9 @@ describe("flowcyto MCP", () => {
       expect(openedResult.sourcePath).toBe(fixturePath);
       expect(openedResult.channels.length).toBeGreaterThan(2);
       expect(openedResult.recommendedViews[0]).toMatchObject({ x: "FSC-A", y: "SSC-A", intent: "main_population" });
+      expect(openedResult.viewerPolicy).toMatchObject({ compactViewerRequired: false, requestedSurface: "none" });
       expect(openedResult.nextAction.tool).toBe("render_plot");
+      expect(openedResult.nextAction.required).toBe(false);
 
       const plot = await client.callTool({
         name: openedResult.nextAction.tool,
@@ -1862,6 +1914,7 @@ describe("flowcyto MCP", () => {
         ok: boolean;
         revision: number;
         workspace: FlowcytoWorkspace;
+        metadata: { sampleId: string; parameters: Array<{ name: string }>; keywords?: Record<string, string> };
         preview: { sampledEvents: number };
         bounds: { xMin: number; xMax: number; yMin: number; yMax: number };
         gates: WorkspaceGate[];
@@ -1871,6 +1924,9 @@ describe("flowcyto MCP", () => {
       expect(plotContextResult.ok).toBe(true);
       expect(plotContextResult.revision).toBe(0);
       expect(plotContextResult.workspace.revision).toBe(0);
+      expect(plotContextResult.metadata.sampleId).toBe("sample_001");
+      expect(plotContextResult.metadata.parameters.length).toBeGreaterThan(1);
+      expect(plotContextResult.metadata.keywords).toBeUndefined();
       expect(plotContextResult.preview.sampledEvents).toBeLessThanOrEqual(16);
       expect(plotContextResult.bounds.xMax).toBeGreaterThan(plotContextResult.bounds.xMin);
       expect(plotContextResult.bounds.yMax).toBeGreaterThan(plotContextResult.bounds.yMin);

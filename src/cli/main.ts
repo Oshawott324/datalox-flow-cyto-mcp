@@ -62,14 +62,21 @@ program
       const view = result.recommendedViews[0];
       printJson({
         ...result,
+        viewerPolicy: {
+          compactViewerRequired: true,
+          openCommand: "flowcyto open-gate-editor-window",
+          requiredFor: ["gate", "draw", "edit", "inspect_population"],
+          reason: "Open the compact viewer before drawing or editing gates so user-visible state updates live.",
+        },
         nextAction: {
-          command: "flowcyto preview",
+          command: "flowcyto open-gate-editor-window",
+          required: true,
+          reason: "Open the compact viewer before gate writes.",
           arguments: {
             workspace_path: result.workspacePath,
             sample_id: result.sampleId,
             x: view?.x ?? result.channels[0]?.name,
             y: view?.y ?? result.channels[1]?.name,
-            format: "bins",
           },
         },
       });
