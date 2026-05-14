@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 
-import { FlowcytoError, type PreviewColumns, type SampleMetadata, type SampleParameter } from "./types.js";
+import { FlowcytoError, type PreviewColumns, type SampleMetadata, type SampleParameter, type WorkspaceGate } from "./types.js";
 
 type TextDict = Record<string, string>;
 
@@ -215,6 +215,40 @@ function dataBounds(header: FcsHeader, text: TextDict): { begin: number; end: nu
   return { begin, end };
 }
 
+export function pointInPolygon(px: number, py: number, vertices: Array<[number, number]>): boolean {
+  let inside = false;
+  for (let i = 0, j = vertices.length - 1; i < vertices.length; j = i, i += 1) {
+    const xi = vertices[i][0];
+    const yi = vertices[i][1];
+    const xj = vertices[j][0];
+    const yj = vertices[j][1];
+    const intersects = yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+export function pointInRect(px: number, py: number, gate: Extract<WorkspaceGate, { type: "rect" }>): boolean {
+  return px >= gate.xMin && px <= gate.xMax && py >= gate.yMin && py <= gate.yMax;
+}
+
+function gateParameterNames(gate: WorkspaceGate): string[] {
+  if (gate.type === "range") return [gate.x];
+  return [gate.x, gate.y];
+}
+
+function gateContainsEvent(gate: WorkspaceGate, values: Map<string, number>): boolean {
+  if (gate.type === "range") {
+    const value = values.get(gate.x);
+    return value !== undefined && value >= gate.min && value <= gate.max;
+  }
+  const x = values.get(gate.x);
+  const y = values.get(gate.y);
+  if (x === undefined || y === undefined) return false;
+  if (gate.type === "rect") return pointInRect(x, y, gate);
+  return pointInPolygon(x, y, gate.vertices);
+}
+
 export async function readFcsMetadata(path: string, sampleId = ""): Promise<SampleMetadata> {
   const { text } = await readHeaderText(path);
   const parameterCount = Number(text.$PAR) || 0;
@@ -236,8 +270,9 @@ export async function readPreviewColumns(input: {
   x: string;
   y: string;
   maxEvents?: number;
+  parentGateChain?: WorkspaceGate[];
 }): Promise<PreviewColumns> {
-  const { path, x, y, maxEvents } = input;
+  const { path, x, y, maxEvents, parentGateChain = [] } = input;
   const { header, text } = await readHeaderText(path);
   const parameterCount = Number(text.$PAR) || 0;
   const totalEvents = Number(text.$TOT) || 0;
@@ -249,6 +284,17 @@ export async function readPreviewColumns(input: {
   const yIndex = parameters.findIndex((parameter) => parameter.name === y);
   if (xIndex === -1) throw new FlowcytoError("unknown_parameter", `Parameter ${x} is not present.`, "/x");
   if (yIndex === -1) throw new FlowcytoError("unknown_parameter", `Parameter ${y} is not present.`, "/y");
+  const parameterIndexByName = new Map(parameters.map((parameter, index) => [parameter.name, index]));
+  const neededNames = new Set<string>([x, y]);
+  parentGateChain.forEach((gate) => {
+    gateParameterNames(gate).forEach((name) => neededNames.add(name));
+  });
+  const neededIndexes = new Map<string, number>();
+  for (const name of neededNames) {
+    const index = parameterIndexByName.get(name);
+    if (index === undefined) throw new FlowcytoError("unknown_parameter", `Parameter ${name} is not present.`, "/parent_gate_chain");
+    neededIndexes.set(name, index);
+  }
 
   const dtype = (text.$DATATYPE || "F").toUpperCase();
   const byteOrder = (text.$BYTEORD || "1,2,3,4").replace(/\s+/g, "");
@@ -268,6 +314,45 @@ export async function readPreviewColumns(input: {
     throw new FlowcytoError("invalid_fcs_data_segment", "FCS DATA segment is shorter than $TOT and parameter byte widths require.");
   }
   const view = new DataView(buffer.buffer, buffer.byteOffset + begin, expectedDataLength);
+
+  if (parentGateChain.length > 0) {
+    const xs: number[] = [];
+    const ys: number[] = [];
+    const rowValues = new Map<string, number>();
+    let filteredEvents = 0;
+    for (let row = 0; row < totalEvents; row += 1) {
+      const rowOffset = row * rowSize;
+      rowValues.clear();
+      neededIndexes.forEach((index, name) => {
+        rowValues.set(name, readValue({
+          view,
+          offset: rowOffset + offsets[index],
+          dtype,
+          bytes: layout[index],
+          littleEndian,
+        }));
+      });
+      if (!parentGateChain.every((gate) => gateContainsEvent(gate, rowValues))) continue;
+      filteredEvents += 1;
+      xs.push(rowValues.get(x) ?? Number.NaN);
+      ys.push(rowValues.get(y) ?? Number.NaN);
+    }
+    const targetEvents = maxEvents && maxEvents > 0 ? Math.min(maxEvents, filteredEvents) : filteredEvents;
+    const stride = targetEvents > 0 ? Math.max(1, Math.ceil(filteredEvents / targetEvents)) : 1;
+    const sampledXs: number[] = [];
+    const sampledYs: number[] = [];
+    for (let index = 0; index < xs.length && sampledXs.length < targetEvents; index += stride) {
+      sampledXs.push(xs[index]);
+      sampledYs.push(ys[index]);
+    }
+    return {
+      x: Float64Array.from(sampledXs),
+      y: Float64Array.from(sampledYs),
+      totalEvents,
+      filteredEvents,
+    };
+  }
+
   const targetEvents = maxEvents && maxEvents > 0 ? Math.min(maxEvents, totalEvents) : totalEvents;
   const stride = Math.max(1, Math.ceil(totalEvents / targetEvents));
   const sampledEvents = Math.ceil(totalEvents / stride);
@@ -298,5 +383,6 @@ export async function readPreviewColumns(input: {
     x: cursor === xs.length ? xs : xs.slice(0, cursor),
     y: cursor === ys.length ? ys : ys.slice(0, cursor),
     totalEvents,
+    filteredEvents: totalEvents,
   };
 }

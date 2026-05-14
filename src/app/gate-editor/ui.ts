@@ -180,6 +180,21 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       width: 112px;
       min-width: 0;
     }
+    .population-stats {
+      width: 112px;
+      border: 1px solid var(--line);
+      background: #f5f7f9;
+      padding: 5px 6px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+    .population-stats strong {
+      display: block;
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 650;
+    }
     .gate-tray {
       position: absolute;
       top: 8px;
@@ -222,21 +237,49 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
     .gate-row {
       width: 100%;
       display: grid;
-      grid-template-columns: 1fr auto;
+      grid-template-columns: minmax(0, 1fr) auto;
       align-items: center;
-      gap: 8px;
+      gap: 4px;
       margin-bottom: 4px;
-      padding: 5px 6px;
       border: 1px solid var(--line);
       border-radius: 2px;
       background: #fff;
+      overflow: hidden;
+    }
+    .gate-row.context {
+      border-color: var(--accent);
+      background: #e4f6f2;
+    }
+    .gate-row.selected {
+      border-color: var(--accent-2);
+      box-shadow: inset 3px 0 0 var(--accent-2);
+    }
+    .gate-nav {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      border: 0;
+      background: transparent;
+      padding: 5px 6px;
       text-align: left;
       cursor: pointer;
       font-size: 12px;
     }
-    .gate-row.active {
-      border-color: var(--accent);
-      box-shadow: inset 3px 0 0 var(--accent);
+    .gate-nav span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .gate-edit {
+      width: 24px;
+      height: 24px;
+      border: 0;
+      border-left: 1px solid var(--line);
+      background: transparent;
+      cursor: pointer;
+      color: var(--muted);
     }
     .gate-row small { color: var(--muted); }
     .errors {
@@ -293,7 +336,9 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
             <select id="ySelect" aria-label="Y axis"></select>
             <select id="yScale" aria-label="Y scale">
               <option value="linear">Y Lin</option>
+              <option value="log">Y Log</option>
               <option value="arcsinh">Y Asinh</option>
+              <option value="biex">Y Biex</option>
             </select>
           </div>
           <div class="plot-stack">
@@ -304,7 +349,9 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
               <select id="xSelect" aria-label="X axis"></select>
               <select id="xScale" aria-label="X scale">
                 <option value="linear">X Lin</option>
+                <option value="log">X Log</option>
                 <option value="arcsinh">X Asinh</option>
+                <option value="biex">X Biex</option>
               </select>
             </div>
           </div>
@@ -314,6 +361,7 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
               <option value="density">Density</option>
               <option value="scatter">Scatter</option>
             </select>
+            <div id="populationStats" class="population-stats"></div>
           </div>
         </div>
       </section>
@@ -346,7 +394,8 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       renderMode: "pseudocolor",
       scale: { x: "linear", y: "linear" },
       localDirty: false,
-      savePending: false
+      savePending: false,
+      gateTrayUserClosed: false
     };
     const canvas = document.getElementById("plot");
     const ctx = canvas.getContext("2d");
@@ -357,6 +406,7 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
     const renderModeSelect = document.getElementById("renderMode");
     const xScaleSelect = document.getElementById("xScale");
     const yScaleSelect = document.getElementById("yScale");
+    const populationStats = document.getElementById("populationStats");
     const gateName = document.getElementById("gateName");
     const gateList = document.getElementById("gateList");
     const gateTray = document.getElementById("gateTray");
@@ -398,6 +448,11 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
     function setGateTrayOpen(open) {
       gateTray.hidden = !open;
       gateTrayToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+
+    function userSetGateTrayOpen(open) {
+      state.gateTrayUserClosed = !open;
+      setGateTrayOpen(open);
     }
 
     function setErrors(errors) {
@@ -478,9 +533,24 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
     function setParentOptions() {
       if (!state.workspace) return;
       const values = [{ id: "root", label: "root" }];
+      const childrenByParent = new Map();
       state.workspace.gates
         .filter((gate) => gate.sample === state.sampleId)
-        .forEach((gate) => values.push({ id: gate.id, label: gate.name || gate.id }));
+        .forEach((gate) => {
+          const children = childrenByParent.get(gate.parent) || [];
+          children.push(gate);
+          childrenByParent.set(gate.parent, children);
+        });
+      childrenByParent.forEach((children) => {
+        children.sort((a, b) => gateLabel(a).localeCompare(gateLabel(b)));
+      });
+      function addChildren(parentId, depth) {
+        (childrenByParent.get(parentId) || []).forEach((gate) => {
+          values.push({ id: gate.id, label: "\u00a0\u00a0\u00a0".repeat(depth) + (depth > 0 ? "- " : "") + gateLabel(gate) });
+          addChildren(gate.id, depth + 1);
+        });
+      }
+      addChildren("root", 0);
       parentSelect.innerHTML = "";
       values.forEach((entry) => {
         const option = document.createElement("option");
@@ -506,6 +576,32 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       return state.workspace.gates.find((gate) => gate.id === state.selectedGateId) || null;
     }
 
+    function gateLabel(gate) {
+      return gate.name || gate.id;
+    }
+
+    function gateAncestry(parentId) {
+      if (!state.workspace || !parentId || parentId === "root") return [];
+      const byId = new Map(state.workspace.gates.map((gate) => [gate.id, gate]));
+      const chain = [];
+      const seen = new Set();
+      let cursor = parentId;
+      while (cursor && cursor !== "root" && !seen.has(cursor)) {
+        seen.add(cursor);
+        const gate = byId.get(cursor);
+        if (!gate) break;
+        chain.push(gate);
+        cursor = gate.parent;
+      }
+      return chain.reverse();
+    }
+
+    function contextTitle() {
+      const parts = [state.sampleId || "sample"];
+      gateAncestry(state.parent).forEach((gate) => parts.push(gateLabel(gate)));
+      return parts.join(" > ");
+    }
+
     function updateButtons() {
       document.querySelectorAll("[data-mode]").forEach((button) => {
         button.classList.toggle("active", button.dataset.mode === state.mode);
@@ -513,15 +609,27 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
     }
 
     const ARCSINH_COFACTOR = 150;
+    const BIEXP_COFACTOR = 150;
+    const BIEXP_WIDTH = 4.5;
     const DENSITY_GRID_MAX = 360;
 
     function transformValue(value, scale) {
       if (scale === "arcsinh") return Math.asinh(value / ARCSINH_COFACTOR);
+      if (scale === "log") return value > 0 ? Math.log10(value) : Number.NaN;
+      if (scale === "biex") {
+        const normalized = value / BIEXP_COFACTOR;
+        return Math.sign(normalized) * Math.log10(1 + Math.abs(normalized) * BIEXP_WIDTH) / Math.log10(1 + BIEXP_WIDTH);
+      }
       return value;
     }
 
     function inverseTransformValue(value, scale) {
       if (scale === "arcsinh") return Math.sinh(value) * ARCSINH_COFACTOR;
+      if (scale === "log") return Math.pow(10, value);
+      if (scale === "biex") {
+        const magnitude = (Math.pow(1 + BIEXP_WIDTH, Math.abs(value)) - 1) / BIEXP_WIDTH;
+        return Math.sign(value) * magnitude * BIEXP_COFACTOR;
+      }
       return value;
     }
 
@@ -882,7 +990,36 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
     }
 
     function scaleLabel(scale) {
-      return scale === "arcsinh" ? "asinh" : "lin";
+      if (scale === "arcsinh") return "asinh";
+      if (scale === "log") return "log";
+      if (scale === "biex") return "biex";
+      return "lin";
+    }
+
+    function formatCount(value) {
+      if (!Number.isFinite(value)) return "0";
+      return Math.round(value).toLocaleString("en-US");
+    }
+
+    function updatePopulationStats() {
+      const preview = state.preview || {};
+      const total = Number(preview.totalEvents || 0);
+      const filtered = Number(preview.filteredEvents || total || 0);
+      const sampled = Number(preview.sampledEvents || 0);
+      const percent = total > 0 ? (filtered / total) * 100 : 0;
+      populationStats.innerHTML = "";
+      const title = document.createElement("strong");
+      title.textContent = state.parent === "root" ? "Root population" : "Parent population";
+      const filteredLine = document.createElement("div");
+      filteredLine.textContent = formatCount(filtered) + " / " + formatCount(total) + " events";
+      const percentLine = document.createElement("div");
+      percentLine.textContent = percent.toFixed(percent >= 10 ? 1 : 2).replace(/\\.0$/, "") + "% of file";
+      const sampledLine = document.createElement("div");
+      sampledLine.textContent = formatCount(sampled) + " rendered";
+      populationStats.appendChild(title);
+      populationStats.appendChild(filteredLine);
+      populationStats.appendChild(percentLine);
+      populationStats.appendChild(sampledLine);
     }
 
     function drawGrid(area) {
@@ -950,6 +1087,16 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       ctx.restore();
     }
 
+    function drawTitle(area) {
+      ctx.save();
+      ctx.fillStyle = "#5b6575";
+      ctx.font = "11px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(contextTitle(), area.left + area.width / 2, Math.max(8, area.top / 2));
+      ctx.restore();
+    }
+
     function draw() {
       resizeCanvas();
       ensureViewport();
@@ -977,27 +1124,71 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
         if (state.draft && state.draft.type === "rect") drawRectGate(state.draft, "#8f3f2d", true);
       });
       drawAxes(area);
+      drawTitle(area);
     }
 
     function renderGateList() {
       gateList.innerHTML = "";
-      activeGates().forEach((gate) => {
-        const button = document.createElement("button");
-        button.className = "gate-row" + (gate.id === state.selectedGateId ? " active" : "");
-        const name = document.createElement("span");
-        name.textContent = gate.name || gate.id;
-        const type = document.createElement("small");
-        type.textContent = gate.type;
-        button.appendChild(name);
-        button.appendChild(type);
-        button.addEventListener("click", () => {
-          state.selectedGateId = gate.id;
-          gateName.value = gate.name || gate.id;
-          renderGateList();
-          draw();
+      if (!state.workspace) return;
+      const childrenByParent = new Map();
+      state.workspace.gates
+        .filter((gate) => gate.sample === state.sampleId)
+        .forEach((gate) => {
+          const children = childrenByParent.get(gate.parent) || [];
+          children.push(gate);
+          childrenByParent.set(gate.parent, children);
         });
-        gateList.appendChild(button);
+      childrenByParent.forEach((children) => {
+        children.sort((a, b) => gateLabel(a).localeCompare(gateLabel(b)));
       });
+
+      function renderChildren(parentId, depth) {
+        (childrenByParent.get(parentId) || []).forEach((gate) => {
+          const row = document.createElement("div");
+          row.className = "gate-row"
+            + (gate.id === state.parent ? " context" : "")
+            + (gate.id === state.selectedGateId ? " selected" : "");
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "gate-nav";
+          button.style.paddingLeft = (6 + depth * 14) + "px";
+          const name = document.createElement("span");
+          const hasChildren = (childrenByParent.get(gate.id) || []).length > 0;
+          name.textContent = (hasChildren ? "> " : "") + gateLabel(gate);
+          const type = document.createElement("small");
+          type.textContent = gate.type;
+          button.appendChild(name);
+          button.appendChild(type);
+          button.addEventListener("click", () => {
+            state.parent = gate.id;
+            state.selectedGateId = null;
+            state.draft = null;
+            parentSelect.value = gate.id;
+            loadState("parent");
+          });
+          const edit = document.createElement("button");
+          edit.type = "button";
+          edit.className = "gate-edit";
+          edit.title = "Edit gate";
+          edit.setAttribute("aria-label", "Edit " + gateLabel(gate));
+          edit.textContent = "\u270e";
+          edit.addEventListener("click", () => {
+            state.selectedGateId = gate.id;
+            gateName.value = gateLabel(gate);
+            renderGateList();
+            draw();
+          });
+          row.appendChild(button);
+          row.appendChild(edit);
+          gateList.appendChild(row);
+          renderChildren(gate.id, depth + 1);
+        });
+      }
+
+      renderChildren("root", 0);
+      if (state.workspace.gates.some((gate) => gate.sample === state.sampleId) && !state.gateTrayUserClosed) {
+        setGateTrayOpen(true);
+      }
     }
 
     async function loadState(reason) {
@@ -1031,6 +1222,7 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       if (!selectedGate()) state.selectedGateId = null;
       setErrors(body.validation && !body.validation.ok ? body.validation.errors : []);
       renderGateList();
+      updatePopulationStats();
       draw();
       setStatus(reason === "file" ? "Workspace revision " + body.workspace.revision : "Ready revision " + body.workspace.revision);
     }
@@ -1086,6 +1278,7 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
         state.draft = null;
         state.localDirty = false;
         state.selectedGateId = gate.id;
+        state.gateTrayUserClosed = false;
         await loadState("save");
       } else {
         state.localDirty = true;
@@ -1246,8 +1439,8 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       state.viewport = null;
       draw();
     });
-    gateTrayToggle.addEventListener("click", () => setGateTrayOpen(gateTray.hidden));
-    closeGateTray.addEventListener("click", () => setGateTrayOpen(false));
+    gateTrayToggle.addEventListener("click", () => userSetGateTrayOpen(gateTray.hidden));
+    closeGateTray.addEventListener("click", () => userSetGateTrayOpen(false));
     gateName.addEventListener("input", () => {
       if (state.draft || selectedGate()) state.localDirty = true;
     });

@@ -375,6 +375,7 @@ export async function getPlotContext(options: PlotContextOptions): Promise<unkno
     binHeight: options.binHeight,
   });
   const validation = await validateWorkspace(options.workspacePath);
+  // These are drawable overlays for the current plot. The full hierarchy remains in workspace.gates.
   const gates = activeGates(workspace, { sampleId, parent, x, y });
   const recommendedGate = recommendedGateContract({ sampleId, parent, x, y });
   return {
@@ -395,6 +396,7 @@ export async function getPlotContext(options: PlotContextOptions): Promise<unkno
     previewSummary: {
       format: preview.format,
       totalEvents: preview.totalEvents,
+      filteredEvents: preview.filteredEvents,
       sampledEvents: preview.sampledEvents,
       pointCount: preview.points?.length ?? 0,
       binWidth: preview.bins?.width,

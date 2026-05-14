@@ -8,14 +8,16 @@ import { DEFAULT_BIN_HEIGHT, DEFAULT_BIN_WIDTH, type BuildEventPreviewInput } fr
 import {
   FlowcytoError,
   type EventPreview,
+  type FlowcytoWorkspace,
   type PreviewFormat,
+  type WorkspaceGate,
 } from "./types.js";
 import { readWorkspace, resolveSamplePath, resolveWorkspaceRoot } from "./workspace.js";
 
-const PREVIEW_CACHE_VERSION = 1;
+const PREVIEW_CACHE_VERSION = 2;
 
 type CachedPreviewMeta = {
-  version: 1;
+  version: 2;
   key: string;
   createdAt: string;
   preview: Omit<EventPreview, "points" | "bins"> & {
@@ -195,6 +197,7 @@ async function readPreviewCache(workspacePath: string, key: string): Promise<Eve
       format: "bins",
       scale: meta.preview.scale,
       totalEvents: meta.preview.totalEvents,
+      filteredEvents: meta.preview.filteredEvents,
       sampledEvents: meta.preview.sampledEvents,
       bins: { ...meta.preview.bins, counts },
     };
@@ -215,11 +218,38 @@ async function readPreviewCache(workspacePath: string, key: string): Promise<Eve
       format: "points",
       scale: meta.preview.scale,
       totalEvents: meta.preview.totalEvents,
+      filteredEvents: meta.preview.filteredEvents,
       sampledEvents: meta.preview.sampledEvents,
       points,
     };
   }
   return null;
+}
+
+function parentGateChain(workspace: FlowcytoWorkspace, input: { sampleId: string; parent: string }): WorkspaceGate[] {
+  if (input.parent === "root") return [];
+  const byId = new Map(workspace.gates.map((gate) => [gate.id, gate]));
+  const chain: WorkspaceGate[] = [];
+  const seen = new Set<string>();
+  let cursor = input.parent;
+  while (cursor !== "root") {
+    if (seen.has(cursor)) {
+      throw new FlowcytoError("parent_ancestry_broken", `Parent gate ancestry contains a cycle at ${cursor}.`, "/parent_gate_id");
+    }
+    seen.add(cursor);
+    const gate = byId.get(cursor);
+    if (!gate) throw new FlowcytoError("unknown_parent_gate", `Parent gate ${cursor} is not present.`, "/parent_gate_id");
+    if (gate.sample !== input.sampleId) {
+      throw new FlowcytoError(
+        "parent_ancestry_broken",
+        `Parent gate ${cursor} belongs to sample ${gate.sample}, not ${input.sampleId}.`,
+        "/parent_gate_id",
+      );
+    }
+    chain.push(gate);
+    cursor = gate.parent;
+  }
+  return chain.reverse();
 }
 
 function deserializeWorkerError(error: WorkerResponse["error"]): FlowcytoError {
@@ -288,6 +318,7 @@ export async function getEventPreview(params: GetEventPreviewInput): Promise<Eve
   const binHeight = normalizePositiveInteger(params.binHeight, DEFAULT_BIN_HEIGHT, "/bin_height");
   const format = normalizeFormat(params.format);
   const parent = params.parent ?? "root";
+  const chain = parentGateChain(workspace, { sampleId: params.sampleId, parent });
   const samplePath = resolveSamplePath(params.workspacePath, sample.path);
   const key = await previewCacheKey({
     workspacePath: params.workspacePath,
@@ -315,6 +346,7 @@ export async function getEventPreview(params: GetEventPreviewInput): Promise<Eve
     format,
     binWidth,
     binHeight,
+    parentGateChain: chain,
   };
   const preview = await runPreviewWorker(input);
   await writePreviewCache(params.workspacePath, key, preview);

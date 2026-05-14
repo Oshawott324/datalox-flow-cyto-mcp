@@ -1,4 +1,4 @@
-export type AxisScale = "linear" | "arcsinh" | "biex";
+export type AxisScale = "linear" | "log" | "arcsinh" | "biex";
 
 export type FlowcytoSample = {
   id: string;
@@ -100,6 +100,7 @@ export type PreviewColumns = {
   x: Float32Array | Float64Array;
   y: Float32Array | Float64Array;
   totalEvents: number;
+  filteredEvents: number;
 };
 
 export type PreviewFormat = "auto" | "points" | "bins";
@@ -112,6 +113,7 @@ export type EventPreview = {
   format: "points" | "bins";
   scale: { x: AxisScale; y: AxisScale };
   totalEvents: number;
+  filteredEvents: number;
   sampledEvents: number;
   points?: Array<[number, number]>;
   bins?: {

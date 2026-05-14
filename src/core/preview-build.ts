@@ -3,6 +3,7 @@ import {
   FlowcytoError,
   type EventPreview,
   type PreviewFormat,
+  type WorkspaceGate,
 } from "./types.js";
 
 export const POINT_PREVIEW_MAX_EVENTS = 50_000;
@@ -19,6 +20,7 @@ export type BuildEventPreviewInput = {
   format: PreviewFormat;
   binWidth?: number;
   binHeight?: number;
+  parentGateChain?: WorkspaceGate[];
 };
 
 function concreteFormat(format: PreviewFormat, maxEvents: number): "points" | "bins" {
@@ -89,6 +91,7 @@ export async function buildEventPreview(input: BuildEventPreviewInput): Promise<
     x: input.x,
     y: input.y,
     maxEvents: input.maxEvents,
+    parentGateChain: input.parentGateChain,
   });
 
   if (format === "bins") {
@@ -100,6 +103,7 @@ export async function buildEventPreview(input: BuildEventPreviewInput): Promise<
       format,
       scale: { x: "linear", y: "linear" },
       totalEvents: columns.totalEvents,
+      filteredEvents: columns.filteredEvents,
       sampledEvents: columns.x.length,
       bins: buildBins({
         xs: columns.x,
@@ -122,6 +126,7 @@ export async function buildEventPreview(input: BuildEventPreviewInput): Promise<
     format,
     scale: { x: "linear", y: "linear" },
     totalEvents: columns.totalEvents,
+    filteredEvents: columns.filteredEvents,
     sampledEvents: points.length,
     points,
   };

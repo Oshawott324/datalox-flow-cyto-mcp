@@ -354,6 +354,72 @@ describe("flowcyto core", () => {
     expect(previewA.points?.slice(0, 10)).toEqual(previewB.points?.slice(0, 10));
   });
 
+  it("filters previews through the selected parent gate ancestry", async () => {
+    const { workspacePath } = await makeWorkspace();
+    const metadata = await getSampleMetadata(workspacePath, "sample_001");
+    const x = metadata.parameters[0]?.name;
+    const y = metadata.parameters[1]?.name;
+    expect(x).toBeTruthy();
+    expect(y).toBeTruthy();
+    const rootColumns = await readPreviewColumns({ path: fixturePath, x, y });
+    const sortedX = Array.from(rootColumns.x).sort((a, b) => a - b);
+    const min = sortedX[0];
+    const median = sortedX[Math.floor(sortedX.length / 2)];
+    expect(Number.isFinite(min)).toBe(true);
+    expect(Number.isFinite(median)).toBe(true);
+
+    await upsertGate({
+      workspacePath,
+      expectedRevision: 0,
+      gate: {
+        id: "parent_range",
+        name: "Parent Range",
+        sample: "sample_001",
+        parent: "root",
+        type: "range",
+        x,
+        min,
+        max: median,
+      },
+    });
+
+    const preview = await getEventPreview({
+      workspacePath,
+      sampleId: "sample_001",
+      x,
+      y,
+      parent: "parent_range",
+      maxEvents: 64,
+    });
+    const expectedFiltered = Array.from(rootColumns.x).filter((value) => value >= min && value <= median).length;
+    expect(preview.totalEvents).toBe(rootColumns.totalEvents);
+    expect(preview.filteredEvents).toBe(expectedFiltered);
+    expect(preview.filteredEvents).toBeLessThan(preview.totalEvents);
+    expect(preview.sampledEvents).toBeLessThanOrEqual(64);
+    preview.points?.forEach(([value]) => {
+      expect(value).toBeGreaterThanOrEqual(min);
+      expect(value).toBeLessThanOrEqual(median);
+    });
+  });
+
+  it("rejects an unknown preview parent gate instead of returning unfiltered events", async () => {
+    const { workspacePath } = await makeWorkspace();
+    const metadata = await getSampleMetadata(workspacePath, "sample_001");
+    const x = metadata.parameters[0]?.name;
+    const y = metadata.parameters[1]?.name;
+    expect(x).toBeTruthy();
+    expect(y).toBeTruthy();
+
+    await expect(getEventPreview({
+      workspacePath,
+      sampleId: "sample_001",
+      x,
+      y,
+      parent: "missing_parent",
+      maxEvents: 64,
+    })).rejects.toMatchObject({ code: "unknown_parent_gate" });
+  });
+
   it("returns cached binned previews and rejects oversized raw point previews", async () => {
     const { dir, workspacePath } = await makeWorkspace();
     const metadata = await getSampleMetadata(workspacePath, "sample_001");
@@ -1192,6 +1258,14 @@ describe("flowcyto gate editor server", () => {
       expect(await readWorkspace(workspacePath).then((workspace) => workspace.revision)).toBe(0);
       const scaledStats = await canvasStats();
       expect(scaledStats.hash).not.toBe(defaultStats.hash);
+      await page.locator("#xScale").selectOption("log");
+      await page.locator("#yScale").selectOption("log");
+      await expect.poll(() => page.locator("#plot").getAttribute("aria-label")).toContain("log");
+      await page.locator("#xScale").selectOption("biex");
+      await page.locator("#yScale").selectOption("biex");
+      await expect.poll(() => page.locator("#plot").getAttribute("aria-label")).toContain("biex");
+      await page.locator("#xScale").selectOption("linear");
+      await page.locator("#yScale").selectOption("linear");
 
       await page.locator("#rectMode").click();
       const box = await page.locator("#plot").boundingBox();
@@ -1208,6 +1282,9 @@ describe("flowcyto gate editor server", () => {
       await expect.poll(() => readWorkspace(workspacePath).then((workspace) => workspace.revision)).toBe(1);
       const rootWorkspace = await readWorkspace(workspacePath);
       const rootGate = rootWorkspace.gates[0];
+      await expect.poll(() => page.locator("#gateTray").evaluate((element) => element.hasAttribute("hidden"))).toBe(false);
+      await page.locator("#closeGateTray").click();
+      expect(await page.locator("#gateTray").evaluate((element) => element.hasAttribute("hidden"))).toBe(true);
       expect(rootGate?.parent).toBe("root");
       expect(rootGate?.name).toBe("Root Gate");
       expect(rootGate?.type).toBe("rect");
@@ -1226,9 +1303,17 @@ describe("flowcyto gate editor server", () => {
       await page.locator("#gateName").fill("Child Gate");
       await page.locator("#saveGate").click();
       await expect.poll(() => readWorkspace(workspacePath).then((workspace) => workspace.revision)).toBe(2);
+      await expect.poll(() => page.locator("#status").textContent()).toContain("revision 2");
       const childWorkspace = await readWorkspace(workspacePath);
       expect(childWorkspace.gates).toHaveLength(2);
       expect(childWorkspace.gates[1]?.parent).toBe(rootGate.id);
+      const parentOptions = await page.locator("#parentSelect option").evaluateAll((options) =>
+        options.map((option) => ({ value: (option as HTMLOptionElement).value, label: option.textContent || "" })),
+      );
+      expect(parentOptions.find((option) => option.value === rootGate.id)?.label).toBe("Root Gate");
+      expect(parentOptions.find((option) => option.value === childWorkspace.gates[1]?.id)?.label).toContain("\u00a0\u00a0\u00a0- Child Gate");
+      await expect.poll(() => page.locator("#populationStats").textContent()).toContain("events");
+      await expect.poll(() => page.locator("#gateTray").evaluate((element) => element.hasAttribute("hidden"))).toBe(false);
 
       await page.locator("#resetView").click();
       await page.mouse.wheel(0, -250);
