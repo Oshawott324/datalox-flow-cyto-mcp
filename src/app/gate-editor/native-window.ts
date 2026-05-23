@@ -31,6 +31,7 @@ export type NativeGateEditorReadiness = {
   detail: string;
   runtime: NativeGateEditorRuntime | null;
   helperPath?: string;
+  loaderPath?: string;
 };
 
 export type NativeGateEditorLaunchPlan = {
@@ -103,6 +104,20 @@ export function windowsWebView2HelperPath(
   );
 }
 
+export function windowsWebView2LoaderPath(
+  arch: NodeJS.Architecture = process.arch,
+  packageRoot = packageRootFromModule(),
+): string {
+  return path.join(
+    packageRoot,
+    "dist",
+    "native",
+    "windows",
+    windowsRuntimeArch(arch),
+    "WebView2Loader.dll",
+  );
+}
+
 export function nativeGateEditorReadiness(
   platform: NodeJS.Platform = process.platform,
   arch: NodeJS.Architecture = process.arch,
@@ -114,9 +129,14 @@ export function nativeGateEditorReadiness(
   }
   if (runtime === "windows_webview2") {
     const helperPath = windowsWebView2HelperPath(arch, packageRoot);
-    return existsSync(helperPath)
-      ? { ok: true, detail: runtime, runtime, helperPath }
-      : { ok: false, detail: "windows_webview2_helper_missing", runtime, helperPath };
+    const loaderPath = windowsWebView2LoaderPath(arch, packageRoot);
+    if (!existsSync(helperPath)) {
+      return { ok: false, detail: "windows_webview2_helper_missing", runtime, helperPath, loaderPath };
+    }
+    if (!existsSync(loaderPath)) {
+      return { ok: false, detail: "windows_webview2_loader_missing", runtime, helperPath, loaderPath };
+    }
+    return { ok: true, detail: runtime, runtime, helperPath, loaderPath };
   }
   return { ok: false, detail: "unsupported_platform", runtime: null };
 }
@@ -134,6 +154,13 @@ export function nativeGateEditorReadinessError(readiness: NativeGateEditorReadin
     return new FlowcytoError(
       "windows_webview2_helper_missing",
       `Windows WebView2 helper was not found at ${readiness.helperPath}. Run the Windows native build before packaging.`,
+      "/surface/runtime",
+    );
+  }
+  if (readiness.detail === "windows_webview2_loader_missing") {
+    return new FlowcytoError(
+      "windows_webview2_loader_missing",
+      `Windows WebView2Loader.dll was not found beside the native helper executable at ${readiness.loaderPath}. Rebuild or repair the Windows native package.`,
       "/surface/runtime",
     );
   }
@@ -285,10 +312,18 @@ export function nativeGateEditorLaunchPlan(
 
   if (runtime === "windows_webview2") {
     const helperPath = windowsWebView2HelperPath(arch, packageRoot);
+    const loaderPath = windowsWebView2LoaderPath(arch, packageRoot);
     if (!existsSync(helperPath)) {
       throw new FlowcytoError(
         "windows_webview2_helper_missing",
         `Windows WebView2 helper was not found at ${helperPath}. Run the Windows native build before packaging.`,
+        "/surface/runtime",
+      );
+    }
+    if (!existsSync(loaderPath)) {
+      throw new FlowcytoError(
+        "windows_webview2_loader_missing",
+        `Windows WebView2Loader.dll was not found beside the native helper executable at ${loaderPath}. Rebuild or repair the Windows native package.`,
         "/surface/runtime",
       );
     }

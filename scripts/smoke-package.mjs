@@ -10,6 +10,12 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 const execFileAsync = promisify(execFile);
 const gateEditorResourceUri = "ui://flowcyto/gate-editor-v1.html";
 
+function npmInvocation(args) {
+  return process.platform === "win32"
+    ? { command: "cmd", args: ["/c", "npm", ...args] }
+    : { command: "npm", args };
+}
+
 function argValue(name, fallback) {
   const index = process.argv.indexOf(name);
   if (index < 0) return fallback;
@@ -33,7 +39,8 @@ async function execJson(command, args) {
 }
 
 async function createPackage() {
-  const packed = await execJson("npm", ["pack", "--json"]);
+  const npm = npmInvocation(["pack", "--json"]);
+  const packed = await execJson(npm.command, npm.args);
   const filename = packed?.[0]?.filename;
   if (typeof filename !== "string" || filename.length === 0) {
     throw new Error("npm pack --json did not return a package filename.");
@@ -53,7 +60,7 @@ const packageSpec = providedPackage ? path.resolve(providedPackage) : await crea
 const shouldRemovePackage = !providedPackage && !keepTarball;
 
 try {
-  const doctor = await execJson("npm", [
+  const doctorNpm = npmInvocation([
     "exec",
     "--yes",
     "--package",
@@ -62,21 +69,23 @@ try {
     "flowcyto",
     "doctor",
   ]);
+  const doctor = await execJson(doctorNpm.command, doctorNpm.args);
   if (!doctor.ok) {
     throw new Error(`flowcyto doctor failed for packed package: ${JSON.stringify(doctor, null, 2)}`);
   }
 
   const client = new Client({ name: "flowcyto-package-smoke", version: "0.1.0" });
+  const mcpNpm = npmInvocation([
+    "exec",
+    "--yes",
+    "--package",
+    packageSpec,
+    "--",
+    "flowcyto-mcp",
+  ]);
   const transport = new StdioClientTransport({
-    command: "npm",
-    args: [
-      "exec",
-      "--yes",
-      "--package",
-      packageSpec,
-      "--",
-      "flowcyto-mcp",
-    ],
+    command: mcpNpm.command,
+    args: mcpNpm.args,
   });
 
   try {
@@ -84,6 +93,7 @@ try {
     const tools = await client.listTools();
     requireTool(tools, "open_fcs");
     requireTool(tools, "render_plot");
+    requireTool(tools, "render_plot_image");
     requireTool(tools, "open_gate_editor");
     requireTool(tools, "get_plot_context");
     requireTool(tools, "upsert_gate");

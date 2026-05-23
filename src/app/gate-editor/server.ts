@@ -6,12 +6,18 @@ import {
   deleteGate,
   getEventPreview,
   getSampleMetadata,
+  includePoint,
+  normalizeBounds,
   readWorkspace,
+  transformPoint,
   upsertGate,
   validateWorkspace,
   watchWorkspaceFile,
+  type AxisScale,
+  type EventPreview,
   type PreviewFormat,
   type FlowcytoWorkspace,
+  type PlotBounds,
   type SampleMetadata,
   type WorkspaceGate,
 } from "../../core/index.js";
@@ -53,11 +59,49 @@ export type GateEditorStateOptions = {
 
 export type PlotContextOptions = GateEditorStateOptions;
 
-type PlotBounds = {
-  xMin: number;
-  xMax: number;
-  yMin: number;
-  yMax: number;
+export type RenderablePlotContext = {
+  ok: true;
+  workspacePath: string;
+  revision: number;
+  workspace: FlowcytoWorkspace;
+  validation: Awaited<ReturnType<typeof validateWorkspace>>;
+  sampleId: string;
+  viewId?: string;
+  parent: string;
+  x: string;
+  y: string;
+  xLabel: string;
+  yLabel: string;
+  scale: { x: AxisScale; y: AxisScale };
+  bounds: PlotBounds;
+  visualBounds: PlotBounds;
+  metadata: ReturnType<typeof compactContextMetadata>;
+  preview: EventPreview;
+  previewSummary: {
+    format: EventPreview["format"];
+    totalEvents: number;
+    filteredEvents: number;
+    sampledEvents: number;
+    pointCount: number;
+    binWidth?: number;
+    binHeight?: number;
+  };
+  gates: WorkspaceGate[];
+  gateSchema: {
+    preferredTypes: string[];
+    requiredRevisionField: string;
+  };
+  expected_revision: number;
+  recommendedGate: ReturnType<typeof recommendedGateContract>;
+  agentContract: ReturnType<typeof flowcytoAgentContract>;
+  nextAction: {
+    tool: "upsert_gate";
+    arguments: {
+      workspace_path: string;
+      expected_revision: number;
+      gateTemplate: WorkspaceGate;
+    };
+  };
 };
 
 function jsonResponse(response: ServerResponse, status: number, value: unknown): void {
@@ -244,14 +288,6 @@ function chooseSample(workspace: FlowcytoWorkspace, requested?: string): string 
   return sampleId;
 }
 
-function includePoint(bounds: PlotBounds, point: [number, number]): void {
-  if (!Number.isFinite(point[0]) || !Number.isFinite(point[1])) return;
-  bounds.xMin = Math.min(bounds.xMin, point[0]);
-  bounds.xMax = Math.max(bounds.xMax, point[0]);
-  bounds.yMin = Math.min(bounds.yMin, point[1]);
-  bounds.yMax = Math.max(bounds.yMax, point[1]);
-}
-
 function plotBounds(preview: Awaited<ReturnType<typeof getEventPreview>>, gates: WorkspaceGate[]): PlotBounds {
   const bounds: PlotBounds = {
     xMin: Number.POSITIVE_INFINITY,
@@ -275,15 +311,43 @@ function plotBounds(preview: Awaited<ReturnType<typeof getEventPreview>>, gates:
       includePoint(bounds, [gate.xMax, gate.yMax]);
     }
   });
-  if (!Number.isFinite(bounds.xMin) || !Number.isFinite(bounds.xMax) || bounds.xMin === bounds.xMax) {
-    bounds.xMin = 0;
-    bounds.xMax = 1;
+  return normalizeBounds(bounds, 0);
+}
+
+function visualPlotBounds(input: {
+  preview: EventPreview;
+  gates: WorkspaceGate[];
+  scale: { x: AxisScale; y: AxisScale };
+}): PlotBounds {
+  const bounds: PlotBounds = {
+    xMin: Number.POSITIVE_INFINITY,
+    xMax: Number.NEGATIVE_INFINITY,
+    yMin: Number.POSITIVE_INFINITY,
+    yMax: Number.NEGATIVE_INFINITY,
+  };
+  input.preview.points?.forEach((point) => includePoint(bounds, transformPoint(point, input.scale)));
+  if (input.preview.bins) {
+    [
+      [input.preview.bins.xMin, input.preview.bins.yMin],
+      [input.preview.bins.xMin, input.preview.bins.yMax],
+      [input.preview.bins.xMax, input.preview.bins.yMin],
+      [input.preview.bins.xMax, input.preview.bins.yMax],
+    ].forEach((point) => includePoint(bounds, transformPoint(point as [number, number], input.scale)));
   }
-  if (!Number.isFinite(bounds.yMin) || !Number.isFinite(bounds.yMax) || bounds.yMin === bounds.yMax) {
-    bounds.yMin = 0;
-    bounds.yMax = 1;
-  }
-  return bounds;
+  input.gates.forEach((gate) => {
+    if (gate.type === "polygon") {
+      gate.vertices.forEach((point) => includePoint(bounds, transformPoint(point, input.scale)));
+    }
+    if (gate.type === "rect") {
+      [
+        [gate.xMin, gate.yMin],
+        [gate.xMin, gate.yMax],
+        [gate.xMax, gate.yMin],
+        [gate.xMax, gate.yMax],
+      ].forEach((point) => includePoint(bounds, transformPoint(point as [number, number], input.scale)));
+    }
+  });
+  return normalizeBounds(bounds);
 }
 
 function activeGates(workspace: FlowcytoWorkspace, input: { sampleId: string; parent: string; x: string; y: string }): WorkspaceGate[] {
@@ -354,7 +418,7 @@ function recommendedGateContract(input: { sampleId: string; parent: string; x: s
   };
 }
 
-export async function getPlotContext(options: PlotContextOptions): Promise<unknown> {
+export async function getRenderablePlotContext(options: PlotContextOptions): Promise<RenderablePlotContext> {
   const workspace = await readWorkspace(options.workspacePath);
   const sampleId = chooseSample(workspace, options.sampleId);
   const metadata = await getSampleMetadata(options.workspacePath, sampleId);
@@ -378,6 +442,7 @@ export async function getPlotContext(options: PlotContextOptions): Promise<unkno
   // These are drawable overlays for the current plot. The full hierarchy remains in workspace.gates.
   const gates = activeGates(workspace, { sampleId, parent, x, y });
   const recommendedGate = recommendedGateContract({ sampleId, parent, x, y });
+  const scale = view?.scale ?? preview.scale;
   return {
     ok: true,
     workspacePath: options.workspacePath,
@@ -389,8 +454,11 @@ export async function getPlotContext(options: PlotContextOptions): Promise<unkno
     parent,
     x,
     y,
-    scale: view?.scale ?? preview.scale,
+    xLabel: x,
+    yLabel: y,
+    scale,
     bounds: plotBounds(preview, gates),
+    visualBounds: visualPlotBounds({ preview, gates, scale }),
     metadata: compactContextMetadata(metadata),
     preview,
     previewSummary: {
@@ -418,10 +486,14 @@ export async function getPlotContext(options: PlotContextOptions): Promise<unkno
       arguments: {
         workspace_path: options.workspacePath,
         expected_revision: workspace.revision,
-        gateTemplate: recommendedGate.gateTemplate,
+        gateTemplate: recommendedGate.gateTemplate as WorkspaceGate,
       },
     },
   };
+}
+
+export async function getPlotContext(options: PlotContextOptions): Promise<unknown> {
+  return getRenderablePlotContext(options);
 }
 
 export async function getGateEditorState(options: GateEditorStateOptions): Promise<unknown> {
