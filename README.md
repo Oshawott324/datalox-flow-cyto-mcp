@@ -249,6 +249,7 @@ The host should discover these tools:
 ```text
 open_fcs
 render_plot
+render_plot_image
 open_gate_editor
 get_plot_context
 get_workspace_revision
@@ -276,6 +277,12 @@ upsert_gate returns nextAction.tool = get_workspace_revision
 Agents should write gates through `upsert_gate` with the `expected_revision`
 returned by `get_plot_context`; they should not patch `flowcyto.workspace.json`
 directly or inspect local preview URLs as a data source.
+
+Use `render_plot` for agent-readable preview data and gate geometry. Use
+`render_plot_image` when the user asks for an inline graph; it renders a
+deterministic image from the same preview bins/points and active gate context.
+By default it also writes the SVG under `.datalox/cache/plots/` so hosts that do
+not display MCP image content inline can still return a concrete file path.
 
 The embedded app resource is:
 

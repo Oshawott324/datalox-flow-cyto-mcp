@@ -15,6 +15,7 @@ import {
   nativeGateEditorReadinessError,
   type NativeGateEditorWindow,
 } from "../app/gate-editor/native-window.js";
+import { renderPlotImage } from "../app/gate-editor/plot-image.js";
 import { GATE_EDITOR_HTML } from "../app/gate-editor/ui.js";
 import { getGateEditorState, getPlotContext, startGateEditorServer, type GateEditorServer } from "../app/gate-editor/server.js";
 import {
@@ -71,11 +72,12 @@ const FlowcytoCapabilities = {
   supportsFileTypes: [".fcs", "flowcyto.workspace.json"],
   canParseMetadata: true,
   canRenderPlots: true,
+  canRenderPlotImages: true,
   canOpenCompactApp: true,
   canWriteStructuredGates: true,
   liveRefreshAfterUpsertGate: true,
   canonicalArtifact: "flowcyto.workspace.json",
-  primaryTools: ["open_fcs", "render_plot", "open_gate_editor", "get_plot_context", "upsert_gate"],
+  primaryTools: ["open_fcs", "render_plot", "render_plot_image", "open_gate_editor", "get_plot_context", "upsert_gate"],
   preferredWorkflowResource: OPEN_FCS_WORKFLOW_RESOURCE_URI,
   compactViewer: {
     entryTool: "open_gate_editor",
@@ -114,6 +116,22 @@ function resultContent(result: unknown, meta?: Record<string, unknown>) {
     content: [{ type: "text" as const, text: JSON.stringify({ result }, null, 2) }],
     structuredContent: { result },
     ...(meta ? { _meta: meta } : {}),
+  };
+}
+
+function imageResultContent(params: {
+  result: unknown;
+  mimeType: string;
+  data: string;
+  meta?: Record<string, unknown>;
+}) {
+  return {
+    content: [
+      { type: "image" as const, mimeType: params.mimeType, data: params.data },
+      { type: "text" as const, text: JSON.stringify({ result: params.result }, null, 2) },
+    ],
+    structuredContent: { result: params.result },
+    ...(params.meta ? { _meta: params.meta } : {}),
   };
 }
 
@@ -820,6 +838,106 @@ server.registerTool(
       }),
     };
   }),
+);
+
+server.registerTool(
+  "render_plot_image",
+  {
+    description: "Return a deterministic human-visible flow cytometry plot image for inline display. This uses the same preview/bins and gate context as render_plot; use render_plot for agent-readable geometry and render_plot_image when the user asks to show or display the graph inline.",
+    inputSchema: {
+      workspace_path: z.string(),
+      sample_id: z.string().optional(),
+      parent_gate_id: z.string().optional(),
+      x: z.string().optional(),
+      y: z.string().optional(),
+      max_events: z.number().int().positive().optional(),
+      format: z.enum(["auto", "points", "bins"]).optional(),
+      bin_width: z.number().int().positive().optional(),
+      bin_height: z.number().int().positive().optional(),
+      width: z.number().int().positive().optional(),
+      height: z.number().int().positive().optional(),
+      image_format: z.enum(["svg"]).optional(),
+      output: z.enum(["content", "file", "both"]).optional(),
+      output_path: z.string().optional(),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, sample_id, parent_gate_id, x, y, max_events, format, bin_width, bin_height, width, height, image_format, output, output_path }) => {
+    try {
+      if (image_format && image_format !== "svg") {
+        throw new FlowcytoError("unsupported_image_format", "render_plot_image currently supports image_format=svg.", "/image_format");
+      }
+      const result = await renderPlotImage({
+        workspacePath: workspace_path,
+        sampleId: sample_id,
+        parent: parent_gate_id,
+        x,
+        y,
+        maxEvents: max_events,
+        format,
+        binWidth: bin_width,
+        binHeight: bin_height,
+        width,
+        height,
+        imageFormat: image_format,
+        output,
+        outputPath: output_path,
+      });
+      const { svg: _svg, ...image } = result.image;
+      const structuredResult = {
+        ...result,
+        image,
+        agentContract: flowcytoAgentContract({
+          imageSource: "same_preview_or_bins_as_render_plot",
+          dataTool: "render_plot",
+        }),
+      };
+      if (output === "file") {
+        return resultContent(structuredResult);
+      }
+      return imageResultContent({
+        result: structuredResult,
+        mimeType: result.image.mimeType,
+        data: Buffer.from(result.image.svg, "utf8").toString("base64"),
+      });
+    } catch (error) {
+      return {
+        ...resultContent(errorResult(error)),
+        isError: true as const,
+      };
+    }
+  },
+);
+
+server.registerTool(
+  "probe_inline_image",
+  {
+    description: "Diagnostic host-rendering probe. Returns one tiny SVG image and one tiny PNG image so a fresh MCP host can reveal which image MIME types it displays inline.",
+    inputSchema: {},
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async () => {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60" viewBox="0 0 120 60"><rect width="120" height="60" fill="#fff"/><circle cx="30" cy="30" r="18" fill="#1291ab"/><rect x="62" y="15" width="38" height="30" fill="#f7d03f"/><text x="60" y="55" text-anchor="middle" font-family="Arial" font-size="10" fill="#293241">svg probe</text></svg>`;
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mO88fHhfwAJ8wP/xk2IAAAAAABJRU5ErkJggg==";
+    const result = {
+      ok: true,
+      probes: [
+        { format: "svg", mimeType: "image/svg+xml", expectedInlineLabel: "svg probe" },
+        { format: "png", mimeType: "image/png", expectedInlineLabel: "1x1 blue-ish PNG pixel" },
+      ],
+      nextDecision: "If SVG does not render inline but PNG does, make render_plot_image default to PNG via internal SVG-to-PNG rasterization.",
+    };
+    return {
+      content: [
+        { type: "image" as const, mimeType: "image/svg+xml", data: Buffer.from(svg, "utf8").toString("base64") },
+        { type: "image" as const, mimeType: "image/png", data: png },
+        { type: "text" as const, text: JSON.stringify({ result }, null, 2) },
+      ],
+      structuredContent: { result },
+    };
+  },
 );
 
 server.registerTool(

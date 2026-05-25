@@ -20,16 +20,21 @@ import {
   parseNativeWindowErrorPayload,
   supportsNativeGateEditorWindow,
   windowsWebView2HelperPath,
+  windowsWebView2LoaderPath,
 } from "../src/app/gate-editor/native-window.js";
+import { renderPlotImage } from "../src/app/gate-editor/plot-image.js";
 import { startGateEditorServer } from "../src/app/gate-editor/server.js";
 import {
   deleteGate,
+  formatTick,
   FlowcytoError,
+  generateTicks,
   getEventPreview,
   getSampleMetadata,
   initWorkspace,
   readPreviewColumns,
   readWorkspace,
+  transformValue,
   upsertGate,
   validateWorkspace,
   watchWorkspaceFile,
@@ -212,6 +217,15 @@ function makeSseReader(response: Response): {
 }
 
 describe("flowcyto core", () => {
+  it("shares deterministic scale transforms, ticks, and labels", () => {
+    expect(transformValue(150, "arcsinh")).toBeCloseTo(Math.asinh(1));
+    expect(transformValue(1000, "log")).toBe(3);
+    expect(transformValue(-1, "log")).toBeNaN();
+    expect(generateTicks(0, 10, 3)).toEqual([0, 5, 10]);
+    expect(formatTick(1_500_000)).toBe("1.5M");
+    expect(formatTick(12_000)).toBe("12K");
+  });
+
   it("initializes and validates a workspace", async () => {
     const { workspacePath } = await makeWorkspace();
     const workspace = await readWorkspace(workspacePath);
@@ -469,6 +483,67 @@ describe("flowcyto core", () => {
       maxEvents: 50001,
       format: "points",
     })).rejects.toMatchObject({ code: "point_preview_too_large" });
+  });
+
+  it("renders deterministic SVG plot images from the shared preview path", async () => {
+    const { workspacePath } = await makeWorkspace();
+    const first = await renderPlotImage({
+      workspacePath,
+      sampleId: "sample_001",
+      x: "HDR-T",
+      y: "FSC-A",
+      format: "bins",
+      binWidth: 32,
+      binHeight: 24,
+      width: 640,
+      height: 420,
+    });
+    const second = await renderPlotImage({
+      workspacePath,
+      sampleId: "sample_001",
+      x: "HDR-T",
+      y: "FSC-A",
+      format: "bins",
+      binWidth: 32,
+      binHeight: 24,
+      width: 640,
+      height: 420,
+    });
+    expect(first.image.mimeType).toBe("image/svg+xml");
+    expect(first.image.svg).toBe(second.image.svg);
+    expect(first.image.svg).toContain("<svg");
+    expect(first.image.svg).toContain("HDR-T");
+    expect(first.image.svg).toContain("FSC-A");
+    expect(first.image.svg).toContain("<rect");
+    expect(first.image.path).toBeTruthy();
+    await expect(fs.access(first.image.path as string)).resolves.toBeUndefined();
+    expect(second.image.path).toBe(first.image.path);
+
+    await upsertGate({ workspacePath, gate: testGate("rendered_gate"), expectedRevision: 0 });
+    const afterGate = await renderPlotImage({
+      workspacePath,
+      sampleId: "sample_001",
+      x: "HDR-T",
+      y: "FSC-A",
+      format: "bins",
+      binWidth: 32,
+      binHeight: 24,
+      width: 640,
+      height: 420,
+    });
+    expect(afterGate.revision).toBe(1);
+    expect(afterGate.image.svg).not.toBe(first.image.svg);
+    expect(afterGate.image.path).not.toBe(first.image.path);
+    expect(afterGate.image.svg).toContain("<polygon");
+
+    await expect(renderPlotImage({
+      workspacePath,
+      sampleId: "sample_001",
+      x: "HDR-T",
+      y: "FSC-A",
+      output: "file",
+      outputPath: path.join(path.dirname(workspacePath), "..", "outside.svg"),
+    })).rejects.toMatchObject({ code: "plot_output_path_outside_workspace" });
   });
 
   it("rejects unknown gate axes during validation", async () => {
@@ -909,6 +984,8 @@ describe("flowcyto gate editor server", () => {
 
     expect(windowsWebView2HelperPath("x64", "/pkg")).toBe(path.join("/pkg", "dist", "native", "windows", "win-x64", "flowcyto-webview2-window.exe"));
     expect(windowsWebView2HelperPath("arm64", "/pkg")).toBe(path.join("/pkg", "dist", "native", "windows", "win-arm64", "flowcyto-webview2-window.exe"));
+    expect(windowsWebView2LoaderPath("x64", "/pkg")).toBe(path.join("/pkg", "dist", "native", "windows", "win-x64", "WebView2Loader.dll"));
+    expect(windowsWebView2LoaderPath("arm64", "/pkg")).toBe(path.join("/pkg", "dist", "native", "windows", "win-arm64", "WebView2Loader.dll"));
 
     const packageRoot = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-native-readiness-"));
     const missingReadiness = nativeGateEditorReadiness("win32", "x64", packageRoot);
@@ -916,8 +993,13 @@ describe("flowcyto gate editor server", () => {
     expect(missingReadiness.detail).toBe("windows_webview2_helper_missing");
 
     const helperPath = windowsWebView2HelperPath("x64", packageRoot);
+    const loaderPath = windowsWebView2LoaderPath("x64", packageRoot);
     await fs.mkdir(path.dirname(helperPath), { recursive: true });
     await fs.writeFile(helperPath, "");
+    const missingLoaderReadiness = nativeGateEditorReadiness("win32", "x64", packageRoot);
+    expect(missingLoaderReadiness.ok).toBe(false);
+    expect(missingLoaderReadiness.detail).toBe("windows_webview2_loader_missing");
+    await fs.writeFile(loaderPath, "");
     const readyReadiness = nativeGateEditorReadiness("win32", "x64", packageRoot);
     expect(readyReadiness.ok).toBe(true);
     expect(readyReadiness.detail).toBe("windows_webview2");
@@ -929,6 +1011,9 @@ describe("flowcyto gate editor server", () => {
     const missingHelperError = nativeGateEditorReadinessError(missingReadiness);
     expect(missingHelperError?.code).toBe("windows_webview2_helper_missing");
     expect(missingHelperError?.path).toBe("/surface/runtime");
+    const missingLoaderError = nativeGateEditorReadinessError(missingLoaderReadiness);
+    expect(missingLoaderError?.code).toBe("windows_webview2_loader_missing");
+    expect(missingLoaderError?.path).toBe("/surface/runtime");
   });
 
   it("builds native window launcher plans without opening browser chrome", async () => {
@@ -951,8 +1036,10 @@ describe("flowcyto gate editor server", () => {
 
     const packageRoot = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-webview2-plan-"));
     const helperPath = windowsWebView2HelperPath("x64", packageRoot);
+    const loaderPath = windowsWebView2LoaderPath("x64", packageRoot);
     await fs.mkdir(path.dirname(helperPath), { recursive: true });
     await fs.writeFile(helperPath, "");
+    await fs.writeFile(loaderPath, "");
     const windowsPlan = nativeGateEditorLaunchPlan({
       url,
       title: "Windows Flowcyto",
@@ -1710,6 +1797,7 @@ describe("flowcyto MCP", () => {
       const tools = await client.listTools();
       const openFcsTool = tools.tools.find((tool) => tool.name === "open_fcs");
       const renderPlotTool = tools.tools.find((tool) => tool.name === "render_plot");
+      const renderPlotImageTool = tools.tools.find((tool) => tool.name === "render_plot_image");
       const openGateEditorTool = tools.tools.find((tool) => tool.name === "open_gate_editor");
       const upsertGateTool = tools.tools.find((tool) => tool.name === "upsert_gate");
       expect(openFcsTool?.description).toContain(".fcs");
@@ -1720,6 +1808,8 @@ describe("flowcyto MCP", () => {
       expect(renderPlotTool?.description).toContain("marker");
       expect(renderPlotTool?.description).toContain("render");
       expect(renderPlotTool?.description).toContain("plot");
+      expect(renderPlotImageTool?.description).toContain("inline");
+      expect(renderPlotImageTool?.description).toContain("same preview");
       expect(openGateEditorTool?.description).toContain("open_fcs");
       expect(upsertGateTool?.description).toContain("expected_revision from render_plot or get_plot_context");
 
@@ -1730,6 +1820,7 @@ describe("flowcyto MCP", () => {
       const capabilitiesResult = JSON.parse("text" in capabilities.contents[0] ? capabilities.contents[0].text as string : "{}") as {
         supportsFileTypes: string[];
         canRenderPlots: boolean;
+        canRenderPlotImages: boolean;
         canWriteStructuredGates: boolean;
         canonicalArtifact: string;
         compactViewer: {
@@ -1741,6 +1832,7 @@ describe("flowcyto MCP", () => {
       };
       expect(capabilitiesResult.supportsFileTypes).toContain(".fcs");
       expect(capabilitiesResult.canRenderPlots).toBe(true);
+      expect(capabilitiesResult.canRenderPlotImages).toBe(true);
       expect(capabilitiesResult.canWriteStructuredGates).toBe(true);
       expect(capabilitiesResult.canonicalArtifact).toBe("flowcyto.workspace.json");
       expect(capabilitiesResult.compactViewer).toMatchObject({
@@ -1911,9 +2003,11 @@ describe("flowcyto MCP", () => {
         "open_fcs",
         "open_gate_editor",
         "open_workspace",
+        "probe_inline_image",
         "read_workspace",
         "render_gate_editor",
         "render_plot",
+        "render_plot_image",
         "upsert_gate",
         "validate_workspace",
         "write_workspace",
@@ -2038,6 +2132,57 @@ describe("flowcyto MCP", () => {
       expect(editorStateResult.ok).toBe(true);
       expect(editorStateResult.revision).toBe(0);
       expect(editorStateResult.preview.sampledEvents).toBeLessThanOrEqual(16);
+
+      const plotImage = await client.callTool({
+        name: "render_plot_image",
+        arguments: {
+          workspace_path: workspacePath,
+          sample_id: "sample_001",
+          x: metadataResult.parameters[0]?.name,
+          y: metadataResult.parameters[1]?.name,
+          format: "bins",
+          bin_width: 16,
+          bin_height: 12,
+          max_events: 1024,
+        },
+      });
+      const plotImageResult = (plotImage.structuredContent as { result?: unknown } | undefined)?.result as {
+        ok: boolean;
+        image: { format: string; mimeType: string; bytes: number; path?: string };
+      };
+      expect(plotImageResult.ok).toBe(true);
+      expect(plotImageResult.image).toMatchObject({ format: "svg", mimeType: "image/svg+xml" });
+      expect(plotImageResult.image.bytes).toBeGreaterThan(100);
+      expect(plotImageResult.image.path).toBeTruthy();
+      await expect(fs.access(plotImageResult.image.path as string)).resolves.toBeUndefined();
+      const plotImageContent = plotImage.content as Array<Record<string, unknown>>;
+      expect(plotImageContent.some((entry) => entry.type === "image" && entry.mimeType === "image/svg+xml")).toBe(true);
+
+      const plotImageFileOnly = await client.callTool({
+        name: "render_plot_image",
+        arguments: {
+          workspace_path: workspacePath,
+          sample_id: "sample_001",
+          x: metadataResult.parameters[0]?.name,
+          y: metadataResult.parameters[1]?.name,
+          format: "bins",
+          output: "file",
+        },
+      });
+      const plotImageFileOnlyResult = (plotImageFileOnly.structuredContent as { result?: unknown } | undefined)?.result as {
+        ok: boolean;
+        image: { path?: string };
+      };
+      expect(plotImageFileOnlyResult.ok).toBe(true);
+      expect(plotImageFileOnlyResult.image.path).toBeTruthy();
+      expect((plotImageFileOnly.content as Array<Record<string, unknown>>).some((entry) => entry.type === "image")).toBe(false);
+
+      const probe = await client.callTool({ name: "probe_inline_image", arguments: {} });
+      const probeResult = (probe.structuredContent as { result?: unknown } | undefined)?.result as { ok: boolean; probes: unknown[] };
+      expect(probeResult.ok).toBe(true);
+      expect(probeResult.probes).toHaveLength(2);
+      const probeContent = probe.content as Array<Record<string, unknown>>;
+      expect(probeContent.filter((entry) => entry.type === "image")).toHaveLength(2);
 
       const rendered = await client.callTool({
         name: "open_gate_editor",

@@ -21,8 +21,11 @@ the main population. Follow the returned `nextAction` immediately so the compact
 viewer opens. In fresh CLI agents this defaults to `open_gate_editor` with
 `surface="native_window"`; in MCP Apps hosts use `surface="mcp_app"`.
 
-Use `render_plot` for user-intent plot requests such as FSC/SSC, marker plots,
-or comparing channels. Use `get_plot_context` for the active compact editor
+Use `render_plot` for agent-readable plot data such as FSC/SSC, marker plots,
+or comparing channels. Use `render_plot_image` when the user asks to show,
+display, or include an inline graph in the chat. If the host does not visibly
+render MCP image content, use the `render_plot_image` file output path under
+`.datalox/cache/plots/`. Use `get_plot_context` for the active compact editor
 view.
 
 Write gates through `upsert_gate` with `expected_revision` from `render_plot` or
