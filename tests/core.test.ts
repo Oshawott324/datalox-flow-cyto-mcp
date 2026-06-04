@@ -898,15 +898,15 @@ describe("flowcyto CLI", () => {
       workspacePath: string;
       sampleId: string;
       channels: Array<{ name: string }>;
-      viewerPolicy: { compactViewerRequired: boolean; openCommand: string };
+      gateEditorPolicy: { compactGateEditorRequired: boolean; openCommand: string };
       nextAction: { command: string; required: boolean; arguments: { sample_id: string; x: string; y: string } };
     };
     expect(parsedOpened.ok).toBe(true);
     expect(parsedOpened.workspacePath).toBe(path.join(openDir, "flowcyto.workspace.json"));
     expect(parsedOpened.sampleId).toBe("CFP_Well_A4");
     expect(parsedOpened.channels.some((channel) => channel.name === "FSC-A")).toBe(true);
-    expect(parsedOpened.viewerPolicy).toMatchObject({
-      compactViewerRequired: true,
+    expect(parsedOpened.gateEditorPolicy).toMatchObject({
+      compactGateEditorRequired: true,
       openCommand: "flowcyto open-gate-editor-window",
     });
     expect(parsedOpened.nextAction.command).toBe("flowcyto open-gate-editor-window");
@@ -1823,7 +1823,7 @@ describe("flowcyto MCP", () => {
         canRenderPlotImages: boolean;
         canWriteStructuredGates: boolean;
         canonicalArtifact: string;
-        compactViewer: {
+        compactGateEditor: {
           entryTool: string;
           requiredFor: string[];
           defaultSurfaceForAgentHosts: string;
@@ -1835,12 +1835,12 @@ describe("flowcyto MCP", () => {
       expect(capabilitiesResult.canRenderPlotImages).toBe(true);
       expect(capabilitiesResult.canWriteStructuredGates).toBe(true);
       expect(capabilitiesResult.canonicalArtifact).toBe("flowcyto.workspace.json");
-      expect(capabilitiesResult.compactViewer).toMatchObject({
+      expect(capabilitiesResult.compactGateEditor).toMatchObject({
         entryTool: "open_gate_editor",
         defaultSurfaceForAgentHosts: "native_window",
         surfaceForMcpAppsHosts: "mcp_app",
       });
-      expect(capabilitiesResult.compactViewer.requiredFor).toEqual(["gate", "draw", "edit", "inspect_population"]);
+      expect(capabilitiesResult.compactGateEditor.requiredFor).toEqual(["gate", "draw", "edit", "inspect_population"]);
 
       const prompts = await client.listPrompts();
       expect(prompts.prompts.some((prompt) => prompt.name === "open-fcs-and-gate-main-population")).toBe(true);
@@ -1875,8 +1875,8 @@ describe("flowcyto MCP", () => {
       });
       const openedDefaultResult = (openedDefault.structuredContent as { result?: unknown } | undefined)?.result as {
         ok: boolean;
-        viewerPolicy: {
-          compactViewerRequired: boolean;
+        gateEditorPolicy: {
+          compactGateEditorRequired: boolean;
           defaultSurfaceForAgentHosts: string;
           surfaceForMcpAppsHosts: string;
           requiredFor: string[];
@@ -1884,15 +1884,15 @@ describe("flowcyto MCP", () => {
         nextAction: { tool: string; required: boolean; reason: string; arguments: Record<string, unknown> };
       };
       expect(openedDefaultResult.ok).toBe(true);
-      expect(openedDefaultResult.viewerPolicy).toMatchObject({
-        compactViewerRequired: true,
+      expect(openedDefaultResult.gateEditorPolicy).toMatchObject({
+        compactGateEditorRequired: true,
         defaultSurfaceForAgentHosts: "native_window",
         surfaceForMcpAppsHosts: "mcp_app",
       });
-      expect(openedDefaultResult.viewerPolicy.requiredFor).toContain("gate");
+      expect(openedDefaultResult.gateEditorPolicy.requiredFor).toContain("gate");
       expect(openedDefaultResult.nextAction.tool).toBe("open_gate_editor");
       expect(openedDefaultResult.nextAction.required).toBe(true);
-      expect(openedDefaultResult.nextAction.reason).toContain("compact viewer");
+      expect(openedDefaultResult.nextAction.reason).toContain("compact gate editor");
       expect(openedDefaultResult.nextAction.arguments.surface).toBe("native_window");
 
       const opened = await client.callTool({
@@ -1910,7 +1910,7 @@ describe("flowcyto MCP", () => {
         sourcePath: string;
         channels: Array<{ name: string }>;
         recommendedViews: Array<{ x: string; y: string; intent: string }>;
-        viewerPolicy: { compactViewerRequired: boolean; requestedSurface: string };
+        gateEditorPolicy: { compactGateEditorRequired: boolean; requestedSurface: string };
         nextAction: { tool: string; required: boolean; arguments: Record<string, unknown> };
       };
       expect(openedResult.ok).toBe(true);
@@ -1919,7 +1919,7 @@ describe("flowcyto MCP", () => {
       expect(openedResult.sourcePath).toBe(fixturePath);
       expect(openedResult.channels.length).toBeGreaterThan(2);
       expect(openedResult.recommendedViews[0]).toMatchObject({ x: "FSC-A", y: "SSC-A", intent: "main_population" });
-      expect(openedResult.viewerPolicy).toMatchObject({ compactViewerRequired: false, requestedSurface: "none" });
+      expect(openedResult.gateEditorPolicy).toMatchObject({ compactGateEditorRequired: false, requestedSurface: "none" });
       expect(openedResult.nextAction.tool).toBe("render_plot");
       expect(openedResult.nextAction.required).toBe(false);
 

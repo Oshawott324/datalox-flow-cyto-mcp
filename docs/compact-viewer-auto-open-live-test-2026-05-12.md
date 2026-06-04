@@ -1,4 +1,4 @@
-# Compact Viewer Auto-Open Live Test - 2026-05-12
+# Compact Gate Editor Auto-Open Live Test - 2026-05-12
 
 Dataset:
 
@@ -10,8 +10,8 @@ Goal:
 
 ```text
 A fresh agent should not need the user to separately ask for the Flowcyto
-viewer. When the user asks to open, inspect, or gate an FCS file, the MCP
-contract should make the next viewer-opening step explicit and executable.
+gate editor. When the user asks to open, inspect, or gate an FCS file, the MCP
+contract should make the next gate-editor-opening step explicit and executable.
 ```
 
 Expected agent path:
@@ -30,14 +30,14 @@ get_workspace_revision
   -> confirms the already-open app can refresh
 ```
 
-## Issue 1: Viewer Opening Was Too Easy To Skip
+## Issue 1: Gate Editor Opening Was Too Easy To Skip
 
 Observed risk:
 
 ```text
 open_fcs could return a render-only nextAction when an agent chose the
-non-viewer path. That made the compact viewer feel optional even when the user
-asked to inspect or gate a population.
+render-only path. That made the compact gate editor feel optional even when the
+user asked to inspect or gate a population.
 ```
 
 Solution:
@@ -45,7 +45,7 @@ Solution:
 ```text
 For MCP open_fcs, the default result now includes:
 
-  viewerPolicy.compactViewerRequired = true
+  gateEditorPolicy.compactGateEditorRequired = true
   nextAction.tool = "open_gate_editor"
   nextAction.required = true
   nextAction.arguments.surface = "native_window"

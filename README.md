@@ -189,7 +189,7 @@ open_fcs -> open_gate_editor -> render_plot or get_plot_context -> upsert_gate -
 
 For gating or population inspection, agents should not stop after `open_fcs`.
 The `open_fcs` result includes a required `nextAction` that opens the compact
-viewer. In fresh CLI agents this defaults to
+gate editor. In fresh CLI agents this defaults to
 `open_gate_editor(surface="native_window")`; MCP Apps hosts can request
 `surface="mcp_app"` for the embedded resource.
 
