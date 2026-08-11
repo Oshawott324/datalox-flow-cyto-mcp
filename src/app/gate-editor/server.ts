@@ -288,6 +288,37 @@ function chooseSample(workspace: FlowcytoWorkspace, requested?: string): string 
   return sampleId;
 }
 
+function channelNamed(parameters: SampleMetadata["parameters"], names: string[]): string | undefined {
+  const lowerNames = new Set(names.map((name) => name.toLowerCase()));
+  return parameters.find((parameter) => lowerNames.has(parameter.name.toLowerCase()))?.name;
+}
+
+function channelWithPrefix(parameters: SampleMetadata["parameters"], prefix: string): string | undefined {
+  const lowerPrefix = prefix.toLowerCase();
+  return parameters.find((parameter) => parameter.name.toLowerCase().startsWith(lowerPrefix))?.name;
+}
+
+function channelWithPrefixAndArea(parameters: SampleMetadata["parameters"], prefix: string): string | undefined {
+  const lowerPrefix = prefix.toLowerCase();
+  return parameters.find((parameter) => {
+    const name = parameter.name.toLowerCase();
+    return name.startsWith(lowerPrefix) && (name.endsWith("-a") || name.includes("-a "));
+  })?.name;
+}
+
+export function recommendedAxes(metadata: SampleMetadata): { x?: string; y?: string } {
+  const parameters = metadata.parameters;
+  const x = channelNamed(parameters, ["FSC-A"])
+    ?? channelWithPrefixAndArea(parameters, "FSC")
+    ?? channelWithPrefix(parameters, "FSC")
+    ?? parameters[0]?.name;
+  const y = channelNamed(parameters, ["SSC-A"])
+    ?? channelWithPrefixAndArea(parameters, "SSC")
+    ?? channelWithPrefix(parameters, "SSC")
+    ?? parameters.find((parameter) => parameter.name !== x)?.name;
+  return { x, y };
+}
+
 function plotBounds(preview: Awaited<ReturnType<typeof getEventPreview>>, gates: WorkspaceGate[]): PlotBounds {
   const bounds: PlotBounds = {
     xMin: Number.POSITIVE_INFINITY,
@@ -424,8 +455,9 @@ export async function getRenderablePlotContext(options: PlotContextOptions): Pro
   const metadata = await getSampleMetadata(options.workspacePath, sampleId);
   const view = workspace.views.find((entry) => entry.sample === sampleId);
   const parent = options.parent ?? view?.parent ?? "root";
-  const x = options.x ?? view?.x ?? metadata.parameters[0]?.name;
-  const y = options.y ?? view?.y ?? metadata.parameters[1]?.name;
+  const axes = recommendedAxes(metadata);
+  const x = options.x ?? view?.x ?? axes.x;
+  const y = options.y ?? view?.y ?? axes.y;
   if (!x || !y) throw new FlowcytoError("missing_axes", "Both x and y axes are required.", "/views");
   const preview = await getEventPreview({
     workspacePath: options.workspacePath,

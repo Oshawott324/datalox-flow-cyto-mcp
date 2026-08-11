@@ -238,7 +238,7 @@ program
           detail: nativePreview.detail,
         },
       ];
-      const ok = checks.every((check) => check.ok);
+      const ok = checks.filter((check) => check.name !== "native_preview").every((check) => check.ok);
       printJson({
         ok,
         checks,

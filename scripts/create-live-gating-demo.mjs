@@ -84,13 +84,12 @@ function workspaceJson() {
 }
 
 function mcpJson() {
+  const serverPath = path.join(repoRoot, "dist", "src", "mcp", "server.js").split(path.sep).join("/");
   return JSON.stringify({
     mcpServers: {
       flowcyto: {
         command: "node",
-        args: [
-          path.join(repoRoot, "dist", "src", "mcp", "server.js"),
-        ],
+        args: [serverPath],
       },
     },
   }, null, 2);

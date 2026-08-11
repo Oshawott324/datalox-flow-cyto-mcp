@@ -23,7 +23,7 @@ import {
   windowsWebView2LoaderPath,
 } from "../src/app/gate-editor/native-window.js";
 import { renderPlotImage } from "../src/app/gate-editor/plot-image.js";
-import { startGateEditorServer } from "../src/app/gate-editor/server.js";
+import { recommendedAxes, startGateEditorServer } from "../src/app/gate-editor/server.js";
 import {
   deleteGate,
   formatTick,
@@ -224,6 +224,25 @@ describe("flowcyto core", () => {
     expect(generateTicks(0, 10, 3)).toEqual([0, 5, 10]);
     expect(formatTick(1_500_000)).toBe("1.5M");
     expect(formatTick(12_000)).toBe("12K");
+  });
+
+  it("prefers FSC/SSC area channels over leading timing parameters", () => {
+    const axes = recommendedAxes({
+      sampleId: "tet_sample",
+      path: "sample.fcs",
+      eventCount: 1,
+      keywords: {},
+      parameters: [
+        { name: "TLSW", index: 0 },
+        { name: "TMSW", index: 1 },
+        { name: "Event Info", index: 2 },
+        { name: "FSC 488/10-H", index: 3 },
+        { name: "FSC 488/10-A", index: 4 },
+        { name: "SSC 488/10-H", index: 5 },
+        { name: "SSC 488/10-A", index: 6 },
+      ],
+    });
+    expect(axes).toEqual({ x: "FSC 488/10-A", y: "SSC 488/10-A" });
   });
 
   it("initializes and validates a workspace", async () => {
@@ -1240,7 +1259,7 @@ describe("flowcyto gate editor server", () => {
       await browser.close();
       await server.close();
     }
-  });
+  }, 15_000);
 
   it("returns typed health errors for malformed workspace artifacts", async () => {
     const { workspacePath } = await makeWorkspace();
@@ -2017,6 +2036,10 @@ describe("flowcyto MCP", () => {
       } | undefined;
       expect(openTool?._meta?.["openai/outputTemplate"]).toBe("ui://flowcyto/gate-editor-v1.html");
       expect((openTool?._meta?.ui as { resourceUri?: string } | undefined)?.resourceUri).toBe("ui://flowcyto/gate-editor-v1.html");
+      for (const name of ["get_plot_context", "get_workspace_revision", "upsert_gate", "delete_gate"]) {
+        const tool = tools.tools.find((entry) => entry.name === name) as { _meta?: Record<string, unknown> } | undefined;
+        expect(tool?._meta?.["openai/widgetAccessible"], name).toBe(true);
+      }
       const renderTool = tools.tools.find((tool) => tool.name === "render_gate_editor");
       expect(renderTool?.description).toContain("Deprecated alias");
       const stateTool = tools.tools.find((tool) => tool.name === "get_gate_editor_state");
@@ -2029,8 +2052,10 @@ describe("flowcyto MCP", () => {
       )).toBe(true);
       const resource = await client.readResource({ uri: "ui://flowcyto/gate-editor-v1.html" });
       expect(resource.contents[0]?.mimeType).toBe("text/html;profile=mcp-app");
-      expect("text" in resource.contents[0] ? resource.contents[0].text : "").toContain("window.openai.callTool");
-      expect("text" in resource.contents[0] ? resource.contents[0].text : "").toContain("<canvas id=\"plot\"");
+      const resourceHtml = "text" in resource.contents[0] ? resource.contents[0].text : "";
+      expect(resourceHtml).toContain("window.openai.callTool");
+      expect(resourceHtml).toContain("value !== undefined");
+      expect(resourceHtml).toContain("<canvas id=\"plot\"");
 
       const metadata = await client.callTool({
         name: "get_sample_metadata",

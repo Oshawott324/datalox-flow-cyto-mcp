@@ -17,7 +17,7 @@ import {
 } from "../app/gate-editor/native-window.js";
 import { renderPlotImage } from "../app/gate-editor/plot-image.js";
 import { GATE_EDITOR_HTML } from "../app/gate-editor/ui.js";
-import { getGateEditorState, getPlotContext, startGateEditorServer, type GateEditorServer } from "../app/gate-editor/server.js";
+import { getGateEditorState, getPlotContext, recommendedAxes, startGateEditorServer, type GateEditorServer } from "../app/gate-editor/server.js";
 import {
   FlowcytoError,
   deleteGate,
@@ -51,6 +51,9 @@ const GateEditorMcpAppMeta = {
     visibility: ["model", "app"],
   },
   "openai/outputTemplate": GATE_EDITOR_RESOURCE_URI,
+  "openai/widgetAccessible": true,
+};
+const WidgetAccessibleToolMeta = {
   "openai/widgetAccessible": true,
 };
 
@@ -314,8 +317,9 @@ async function resolveGateEditorSelection(params: {
   }
   const metadata = await getSampleMetadata(params.workspacePath, sampleId);
   const view = workspace.views.find((entry) => entry.sample === sampleId);
-  const x = params.x ?? view?.x ?? metadata.parameters[0]?.name;
-  const y = params.y ?? view?.y ?? metadata.parameters[1]?.name;
+  const axes = recommendedAxes(metadata);
+  const x = params.x ?? view?.x ?? axes.x;
+  const y = params.y ?? view?.y ?? axes.y;
   if (!x || !y) {
     throw new FlowcytoError("missing_axes", "Both x and y axes are required.", "/views");
   }
@@ -775,6 +779,7 @@ server.registerTool(
       bin_height: z.number().int().positive().optional(),
     },
     outputSchema: JsonResultSchema,
+    _meta: WidgetAccessibleToolMeta,
   },
   async ({ workspace_path, sample_id, parent_gate_id, x, y, max_events, format, bin_width, bin_height }) => toolContent(() =>
     getPlotContext({
@@ -978,6 +983,7 @@ server.registerTool(
     description: "Return the current workspace revision for lightweight embedded UI refresh checks.",
     inputSchema: { workspace_path: z.string() },
     outputSchema: JsonResultSchema,
+    _meta: WidgetAccessibleToolMeta,
   },
   async ({ workspace_path }) => toolContent(async () => {
     const workspace = await readWorkspace(workspace_path);
@@ -1001,6 +1007,7 @@ server.registerTool(
       expected_revision: z.number().int(),
     },
     outputSchema: JsonResultSchema,
+    _meta: WidgetAccessibleToolMeta,
   },
   async ({ workspace_path, gate, expected_revision }) => toolContent(() =>
     upsertGate({
@@ -1027,6 +1034,7 @@ server.registerTool(
       expected_revision: z.number().int(),
     },
     outputSchema: JsonResultSchema,
+    _meta: WidgetAccessibleToolMeta,
   },
   async ({ workspace_path, gate_id, expected_revision }) => toolContent(() =>
     deleteGate({
