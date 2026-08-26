@@ -192,6 +192,93 @@ These files are tied to Datalox runtime graph state and UI detail payloads. The 
 
 ## Other Reusable Prior Datalox Areas
 
+### FlowJo WSP Export
+
+Reference source:
+
+```text
+backend/domains/flow_cytometry/export/flowjo/__init__.py
+backend/domains/flow_cytometry/export/flowjo/mapper.py
+backend/domains/flow_cytometry/export/flowjo/package.py
+backend/domains/flow_cytometry/export/flowjo/wsp_writer.py
+backend/domains/flow_cytometry/export/flowjo/xml_builder.py
+backend/domains/flow_cytometry/export/flowjo/validators.py
+backend/domains/flow_cytometry/tests/tests_flowjo_export_*.py
+```
+
+Prior branch:
+
+```text
+https://github.com/Complexity-LLC/datalox/tree/flowcyto-mcp-tool-loading
+commit 9f16c882d2bee5b0b45fd6a8587a6205a589eeef
+```
+
+That branch contains a FlowJo export path:
+
+```text
+build_flowjo_export_ir(...) -> build_flowjo_export_package(...) -> workspace.wsp
+```
+
+The package writer creates a deterministic zip containing:
+
+```text
+workspace.wsp
+manifest.json
+annotations.json, optional
+sample FCS files, optional portable bundle mode
+```
+
+Reusable ideas:
+
+- IR-first export boundary before writing FlowJo XML.
+- Strict validation before writing `.wsp`.
+- `reference_only` mode for workspaces that point to existing FCS paths.
+- `portable_bundle` mode for a zip containing `workspace.wsp` plus sample FCS files.
+- FlowJo fixture corpus and expected JSON summaries.
+- Compensation matrix export through Gating-ML `spilloverMatrix` nodes.
+- Tests for compensated channel names such as `FJComp-*` and FlowJo-compatible `Comp-*` names.
+
+Do not directly port:
+
+- Datalox run-result, population-graph, and artifact-store adapters.
+- Program/run/project IDs as required concepts.
+- Python package persistence paths under Datalox backend `.local_data`.
+
+For this MCP:
+
+- Add FlowJo export as a separate compatibility PR after PR1 compensation.
+- Use `flowcyto.workspace.json` as the source artifact.
+- Add an MCP tool such as `export_flowjo_workspace`.
+- Tool input should be explicit:
+
+```json
+{
+  "workspace_path": "path/to/flowcyto.workspace.json",
+  "output_path": "optional/path/to/workspace.wsp or export.zip",
+  "bundle_mode": "reference_only",
+  "sample_uri_mode": "absolute_file_uri"
+}
+```
+
+- Tool output should include:
+
+```json
+{
+  "ok": true,
+  "wspPath": "path/to/workspace.wsp",
+  "bundlePath": "optional/path/to/export.zip",
+  "mode": "strict_v0",
+  "flowjoCompatibility": {
+    "targetVersions": ["10.8.x", "10.9.x", "10.10.x"],
+    "warnings": []
+  }
+}
+```
+
+- Keep `.wsp` export one-way from MCP workspace to FlowJo.
+- Do not use `.wsp` as the canonical live state.
+- Validate the generated `.wsp` structurally and, when possible, by opening it in FlowJo during live validation.
+
 ### FCS Loading
 
 Reference source:
@@ -710,6 +797,128 @@ Algorithm:
 - Prefer a pure TypeScript active-set solver unless a small, maintained dependency is clearly better.
 - Do not use square compensation code for spectral data.
 
+### Scientific Library Boundary
+
+NNLS for spectral unmixing is simple enough to implement in pure TypeScript (active-set algorithm, small matrix sizes, no external dependency required).
+
+If future work needs libraries with no viable TypeScript equivalent — FlowSOM clustering, scanpy high-dimensional analysis, scipy's more advanced solvers — the correct pattern is a **Python sidecar process**:
+
+- The TypeScript MCP server remains the MCP contract owner.
+- For compute steps that need Python, the server spawns a Python subprocess over stdio and passes/receives JSON.
+- This keeps the MCP protocol, workspace format, and tool definitions in TypeScript.
+- Do not replace the TypeScript server with a Python MCP server.
+
+This boundary applies to PR3 and all future PRs. Do not introduce a Python sidecar unless a specific computation has no viable TypeScript solution.
+
+## PR4 Scope: Population Graph
+
+Reference source:
+
+```text
+backend/domains/flow_cytometry/population_graph/
+backend/domains/flow_cytometry/gate_artifacts.py
+```
+
+Population graph provides a hierarchical summary of all gated populations for a sample: event counts, percentage of parent, percentage of total, and the gate chain that produced each node.
+
+Include:
+
+- Compute population statistics after gate application (count, parent %, total %).
+- Return population graph as a structured result from a new MCP tool.
+- Support multi-level gate hierarchies (children of children).
+- Include ungated root population as the top node.
+
+Proposed MCP tool:
+
+```text
+get_population_graph
+```
+
+Input:
+
+```json
+{
+  "workspace_path": "path/to/flowcyto.workspace.json",
+  "sample_id": "optional",
+  "compensation_id": "optional"
+}
+```
+
+Output:
+
+```json
+{
+  "ok": true,
+  "population": {
+    "id": "root",
+    "name": "All Events",
+    "count": 50000,
+    "parentPercent": null,
+    "totalPercent": 100,
+    "children": [
+      {
+        "id": "gate_lymphocytes",
+        "name": "Lymphocytes",
+        "count": 32000,
+        "parentPercent": 64.0,
+        "totalPercent": 64.0,
+        "children": []
+      }
+    ]
+  }
+}
+```
+
+Do not port:
+
+- Datalox artifact wiring or run-result storage.
+- Workflow-specific preview selection tied to Datalox graph state.
+
+Population summaries may also be surfaced as compact hints in `get_plot_context` output (largest cluster centroid, rough spread) to improve agent gate placement without constituting automatic gate geometry.
+
+## PR5 Scope: FlowJo Export
+
+Reference source:
+
+```text
+backend/domains/flow_cytometry/export/flowjo/
+```
+
+FlowJo export writes a `.wsp` workspace file readable by FlowJo and other analysis tools. It is important for labs that gate in this MCP and then hand off to FlowJo for downstream statistics or figure preparation.
+
+Include:
+
+- Generate a valid FlowJo `.wsp` XML file from a `flowcyto.workspace.json`.
+- Include all gates (polygon, rect, range) with correct FlowJo gate XML schema.
+- Include compensation references if a compensation matrix was applied.
+- Record channel names and sample file paths.
+
+Proposed MCP tool:
+
+```text
+export_flowjo_workspace
+```
+
+Input:
+
+```json
+{
+  "workspace_path": "path/to/flowcyto.workspace.json",
+  "output_path": "path/to/output.wsp",
+  "compensation_id": "optional"
+}
+```
+
+Do not port:
+
+- Datalox object-store upload behavior.
+- Compensated-axes FCS re-export (write new FCS files with compensated channel values). This is a separate, larger feature.
+
+Validation:
+
+- Open the generated `.wsp` in FlowJo and confirm gates load correctly.
+- Confirm gate geometry matches the source workspace.
+
 ## Recommended Branch and PR Sequence
 
 1. `feat/flowcyto-compensation-unmixing`
@@ -723,6 +932,14 @@ Algorithm:
 
 4. `feat/flowcyto-spectral-unmixing`
    - Implement PR3 with NNLS and separate spectral tests.
+   - Revisit Python sidecar pattern only if NNLS or reference-matrix work requires scipy.
+
+5. `feat/flowcyto-population-graph`
+   - Implement PR4 after gate application is stable and compensation is in place.
+
+6. `feat/flowcyto-flowjo-export`
+   - Implement PR5. Requires stable gate schema and compensation references.
+   - Validate by opening generated `.wsp` in FlowJo.
 
 ## Acceptance Criteria for PR1
 
