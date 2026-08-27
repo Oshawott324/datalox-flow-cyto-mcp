@@ -919,6 +919,50 @@ Validation:
 - Open the generated `.wsp` in FlowJo and confirm gates load correctly.
 - Confirm gate geometry matches the source workspace.
 
+## Parallel Delegation
+
+Jinting can work in parallel on data-science validation and reference analysis without blocking the core MCP implementation.
+
+Good parallel tasks:
+
+- Build a small fixture inventory for conventional compensation:
+  - Find redistributable FCS files with `$SPILLOVER`, `$SPILL`, `$COMP`, and `SPILLOVER` keyword variants.
+  - Record source, license, channel names, matrix keyword used, and whether the file appears raw, compensated, or unmixed.
+  - Confirm whether `flowcore-comp-060909.001.fcs` can be added to `testdata/fixtures` or must be fetched during tests.
+
+- Validate compensation math against known references:
+  - Create a tiny numeric fixture with a 2x2 or 3x3 spillover matrix and expected compensated values.
+  - Cross-check TypeScript `ml-matrix` results against Python `numpy.linalg.solve(S.T, X.T).T`.
+  - Document matrix orientation clearly with examples.
+
+- Assess pre-compensated and pre-unmixed detection signals:
+  - Collect examples of `FJComp-*`, `Comp-*`, and `C_*` channels.
+  - Collect Cytek/Aurora `$CYT` keyword examples and channel naming patterns.
+  - Produce a table of reliable signals, weak signals, and cases that must ask the user.
+
+- Prepare PR2 control-derived compensation validation:
+  - Identify single-stain and unstained control datasets suitable for testing.
+  - Compare the old Datalox top-bright-event OLS approach against expected software outputs where available.
+  - Document failure cases: dim controls, ambiguous control-channel mapping, tandem dyes, insufficient events.
+
+- Prepare PR3 spectral unmixing notes:
+  - Summarize reference spectra requirements for Cytek/Aurora-style data.
+  - Compare NNLS behavior on small synthetic rectangular matrices.
+  - Identify when autofluorescence should be modeled as an extra component.
+
+- Prepare PR5 FlowJo export validation:
+  - Open prior generated `.wsp` fixtures in FlowJo if available.
+  - FlowJo is commercial software; Jinting should request license/access before planning this validation path.
+  - Record which FlowJo versions accept the generated XML.
+  - Compare gate coordinates and compensation matrix display against source expectations.
+
+Boundaries:
+
+- Jinting should not change MCP tool contracts without review.
+- Jinting should not add heuristic auto-application of compensation or unmixing.
+- Jinting should not use filename-only control mapping as a scientific contract.
+- Jinting's outputs should be docs, fixture manifests, expected-value tables, and tests that the implementation PRs can consume.
+
 ## Recommended Branch and PR Sequence
 
 1. `feat/flowcyto-compensation-unmixing`
