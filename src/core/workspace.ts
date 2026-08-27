@@ -1,8 +1,16 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import {
+  compensationDiagnosticsForWorkspace,
+  detectCompensationStatus,
+  extractSpilloverMatrices,
+} from "./compensation.js";
 import { readFcsMetadata } from "./fcs.js";
 import {
+  type CompensationDiagnostics,
+  type CompensationMatrix,
+  type CompensationStatus,
   FlowcytoError,
   type FlowcytoSample,
   type FlowcytoWorkspace,
@@ -66,6 +74,14 @@ export type OpenFcsArtifactResult = {
   revision: number;
   channels: SampleParameter[];
   recommendedViews: OpenFcsRecommendedView[];
+  compensationSummary: {
+    available: boolean;
+    count: number;
+    defaultApplied: false;
+    suggestedCompensationId?: string;
+  };
+  compensationStatus: CompensationStatus;
+  compensationDiagnostics: CompensationDiagnostics;
 };
 
 function sampleIdFromPath(samplePath: string): string {
@@ -148,9 +164,115 @@ function compactChannels(metadata: SampleMetadata): SampleParameter[] {
   }));
 }
 
+function sameMatrix(left: CompensationMatrix, right: CompensationMatrix): boolean {
+  return left.id === right.id
+    && left.sample === right.sample
+    && left.keyword === right.keyword
+    && JSON.stringify(left.channels) === JSON.stringify(right.channels)
+    && JSON.stringify(left.matrix) === JSON.stringify(right.matrix);
+}
+
+function mergeCompensations(workspace: FlowcytoWorkspace, nextCompensations: CompensationMatrix[]): CompensationMatrix[] {
+  const byId = new Map((workspace.compensations ?? []).map((matrix) => [matrix.id, matrix]));
+  nextCompensations.forEach((matrix) => byId.set(matrix.id, matrix));
+  return Array.from(byId.values()).sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function compensationSummary(status: CompensationStatus, count: number): OpenFcsArtifactResult["compensationSummary"] {
+  return {
+    available: count > 0,
+    count,
+    defaultApplied: false,
+    ...(status.suggestedCompensationId ? { suggestedCompensationId: status.suggestedCompensationId } : {}),
+  };
+}
+
+async function compensationContextForMetadata(input: {
+  workspace: FlowcytoWorkspace;
+  sampleId: string;
+  metadata: SampleMetadata;
+}): Promise<{
+  compensations: CompensationMatrix[];
+  status: CompensationStatus;
+  diagnostics: CompensationDiagnostics;
+}> {
+  const availableChannels = input.metadata.parameters.map((parameter) => parameter.name);
+  const extracted = extractSpilloverMatrices({
+    keywords: input.metadata.keywords,
+    sampleId: input.sampleId,
+    availableChannels,
+  });
+  const existing = input.workspace.compensations ?? [];
+  const compensations = mergeCompensations(input.workspace, extracted.compensations);
+  const sampleCompensations = compensations.filter((matrix) => matrix.sample === input.sampleId || matrix.sample === undefined);
+  const status = detectCompensationStatus({
+    keywords: input.metadata.keywords,
+    channels: availableChannels,
+    compensations: sampleCompensations,
+  });
+  const diagnostics = extracted.compensations.length > 0
+    ? {
+      ...extracted.diagnostics,
+      matrixChannels: extracted.compensations[0].channels,
+    }
+    : compensationDiagnosticsForWorkspace({
+      workspaceCompensations: existing,
+      sampleId: input.sampleId,
+      availableChannels,
+    });
+  return { compensations, status, diagnostics };
+}
+
+function workspaceNeedsCompensationUpdate(input: {
+  workspace: FlowcytoWorkspace;
+  compensations: CompensationMatrix[];
+  sampleId: string;
+  status: CompensationStatus;
+}): boolean {
+  const current = input.workspace.compensations ?? [];
+  if (current.length !== input.compensations.length) return true;
+  for (const matrix of input.compensations) {
+    const existing = current.find((entry) => entry.id === matrix.id);
+    if (!existing || !sameMatrix(existing, matrix)) return true;
+  }
+  const currentStatus = input.workspace.compensationStatus?.[input.sampleId];
+  if (
+    input.compensations.length === 0
+    && currentStatus === undefined
+    && !input.status.embeddedMatrixFound
+    && !input.status.detectedAsPreCompensated
+  ) {
+    return false;
+  }
+  return JSON.stringify(currentStatus ?? null) !== JSON.stringify(input.status);
+}
+
+async function writeCompensationContext(input: {
+  workspacePath: string;
+  workspace: FlowcytoWorkspace;
+  sampleId: string;
+  compensations: CompensationMatrix[];
+  status: CompensationStatus;
+}): Promise<FlowcytoWorkspace> {
+  if (!workspaceNeedsCompensationUpdate(input)) return input.workspace;
+  const next: FlowcytoWorkspace = {
+    ...input.workspace,
+    compensations: input.compensations,
+    compensationStatus: {
+      ...(input.workspace.compensationStatus ?? {}),
+      [input.sampleId]: input.status,
+    },
+  };
+  const write = await writeWorkspace({ workspacePath: input.workspacePath, workspace: next, expectedRevision: input.workspace.revision });
+  if (!write.ok) {
+    throw new FlowcytoError("workspace_compensation_update_failed", "Unable to update workspace compensation metadata.", "/compensations");
+  }
+  return readWorkspace(input.workspacePath);
+}
+
 async function openWorkspaceArtifact(workspacePath: string, requestedSampleId?: string): Promise<OpenFcsArtifactResult> {
   const resolvedWorkspacePath = path.resolve(workspacePath);
-  const workspace = await readWorkspace(resolvedWorkspacePath);
+  let workspace = await readWorkspace(resolvedWorkspacePath);
   const sample = requestedSampleId
     ? workspace.samples.find((entry) => entry.id === requestedSampleId)
     : workspace.samples[0];
@@ -162,6 +284,14 @@ async function openWorkspaceArtifact(workspacePath: string, requestedSampleId?: 
     );
   }
   const metadata = await getSampleMetadata(resolvedWorkspacePath, sample.id);
+  const context = await compensationContextForMetadata({ workspace, sampleId: sample.id, metadata });
+  workspace = await writeCompensationContext({
+    workspacePath: resolvedWorkspacePath,
+    workspace,
+    sampleId: sample.id,
+    compensations: context.compensations,
+    status: context.status,
+  });
   return {
     ok: true,
     workspacePath: resolvedWorkspacePath,
@@ -173,6 +303,9 @@ async function openWorkspaceArtifact(workspacePath: string, requestedSampleId?: 
     revision: workspace.revision,
     channels: compactChannels(metadata),
     recommendedViews: recommendedViewsForMetadata(metadata),
+    compensationSummary: compensationSummary(context.status, context.compensations.filter((matrix) => matrix.sample === sample.id || matrix.sample === undefined).length),
+    compensationStatus: context.status,
+    compensationDiagnostics: context.diagnostics,
   };
 }
 
@@ -229,6 +362,14 @@ async function openFcsFileArtifact(params: {
   }
 
   const metadata = await getSampleMetadata(workspacePath, sampleId);
+  const context = await compensationContextForMetadata({ workspace, sampleId, metadata });
+  workspace = await writeCompensationContext({
+    workspacePath,
+    workspace,
+    sampleId,
+    compensations: context.compensations,
+    status: context.status,
+  });
   return {
     ok: true,
     workspacePath,
@@ -240,6 +381,9 @@ async function openFcsFileArtifact(params: {
     revision: workspace.revision,
     channels: compactChannels(metadata),
     recommendedViews: recommendedViewsForMetadata(metadata),
+    compensationSummary: compensationSummary(context.status, context.compensations.filter((matrix) => matrix.sample === sampleId || matrix.sample === undefined).length),
+    compensationStatus: context.status,
+    compensationDiagnostics: context.diagnostics,
   };
 }
 
@@ -367,6 +511,34 @@ function validateGateShape(gate: unknown, index: number): WorkspaceGate | null {
   return gate as WorkspaceGate;
 }
 
+function validateCompensationShape(matrix: unknown, index: number): ValidationError[] {
+  const errors: ValidationError[] = [];
+  if (!isRecord(matrix)) {
+    errors.push(validationError(`/compensations/${index}`, "invalid_compensation", "Compensation must be an object."));
+    return errors;
+  }
+  const id = asString(matrix.id);
+  if (!id) errors.push(validationError(`/compensations/${index}/id`, "missing_compensation_id", "Compensation id is required."));
+  const source = asString(matrix.source);
+  if (source !== "fcs_keyword" && source !== "manual") {
+    errors.push(validationError(`/compensations/${index}/source`, "invalid_compensation_source", "Compensation source must be fcs_keyword or manual."));
+  }
+  const channels = Array.isArray(matrix.channels) ? matrix.channels : [];
+  if (channels.length === 0 || channels.some((channel) => typeof channel !== "string" || channel.length === 0)) {
+    errors.push(validationError(`/compensations/${index}/channels`, "invalid_compensation_channels", "Compensation channels must be non-empty strings."));
+  }
+  const values = Array.isArray(matrix.matrix) ? matrix.matrix : [];
+  if (channels.length !== values.length) {
+    errors.push(validationError(`/compensations/${index}/matrix`, "invalid_compensation_matrix", "Compensation matrix row count must match channels length."));
+  }
+  values.forEach((row, rowIndex) => {
+    if (!Array.isArray(row) || row.length !== channels.length || row.some((value) => !isFiniteNumber(value))) {
+      errors.push(validationError(`/compensations/${index}/matrix/${rowIndex}`, "invalid_compensation_matrix", "Compensation matrix rows must match channels length and contain finite numbers."));
+    }
+  });
+  return errors;
+}
+
 export async function validateWorkspaceObject(workspacePath: string, workspace: unknown): Promise<ValidationResult> {
   const errors = validateShape(workspace);
   if (errors.length > 0 || !isRecord(workspace)) return { ok: errors.length === 0, errors };
@@ -375,8 +547,10 @@ export async function validateWorkspaceObject(workspacePath: string, workspace: 
   const samples = Array.isArray(candidate.samples) ? candidate.samples : [];
   const views = Array.isArray(candidate.views) ? candidate.views : [];
   const gates = Array.isArray(candidate.gates) ? candidate.gates : [];
+  const compensations = Array.isArray(candidate.compensations) ? candidate.compensations : [];
   const sampleIds = new Set<string>();
   const gateIds = new Set<string>();
+  const compensationIds = new Set<string>();
 
   samples.forEach((sample, index) => {
     if (!isRecord(sample)) {
@@ -442,6 +616,21 @@ export async function validateWorkspaceObject(workspacePath: string, workspace: 
       if (!isFiniteNumber(gate.min) || !isFiniteNumber(gate.max) || gate.max <= gate.min) {
         errors.push(validationError(`/gates/${index}/max`, "invalid_range_bounds", "Range gate max must be greater than min."));
       }
+    }
+  });
+
+  if (candidate.compensations !== undefined && !Array.isArray(candidate.compensations)) {
+    errors.push(validationError("/compensations", "invalid_array", "compensations must be an array when present."));
+  }
+  compensations.forEach((matrix, index) => {
+    errors.push(...validateCompensationShape(matrix, index));
+    if (!isRecord(matrix)) return;
+    const id = asString(matrix.id);
+    if (id && compensationIds.has(id)) errors.push(validationError(`/compensations/${index}/id`, "duplicate_compensation_id", `Duplicate compensation id ${id}.`));
+    if (id) compensationIds.add(id);
+    const sample = asString(matrix.sample);
+    if (sample && !sampleIds.has(sample)) {
+      errors.push(validationError(`/compensations/${index}/sample`, "unknown_sample", `Sample ${sample} is not present.`));
     }
   });
 

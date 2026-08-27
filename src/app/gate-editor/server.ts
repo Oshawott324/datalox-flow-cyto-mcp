@@ -31,6 +31,7 @@ export type GateEditorServerOptions = {
   x?: string;
   y?: string;
   maxEvents?: number;
+  compensationId?: string;
 };
 
 export type GateEditorServer = {
@@ -55,6 +56,7 @@ export type GateEditorStateOptions = {
   format?: PreviewFormat;
   binWidth?: number;
   binHeight?: number;
+  compensationId?: string;
 };
 
 export type PlotContextOptions = GateEditorStateOptions;
@@ -85,6 +87,7 @@ export type RenderablePlotContext = {
     pointCount: number;
     binWidth?: number;
     binHeight?: number;
+    compensation?: EventPreview["compensation"];
   };
   gates: WorkspaceGate[];
   gateSchema: {
@@ -132,6 +135,7 @@ function mcpAppPreviewHtml(options: GateEditorServerOptions): string {
     x: options.x,
     y: options.y,
     maxEvents: options.maxEvents,
+    compensationId: options.compensationId,
   };
   const shim = `
   <script>
@@ -145,6 +149,7 @@ function mcpAppPreviewHtml(options: GateEditorServerOptions): string {
         x: ${scriptJson(options.x)},
         y: ${scriptJson(options.y)},
         maxEvents: ${scriptJson(options.maxEvents)},
+        compensationId: ${scriptJson(options.compensationId)},
         surface: {
           kind: "mcp_app_preview",
           title: "Flowcyto Gate Editor",
@@ -171,11 +176,13 @@ function mcpAppPreviewHtml(options: GateEditorServerOptions): string {
           const x = value("x", ${scriptJson(options.x)});
           const y = value("y", ${scriptJson(options.y)});
           const maxEvents = value("max_events", ${scriptJson(options.maxEvents)});
+          const compensationId = value("compensation_id", ${scriptJson(options.compensationId)});
           if (sampleId) params.set("sample_id", sampleId);
           if (parent) params.set("parent", parent);
           if (x) params.set("x", x);
           if (y) params.set("y", y);
           if (maxEvents) params.set("max_events", String(maxEvents));
+          if (compensationId) params.set("compensation_id", compensationId);
           return jsonFetch("/api/state?" + params.toString());
         }
         if (name === "get_workspace_revision") {
@@ -469,6 +476,7 @@ export async function getRenderablePlotContext(options: PlotContextOptions): Pro
     format: options.format,
     binWidth: options.binWidth,
     binHeight: options.binHeight,
+    compensationId: options.compensationId,
   });
   const validation = await validateWorkspace(options.workspacePath);
   // These are drawable overlays for the current plot. The full hierarchy remains in workspace.gates.
@@ -501,6 +509,7 @@ export async function getRenderablePlotContext(options: PlotContextOptions): Pro
       pointCount: preview.points?.length ?? 0,
       binWidth: preview.bins?.width,
       binHeight: preview.bins?.height,
+      compensation: preview.compensation,
     },
     gates,
     gateSchema: {
@@ -543,6 +552,7 @@ async function statePayload(options: GateEditorServerOptions, url: URL): Promise
     format: formatParam(url),
     binWidth: numberParam(url, "bin_width"),
     binHeight: numberParam(url, "bin_height"),
+    compensationId: stringParam(url, "compensation_id") ?? options.compensationId,
   });
 }
 
@@ -562,6 +572,7 @@ async function previewPayload(options: GateEditorServerOptions, url: URL): Promi
       format: formatParam(url),
       binWidth: numberParam(url, "bin_width"),
       binHeight: numberParam(url, "bin_height"),
+      compensationId: stringParam(url, "compensation_id") ?? options.compensationId,
     }),
   };
 }

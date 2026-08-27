@@ -7,6 +7,7 @@ import { Worker } from "node:worker_threads";
 import { DEFAULT_BIN_HEIGHT, DEFAULT_BIN_WIDTH, type BuildEventPreviewInput } from "./preview-build.js";
 import {
   FlowcytoError,
+  type CompensationMatrix,
   type EventPreview,
   type FlowcytoWorkspace,
   type PreviewFormat,
@@ -14,10 +15,10 @@ import {
 } from "./types.js";
 import { readWorkspace, resolveSamplePath, resolveWorkspaceRoot } from "./workspace.js";
 
-const PREVIEW_CACHE_VERSION = 2;
+const PREVIEW_CACHE_VERSION = 3;
 
 type CachedPreviewMeta = {
-  version: 2;
+  version: 3;
   key: string;
   createdAt: string;
   preview: Omit<EventPreview, "points" | "bins"> & {
@@ -47,6 +48,7 @@ export type GetEventPreviewInput = {
   format?: PreviewFormat;
   binWidth?: number;
   binHeight?: number;
+  compensationId?: string;
 };
 
 function normalizePositiveInteger(value: number | undefined, fallback: number, pathValue: string): number {
@@ -94,6 +96,7 @@ async function previewCacheKey(input: {
   format: PreviewFormat;
   binWidth: number;
   binHeight: number;
+  compensation?: CompensationMatrix;
 }): Promise<string> {
   return digest({
     version: PREVIEW_CACHE_VERSION,
@@ -108,6 +111,16 @@ async function previewCacheKey(input: {
     format: input.format,
     binWidth: input.binWidth,
     binHeight: input.binHeight,
+    compensation: input.compensation
+      ? {
+        id: input.compensation.id,
+        source: input.compensation.source,
+        sample: input.compensation.sample,
+        keyword: input.compensation.keyword,
+        channels: input.compensation.channels,
+        matrix: input.compensation.matrix,
+      }
+      : null,
   });
 }
 
@@ -199,6 +212,7 @@ async function readPreviewCache(workspacePath: string, key: string): Promise<Eve
       totalEvents: meta.preview.totalEvents,
       filteredEvents: meta.preview.filteredEvents,
       sampledEvents: meta.preview.sampledEvents,
+      ...(meta.preview.compensation ? { compensation: meta.preview.compensation } : {}),
       bins: { ...meta.preview.bins, counts },
     };
   }
@@ -220,10 +234,27 @@ async function readPreviewCache(workspacePath: string, key: string): Promise<Eve
       totalEvents: meta.preview.totalEvents,
       filteredEvents: meta.preview.filteredEvents,
       sampledEvents: meta.preview.sampledEvents,
+      ...(meta.preview.compensation ? { compensation: meta.preview.compensation } : {}),
       points,
     };
   }
   return null;
+}
+
+function resolveCompensation(workspace: FlowcytoWorkspace, input: { sampleId: string; compensationId?: string }): CompensationMatrix | undefined {
+  if (!input.compensationId) return undefined;
+  const matrix = (workspace.compensations ?? []).find((entry) => entry.id === input.compensationId);
+  if (!matrix) {
+    throw new FlowcytoError("unknown_compensation", `Compensation ${input.compensationId} is not present.`, "/compensation_id");
+  }
+  if (matrix.sample !== undefined && matrix.sample !== input.sampleId) {
+    throw new FlowcytoError(
+      "compensation_sample_mismatch",
+      `Compensation ${input.compensationId} belongs to sample ${matrix.sample}, not ${input.sampleId}.`,
+      "/compensation_id",
+    );
+  }
+  return matrix;
 }
 
 function parentGateChain(workspace: FlowcytoWorkspace, input: { sampleId: string; parent: string }): WorkspaceGate[] {
@@ -320,6 +351,7 @@ export async function getEventPreview(params: GetEventPreviewInput): Promise<Eve
   const parent = params.parent ?? "root";
   const chain = parentGateChain(workspace, { sampleId: params.sampleId, parent });
   const samplePath = resolveSamplePath(params.workspacePath, sample.path);
+  const compensation = resolveCompensation(workspace, { sampleId: params.sampleId, compensationId: params.compensationId });
   const key = await previewCacheKey({
     workspacePath: params.workspacePath,
     workspaceRevision: workspace.revision,
@@ -332,6 +364,7 @@ export async function getEventPreview(params: GetEventPreviewInput): Promise<Eve
     format,
     binWidth,
     binHeight,
+    compensation,
   });
   const cached = await readPreviewCache(params.workspacePath, key);
   if (cached) return cached;
@@ -347,6 +380,7 @@ export async function getEventPreview(params: GetEventPreviewInput): Promise<Eve
     binWidth,
     binHeight,
     parentGateChain: chain,
+    compensation,
   };
   const preview = await runPreviewWorker(input);
   await writePreviewCache(params.workspacePath, key, preview);

@@ -34,6 +34,7 @@ export type RenderedPlotImage = {
   sampleId: string;
   x: string;
   y: string;
+  compensation?: RenderablePlotContext["previewSummary"]["compensation"];
   image: {
     format: PlotImageFormat;
     mimeType: "image/svg+xml";
@@ -249,6 +250,7 @@ export async function renderPlotImage(options: PlotImageOptions): Promise<Render
     format: options.format,
     binWidth: options.binWidth,
     binHeight: options.binHeight,
+    compensationId: options.compensationId,
   });
   const width = options.width ?? 760;
   const height = options.height ?? 560;
@@ -264,6 +266,7 @@ export async function renderPlotImage(options: PlotImageOptions): Promise<Render
     sampleId: context.sampleId,
     x: context.x,
     y: context.y,
+    ...(context.previewSummary.compensation ? { compensation: context.previewSummary.compensation } : {}),
     image: {
       format: "svg",
       mimeType: "image/svg+xml",

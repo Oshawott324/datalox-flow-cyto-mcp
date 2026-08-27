@@ -69,6 +69,7 @@ type GateEditorSelection = {
   x: string;
   y: string;
   maxEvents: number;
+  compensationId?: string;
 };
 
 const FlowcytoCapabilities = {
@@ -80,7 +81,7 @@ const FlowcytoCapabilities = {
   canWriteStructuredGates: true,
   liveRefreshAfterUpsertGate: true,
   canonicalArtifact: "flowcyto.workspace.json",
-  primaryTools: ["open_fcs", "render_plot", "render_plot_image", "open_gate_editor", "get_plot_context", "upsert_gate"],
+  primaryTools: ["open_fcs", "list_compensations", "get_compensation_matrix", "render_plot", "render_plot_image", "open_gate_editor", "get_plot_context", "upsert_gate"],
   preferredWorkflowResource: OPEN_FCS_WORKFLOW_RESOURCE_URI,
   compactGateEditor: {
     entryTool: "open_gate_editor",
@@ -162,25 +163,29 @@ function flowcytoAgentContract(extra?: Record<string, unknown>) {
       "do_not_use_browser_or_desktop_automation_for_gate_geometry",
       "do_not_read_fcs_or_workspace_with_local_scripts_for_gate_geometry",
       "do_not_use_local_python_or_plotting_for_gate_geometry",
+      "do_not_attempt_compensation_estimation_without_mcp_tools",
+      "do_not_run_local_python_for_compensation",
     ],
     ...extra,
   };
 }
 
 function plotContextNextAction(selection: GateEditorSelection) {
+  const args: Record<string, unknown> = {
+    workspace_path: selection.workspacePath,
+    sample_id: selection.sampleId,
+    parent_gate_id: selection.parent,
+    x: selection.x,
+    y: selection.y,
+    max_events: selection.maxEvents,
+    format: "bins",
+    bin_width: 64,
+    bin_height: 64,
+  };
+  if (selection.compensationId) args.compensation_id = selection.compensationId;
   return {
     tool: "get_plot_context",
-    arguments: {
-      workspace_path: selection.workspacePath,
-      sample_id: selection.sampleId,
-      parent_gate_id: selection.parent,
-      x: selection.x,
-      y: selection.y,
-      max_events: selection.maxEvents,
-      format: "bins",
-      bin_width: 64,
-      bin_height: 64,
-    },
+    arguments: args,
   };
 }
 
@@ -204,35 +209,37 @@ function firstRecommendedView(result: Awaited<ReturnType<typeof openFcsArtifact>
 function openFcsNextAction(result: Awaited<ReturnType<typeof openFcsArtifact>>, surface: "auto" | "mcp_app" | "native_window" | "none") {
   const view = firstRecommendedView(result);
   if (surface === "none") {
+    const args: Record<string, unknown> = {
+      workspace_path: result.workspacePath,
+      sample_id: result.sampleId,
+      x: view.x,
+      y: view.y,
+      parent_gate_id: "root",
+      format: "bins",
+      bin_width: 64,
+      bin_height: 64,
+    };
     return {
       tool: "render_plot",
       required: false,
       reason: "surface=none requested the render-only path instead of opening the compact gate editor.",
-      arguments: {
-        workspace_path: result.workspacePath,
-        sample_id: result.sampleId,
-        x: view.x,
-        y: view.y,
-        parent_gate_id: "root",
-        format: "bins",
-        bin_width: 64,
-        bin_height: 64,
-      },
+      arguments: args,
     };
   }
+  const args: Record<string, unknown> = {
+    workspace_path: result.workspacePath,
+    sample_id: result.sampleId,
+    x: view.x,
+    y: view.y,
+    surface,
+  };
   return {
     tool: "open_gate_editor",
     required: true,
     reason: "Opening the compact gate editor is part of the FCS gating and population inspection workflow.",
     requiredFor: ["gate", "draw", "edit", "inspect_population"],
     liveRefresh: "The opened compact gate editor refreshes when upsert_gate updates the workspace revision.",
-    arguments: {
-      workspace_path: result.workspacePath,
-      sample_id: result.sampleId,
-      x: view.x,
-      y: view.y,
-      surface,
-    },
+    arguments: args,
   };
 }
 
@@ -309,6 +316,7 @@ async function resolveGateEditorSelection(params: {
   x?: string;
   y?: string;
   maxEvents?: number;
+  compensationId?: string;
 }): Promise<GateEditorSelection> {
   const workspace = await readWorkspace(params.workspacePath);
   const sampleId = params.sampleId ?? workspace.samples[0]?.id;
@@ -330,6 +338,7 @@ async function resolveGateEditorSelection(params: {
     x,
     y,
     maxEvents: params.maxEvents ?? 10000,
+    ...(params.compensationId ? { compensationId: params.compensationId } : {}),
   };
 }
 
@@ -341,6 +350,7 @@ function gateEditorSurface(params: {
   x?: string;
   y?: string;
   maxEvents?: number;
+  compensationId?: string;
   runtime?: string;
   pid?: number;
   kind: "webview" | "mcp_app";
@@ -352,6 +362,7 @@ function gateEditorSurface(params: {
   x?: string;
   y?: string;
   maxEvents?: number;
+  compensationId?: string;
   runtime: string;
   pid?: number;
   kind: "native_window";
@@ -371,6 +382,7 @@ function gateEditorSurface(params: {
     x: params.x,
     y: params.y,
     maxEvents: params.maxEvents,
+    ...(params.compensationId ? { compensationId: params.compensationId } : {}),
   };
 }
 
@@ -394,6 +406,7 @@ function mcpAppGateEditorResult(params: {
       x: params.selection.x,
       y: params.selection.y,
       maxEvents: params.selection.maxEvents,
+      compensationId: params.selection.compensationId,
     }),
     agentContract: flowcytoAgentContract({
       refresh: "already_open_app_refreshes_from_revision_poll",
@@ -413,6 +426,7 @@ async function nativeWindowGateEditorResult(
     x?: string;
     y?: string;
     maxEvents?: number;
+    compensationId?: string;
     selection: GateEditorSelection;
     width?: number;
     height?: number;
@@ -429,6 +443,7 @@ async function nativeWindowGateEditorResult(
     x: params.x,
     y: params.y,
     maxEvents: params.maxEvents,
+    compensationId: params.compensationId,
   });
   try {
     if (!isLocalGateEditorPreviewUrl(gateEditor.mcpAppPreviewUrl)) {
@@ -465,6 +480,7 @@ async function nativeWindowGateEditorResult(
         x: params.selection.x,
         y: params.selection.y,
         maxEvents: params.selection.maxEvents,
+        compensationId: params.selection.compensationId,
       }),
       agentContract: flowcytoAgentContract({
         refresh: "already_open_app_refreshes_from_revision_poll",
@@ -713,6 +729,81 @@ server.registerTool(
 );
 
 server.registerTool(
+  "list_compensations",
+  {
+    description: "List stored conventional compensation matrices discovered from FCS keywords or workspace metadata. This does not apply compensation; pass a returned compensation_id to get_plot_context/render_plot/render_plot_image/open_gate_editor explicitly.",
+    inputSchema: {
+      workspace_path: z.string(),
+      sample_id: z.string().optional(),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, sample_id }) => toolContent(async () => {
+    const workspace = await readWorkspace(workspace_path);
+    const compensations = (workspace.compensations ?? [])
+      .filter((matrix) => !sample_id || matrix.sample === sample_id || matrix.sample === undefined)
+      .map((matrix) => ({
+        id: matrix.id,
+        name: matrix.name,
+        source: matrix.source,
+        sample: matrix.sample,
+        keyword: matrix.keyword,
+        channels: matrix.channels,
+        size: matrix.channels.length,
+      }));
+    return {
+      ok: true,
+      workspacePath: workspace_path,
+      sampleId: sample_id,
+      count: compensations.length,
+      compensations,
+      compensationStatus: sample_id ? workspace.compensationStatus?.[sample_id] : workspace.compensationStatus,
+      nextAction: compensations.length === 1
+        ? {
+          tool: "get_compensation_matrix",
+          arguments: { workspace_path, compensation_id: compensations[0].id },
+        }
+        : null,
+    };
+  }),
+);
+
+server.registerTool(
+  "get_compensation_matrix",
+  {
+    description: "Inspect a stored conventional spillover compensation matrix. Matrix orientation is detector rows by fluorochrome columns; applying requires passing this compensation_id to preview/render tools.",
+    inputSchema: {
+      workspace_path: z.string(),
+      compensation_id: z.string(),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, compensation_id }) => toolContent(async () => {
+    const workspace = await readWorkspace(workspace_path);
+    const matrix = (workspace.compensations ?? []).find((entry) => entry.id === compensation_id);
+    if (!matrix) {
+      throw new FlowcytoError("unknown_compensation", `Compensation ${compensation_id} is not present.`, "/compensation_id");
+    }
+    return {
+      ok: true,
+      workspacePath: workspace_path,
+      compensation: matrix,
+      orientation: "matrix[i][j] = fraction of fluorochrome j spilling into detector i; apply as Xcomp = Xraw @ inv(S), implemented by solve(S.T, Xraw.T).T.",
+      nextAction: {
+        tool: "render_plot",
+        arguments: {
+          workspace_path,
+          sample_id: matrix.sample,
+          compensation_id,
+        },
+      },
+    };
+  }),
+);
+
+server.registerTool(
   "get_event_preview",
   {
     description: "Lower-level preview primitive for two sample channels. Prefer render_plot when the user asks to show, render, plot, inspect, or compare FSC/SSC or marker channels. Use this MCP result instead of reading FCS files with local Python or plotting scripts.",
@@ -723,13 +814,14 @@ server.registerTool(
       y: z.string(),
       parent_gate_id: z.string().optional(),
       max_events: z.number().int().positive().optional(),
+      compensation_id: z.string().optional(),
       format: z.enum(["auto", "points", "bins"]).optional(),
       bin_width: z.number().int().positive().optional(),
       bin_height: z.number().int().positive().optional(),
     },
     outputSchema: JsonResultSchema,
   },
-  async ({ workspace_path, sample_id, x, y, parent_gate_id, max_events, format, bin_width, bin_height }) => toolContent(() =>
+  async ({ workspace_path, sample_id, x, y, parent_gate_id, max_events, compensation_id, format, bin_width, bin_height }) => toolContent(() =>
     getEventPreview({
       workspacePath: workspace_path,
       sampleId: sample_id,
@@ -737,6 +829,7 @@ server.registerTool(
       y,
       parent: parent_gate_id,
       maxEvents: max_events,
+      compensationId: compensation_id,
       format,
       binWidth: bin_width,
       binHeight: bin_height,
@@ -754,6 +847,7 @@ server.registerTool(
           x,
           y,
           max_events,
+          compensation_id,
           format,
           bin_width,
           bin_height,
@@ -774,6 +868,7 @@ server.registerTool(
       x: z.string().optional(),
       y: z.string().optional(),
       max_events: z.number().int().positive().optional(),
+      compensation_id: z.string().optional(),
       format: z.enum(["auto", "points", "bins"]).optional(),
       bin_width: z.number().int().positive().optional(),
       bin_height: z.number().int().positive().optional(),
@@ -781,7 +876,7 @@ server.registerTool(
     outputSchema: JsonResultSchema,
     _meta: WidgetAccessibleToolMeta,
   },
-  async ({ workspace_path, sample_id, parent_gate_id, x, y, max_events, format, bin_width, bin_height }) => toolContent(() =>
+  async ({ workspace_path, sample_id, parent_gate_id, x, y, max_events, compensation_id, format, bin_width, bin_height }) => toolContent(() =>
     getPlotContext({
       workspacePath: workspace_path,
       sampleId: sample_id,
@@ -789,6 +884,7 @@ server.registerTool(
       x,
       y,
       maxEvents: max_events,
+      compensationId: compensation_id,
       format,
       binWidth: bin_width,
       binHeight: bin_height,
@@ -807,6 +903,7 @@ server.registerTool(
       x: z.string().optional(),
       y: z.string().optional(),
       max_events: z.number().int().positive().optional(),
+      compensation_id: z.string().optional(),
       format: z.enum(["auto", "points", "bins"]).optional(),
       bin_width: z.number().int().positive().optional(),
       bin_height: z.number().int().positive().optional(),
@@ -814,7 +911,7 @@ server.registerTool(
     outputSchema: JsonResultSchema,
     annotations: { readOnlyHint: true },
   },
-  async ({ workspace_path, sample_id, parent_gate_id, x, y, max_events, format, bin_width, bin_height }) => toolContent(async () => {
+  async ({ workspace_path, sample_id, parent_gate_id, x, y, max_events, compensation_id, format, bin_width, bin_height }) => toolContent(async () => {
     const context = await getPlotContext({
       workspacePath: workspace_path,
       sampleId: sample_id,
@@ -822,6 +919,7 @@ server.registerTool(
       x,
       y,
       maxEvents: max_events,
+      compensationId: compensation_id,
       format,
       binWidth: bin_width,
       binHeight: bin_height,
@@ -856,6 +954,7 @@ server.registerTool(
       x: z.string().optional(),
       y: z.string().optional(),
       max_events: z.number().int().positive().optional(),
+      compensation_id: z.string().optional(),
       format: z.enum(["auto", "points", "bins"]).optional(),
       bin_width: z.number().int().positive().optional(),
       bin_height: z.number().int().positive().optional(),
@@ -868,7 +967,7 @@ server.registerTool(
     outputSchema: JsonResultSchema,
     annotations: { readOnlyHint: true },
   },
-  async ({ workspace_path, sample_id, parent_gate_id, x, y, max_events, format, bin_width, bin_height, width, height, image_format, output, output_path }) => {
+  async ({ workspace_path, sample_id, parent_gate_id, x, y, max_events, compensation_id, format, bin_width, bin_height, width, height, image_format, output, output_path }) => {
     try {
       if (image_format && image_format !== "svg") {
         throw new FlowcytoError("unsupported_image_format", "render_plot_image currently supports image_format=svg.", "/image_format");
@@ -880,6 +979,7 @@ server.registerTool(
         x,
         y,
         maxEvents: max_events,
+        compensationId: compensation_id,
         format,
         binWidth: bin_width,
         binHeight: bin_height,
@@ -956,13 +1056,14 @@ server.registerTool(
       x: z.string().optional(),
       y: z.string().optional(),
       max_events: z.number().int().positive().optional(),
+      compensation_id: z.string().optional(),
       format: z.enum(["auto", "points", "bins"]).optional(),
       bin_width: z.number().int().positive().optional(),
       bin_height: z.number().int().positive().optional(),
     },
     outputSchema: JsonResultSchema,
   },
-  async ({ workspace_path, sample_id, parent_gate_id, x, y, max_events, format, bin_width, bin_height }) => toolContent(() =>
+  async ({ workspace_path, sample_id, parent_gate_id, x, y, max_events, compensation_id, format, bin_width, bin_height }) => toolContent(() =>
     getGateEditorState({
       workspacePath: workspace_path,
       sampleId: sample_id,
@@ -970,6 +1071,7 @@ server.registerTool(
       x,
       y,
       maxEvents: max_events,
+      compensationId: compensation_id,
       format,
       binWidth: bin_width,
       binHeight: bin_height,
@@ -1056,11 +1158,12 @@ server.registerTool(
       x: z.string().optional(),
       y: z.string().optional(),
       max_events: z.number().int().positive().optional(),
+      compensation_id: z.string().optional(),
     },
     outputSchema: JsonResultSchema,
     annotations: { readOnlyHint: true },
   },
-  async ({ workspace_path, sample_id, parent_gate_id, x, y, max_events }) => toolContent(async () =>
+  async ({ workspace_path, sample_id, parent_gate_id, x, y, max_events, compensation_id }) => toolContent(async () =>
     mcpAppGateEditorResult({
       workspacePath: workspace_path,
       selection: await resolveGateEditorSelection({
@@ -1070,6 +1173,7 @@ server.registerTool(
         x,
         y,
         maxEvents: max_events,
+        compensationId: compensation_id,
       }),
     }),
   GateEditorMcpAppMeta),
@@ -1089,6 +1193,7 @@ server.registerTool(
       x: z.string().optional(),
       y: z.string().optional(),
       max_events: z.number().int().positive().optional(),
+      compensation_id: z.string().optional(),
       width: z.number().int().positive().optional(),
       height: z.number().int().positive().optional(),
     },
@@ -1096,7 +1201,7 @@ server.registerTool(
     annotations: { readOnlyHint: true },
     _meta: GateEditorMcpAppMeta,
   },
-  async ({ workspace_path, surface, host, port, sample_id, parent_gate_id, x, y, max_events, width, height }) =>
+  async ({ workspace_path, surface, host, port, sample_id, parent_gate_id, x, y, max_events, compensation_id, width, height }) =>
     toolContent(async () => {
       const selection = await resolveGateEditorSelection({
         workspacePath: workspace_path,
@@ -1105,6 +1210,7 @@ server.registerTool(
         x,
         y,
         maxEvents: max_events,
+        compensationId: compensation_id,
       });
       const selectedSurface = surface ?? "auto";
       if (selectedSurface === "native_window") {
@@ -1117,6 +1223,7 @@ server.registerTool(
           x: selection.x,
           y: selection.y,
           maxEvents: selection.maxEvents,
+          compensationId: selection.compensationId,
           selection,
           width,
           height,

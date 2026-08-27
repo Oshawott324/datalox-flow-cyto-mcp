@@ -1,6 +1,7 @@
 import { readPreviewColumns } from "./fcs.js";
 import {
   FlowcytoError,
+  type CompensationMatrix,
   type EventPreview,
   type PreviewFormat,
   type WorkspaceGate,
@@ -21,6 +22,7 @@ export type BuildEventPreviewInput = {
   binWidth?: number;
   binHeight?: number;
   parentGateChain?: WorkspaceGate[];
+  compensation?: CompensationMatrix;
 };
 
 function concreteFormat(format: PreviewFormat, maxEvents: number): "points" | "bins" {
@@ -92,6 +94,7 @@ export async function buildEventPreview(input: BuildEventPreviewInput): Promise<
     y: input.y,
     maxEvents: input.maxEvents,
     parentGateChain: input.parentGateChain,
+    compensation: input.compensation,
   });
 
   if (format === "bins") {
@@ -105,6 +108,7 @@ export async function buildEventPreview(input: BuildEventPreviewInput): Promise<
       totalEvents: columns.totalEvents,
       filteredEvents: columns.filteredEvents,
       sampledEvents: columns.x.length,
+      ...(columns.compensation ? { compensation: columns.compensation } : {}),
       bins: buildBins({
         xs: columns.x,
         ys: columns.y,
@@ -128,6 +132,7 @@ export async function buildEventPreview(input: BuildEventPreviewInput): Promise<
     totalEvents: columns.totalEvents,
     filteredEvents: columns.filteredEvents,
     sampledEvents: points.length,
+    ...(columns.compensation ? { compensation: columns.compensation } : {}),
     points,
   };
 }
