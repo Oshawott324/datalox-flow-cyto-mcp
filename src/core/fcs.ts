@@ -294,7 +294,11 @@ export async function readPreviewColumns(input: {
   let alignedCompensation: CompensationMatrix | undefined;
   let compensationWarnings: string[] = [];
   if (compensation) {
-    const aligned = alignCompensationMatrix(compensation, parameters.map((parameter) => parameter.name));
+    const aligned = alignCompensationMatrix(compensation, parameters.map((parameter) => ({
+      name: parameter.name,
+      detector: parameter.detector,
+      marker: parameter.marker,
+    })));
     alignedCompensation = aligned.compensation;
     compensationWarnings = aligned.warnings;
     alignedCompensation.channels.forEach((name) => neededNames.add(name));

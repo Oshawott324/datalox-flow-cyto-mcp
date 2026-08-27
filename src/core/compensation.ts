@@ -21,6 +21,12 @@ export type AlignmentResult = {
   warnings: string[];
 };
 
+export type AvailableCompensationChannel = string | {
+  name: string;
+  detector?: string;
+  marker?: string;
+};
+
 export type ExtractionResult = {
   compensations: CompensationMatrix[];
   diagnostics: CompensationDiagnostics;
@@ -173,13 +179,17 @@ function detectorCore(value: string): string {
   return value.replace(/^(?:FJComp-|Comp-|C_)/i, "").replace(/-(?:A|H|W)$/i, "");
 }
 
-function availableChannelMap(availableChannels: string[]): Map<string, string[]> {
+function availableChannelMap(availableChannels: AvailableCompensationChannel[]): Map<string, string[]> {
   const map = new Map<string, string[]>();
   for (const channel of availableChannels) {
-    const keys = new Set([normalizeDetectorToken(channel), normalizeDetectorToken(detectorCore(channel))]);
+    const name = typeof channel === "string" ? channel : channel.name;
+    const aliases = typeof channel === "string"
+      ? [channel]
+      : [channel.name, channel.detector, channel.marker].filter((value): value is string => typeof value === "string" && value.length > 0);
+    const keys = new Set(aliases.flatMap((alias) => [normalizeDetectorToken(alias), normalizeDetectorToken(detectorCore(alias))]));
     keys.forEach((key) => {
       const existing = map.get(key) ?? [];
-      existing.push(channel);
+      existing.push(name);
       map.set(key, existing);
     });
   }
@@ -188,7 +198,7 @@ function availableChannelMap(availableChannels: string[]): Map<string, string[]>
 
 export function alignCompensationMatrix(
   compensation: CompensationMatrix,
-  availableChannels: string[],
+  availableChannels: AvailableCompensationChannel[],
 ): AlignmentResult {
   assertSquareMatrix(compensation.channels, compensation.matrix);
   const channelMap = availableChannelMap(availableChannels);
@@ -270,6 +280,9 @@ export function applyCompensationColumns(input: {
 }
 
 function looksLikeFluorochromeChannel(channel: string): boolean {
+  if (/^(?:fitc|pe|apc|percp|bv\d+|buv\d+|efluor\d+|af\d+|alexa\d+)-(?:A|H|W)$/i.test(channel)) {
+    return false;
+  }
   return /\b(?:fitc|pe|apc|percp|cy7|bv\d+|buv\d+|pacific|efluor|alexa|af\d+)\b/i.test(channel)
     && !/^[A-Z]\d+[-_ ]?A$/i.test(channel);
 }
@@ -280,18 +293,20 @@ export function detectCompensationStatus(input: {
   compensations: CompensationMatrix[];
 }): CompensationStatus {
   const signals: string[] = [];
-  if (input.channels.some((channel) => /^FJComp-/i.test(channel))) signals.push("FJComp-prefixed channels detected");
-  if (input.channels.some((channel) => /^Comp-/i.test(channel))) signals.push("Comp-prefixed channels detected");
-  if (input.channels.some((channel) => /^C_/i.test(channel))) signals.push("C_-prefixed channels detected");
+  const strongSignals: string[] = [];
+  if (input.channels.some((channel) => /^FJComp-/i.test(channel))) strongSignals.push("FJComp-prefixed channels detected");
+  if (input.channels.some((channel) => /^Comp-/i.test(channel))) strongSignals.push("Comp-prefixed channels detected");
+  if (input.channels.some((channel) => /^C_/i.test(channel))) strongSignals.push("C_-prefixed channels detected");
 
   const cyt = input.keywords.$CYT ?? input.keywords.CYT ?? "";
-  if (/aurora|cytoflex|spectroflo/i.test(cyt)) signals.push(`Spectral cytometer keyword detected: ${cyt}`);
+  if (/aurora|cytoflex|spectroflo/i.test(cyt)) strongSignals.push(`Spectral cytometer keyword detected: ${cyt}`);
+  signals.push(...strongSignals);
   if (input.channels.filter(looksLikeFluorochromeChannel).length >= 2) {
     signals.push("Fluorochrome-like channel names detected");
   }
 
   const embeddedMatrixFound = input.compensations.length > 0;
-  const detectedAsPreCompensated = signals.length > 0;
+  const detectedAsPreCompensated = strongSignals.length > 0;
   const suggestedCompensationId = embeddedMatrixFound && input.compensations.length === 1 && !detectedAsPreCompensated
     ? input.compensations[0].id
     : undefined;

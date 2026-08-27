@@ -36,6 +36,7 @@ import {
   getEventPreview,
   getSampleMetadata,
   initWorkspace,
+  openFcsArtifact,
   readPreviewColumns,
   readWorkspace,
   transformValue,
@@ -85,6 +86,54 @@ async function makeWorkspaceFromFixture(
 
 async function makeWorkspace(): Promise<{ dir: string; workspacePath: string; workspace: FlowcytoWorkspace }> {
   return makeWorkspaceFromFixture(fixturePath);
+}
+
+async function writeTinyIntegerFcs(params: {
+  fcsPath: string;
+  channels: string[];
+  rows: number[][];
+  extraKeywords?: Record<string, string>;
+}): Promise<void> {
+  const bytesPerValue = 2;
+  const data = Buffer.alloc(params.rows.length * params.channels.length * bytesPerValue);
+  let cursor = 0;
+  for (const row of params.rows) {
+    for (const value of row) {
+      data.writeUInt16LE(value, cursor);
+      cursor += bytesPerValue;
+    }
+  }
+  const textSegment = (beginData: number, endData: number) => {
+    const entries = [
+      "$BEGINANALYSIS", "0",
+      "$BEGINDATA", String(beginData).padStart(12, "0"),
+      "$BYTEORD", "1,2,3,4",
+      "$DATATYPE", "I",
+      "$ENDANALYSIS", "0",
+      "$ENDDATA", String(endData).padStart(12, "0"),
+      "$MODE", "L",
+      "$NEXTDATA", "0",
+      "$PAR", String(params.channels.length),
+      "$TOT", String(params.rows.length),
+    ];
+    params.channels.forEach((channel, index) => {
+      const number = index + 1;
+      entries.push(`$P${number}B`, "16", `$P${number}N`, channel, `$P${number}R`, "65535");
+    });
+    for (const [key, value] of Object.entries(params.extraKeywords ?? {})) {
+      entries.push(key, value);
+    }
+    return `|${entries.join("|")}|`;
+  };
+
+  const textStart = 58;
+  const firstText = textSegment(0, 0);
+  const dataStart = textStart + firstText.length;
+  const dataEnd = dataStart + data.length - 1;
+  const text = textSegment(dataStart, dataEnd);
+  const header = `FCS3.1    ${String(textStart).padStart(8)}${String(textStart + text.length - 1).padStart(8)}${String(dataStart).padStart(8)}${String(dataEnd).padStart(8)}${String(0).padStart(8)}${String(0).padStart(8)}`;
+  expect(Buffer.byteLength(header, "ascii")).toBe(58);
+  await fs.writeFile(params.fcsPath, Buffer.concat([Buffer.from(header, "ascii"), Buffer.from(text, "latin1"), data]));
 }
 
 function testGate(id = "gate_1"): WorkspaceGate {
@@ -306,6 +355,16 @@ describe("flowcyto core", () => {
       id: "fcs_spillover_sample_001",
       channels: ["FITC-A", "PE-A"],
     });
+
+    const detectorAligned = alignCompensationMatrix({
+      ...matrix,
+      channels: ["FL03-A", "FL13-A"],
+      matrix: [[1, 0.2], [0.1, 1]],
+    }, [
+      { name: "FITC-A", detector: "FL03-A" },
+      { name: "PE (R-phycoerythrin)-A", detector: "FL13-A" },
+    ]);
+    expect(detectorAligned.compensation.channels).toEqual(["FITC-A", "PE (R-phycoerythrin)-A"]);
   });
 
   it("detects pre-compensated and spectral signals without auto-applying compensation", () => {
@@ -438,6 +497,71 @@ describe("flowcyto core", () => {
     expect(Array.from(columns.x)).toEqual([10, 30]);
     expect(Array.from(columns.y)).toEqual([20, 40]);
     expect(columns.totalEvents).toBe(2);
+  });
+
+  it("stores embedded spillover metadata and applies compensation only when requested", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-comp-fcs-"));
+    const fcsPath = path.join(dir, "comp_sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath,
+      channels: ["FSC-A", "SSC-A", "FITC-A", "PE-A"],
+      rows: [
+        [1, 2, 12, 21],
+        [3, 4, 24, 42],
+      ],
+      extraKeywords: {
+        $SPILLOVER: "2,FITC-A,PE-A,1,0.2,0.1,1",
+      },
+    });
+
+    const opened = await openFcsArtifact({
+      path: fcsPath,
+      workspaceDir: dir,
+      sampleId: "comp_sample",
+    });
+    expect(opened.compensationSummary).toEqual({
+      available: true,
+      count: 1,
+      defaultApplied: false,
+      suggestedCompensationId: "fcs_spillover_comp_sample",
+    });
+    expect(opened.revision).toBe(1);
+
+    const workspace = await readWorkspace(opened.workspacePath);
+    expect(workspace.compensations?.[0]).toMatchObject({
+      id: "fcs_spillover_comp_sample",
+      sample: "comp_sample",
+      channels: ["FITC-A", "PE-A"],
+      matrix: [[1, 0.2], [0.1, 1]],
+    });
+    expect(workspace.compensationStatus?.comp_sample?.suggestedCompensationId).toBe("fcs_spillover_comp_sample");
+
+    const raw = await getEventPreview({
+      workspacePath: opened.workspacePath,
+      sampleId: "comp_sample",
+      x: "FITC-A",
+      y: "PE-A",
+      maxEvents: 10,
+    });
+    expect(raw.compensation).toBeUndefined();
+    expect(raw.points?.[0]).toEqual([12, 21]);
+
+    const compensated = await getEventPreview({
+      workspacePath: opened.workspacePath,
+      sampleId: "comp_sample",
+      x: "FITC-A",
+      y: "PE-A",
+      maxEvents: 10,
+      compensationId: "fcs_spillover_comp_sample",
+    });
+    expect(compensated.compensation).toMatchObject({
+      applied: true,
+      id: "fcs_spillover_comp_sample",
+      source: "fcs_keyword",
+      channels: ["FITC-A", "PE-A"],
+    });
+    expect(compensated.points?.[0]?.[0]).toBeCloseTo(10.1020408);
+    expect(compensated.points?.[0]?.[1]).toBeCloseTo(18.9795918);
   });
 
   it("returns a capped deterministic event preview", async () => {
@@ -2080,6 +2204,128 @@ describe("flowcyto MCP", () => {
       expect(createdResult.ok).toBe(true);
       expect(createdResult.revision).toBe(1);
       expect(createdResult.gateCount).toBe(1);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("exposes conventional compensation discovery and explicit compensated rendering over MCP", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-mcp-comp-"));
+    const fcsPath = path.join(dir, "comp_sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath,
+      channels: ["FSC-A", "SSC-A", "FITC-A", "PE-A"],
+      rows: [
+        [1, 2, 12, 21],
+        [3, 4, 24, 42],
+      ],
+      extraKeywords: {
+        $SPILLOVER: "2,FITC-A,PE-A,1,0.2,0.1,1",
+      },
+    });
+
+    const serverPath = path.resolve("dist/src/mcp/server.js");
+    const client = new Client({ name: "flowcyto-comp-test-client", version: "0.0.0" });
+    const transport = new StdioClientTransport({ command: "node", args: [serverPath] });
+
+    try {
+      await client.connect(transport);
+      const opened = await client.callTool({
+        name: "open_fcs",
+        arguments: {
+          path: fcsPath,
+          workspace_dir: dir,
+          sample_id: "comp_sample",
+          surface: "none",
+        },
+      });
+      const openedResult = (opened.structuredContent as { result?: unknown } | undefined)?.result as {
+        ok: boolean;
+        workspacePath: string;
+        compensationSummary: { available: boolean; count: number; defaultApplied: boolean; suggestedCompensationId?: string };
+        nextAction: { arguments: Record<string, unknown> };
+      };
+      expect(openedResult.ok).toBe(true);
+      expect(openedResult.compensationSummary).toMatchObject({
+        available: true,
+        count: 1,
+        defaultApplied: false,
+        suggestedCompensationId: "fcs_spillover_comp_sample",
+      });
+      expect(openedResult.nextAction.arguments.compensation_id).toBeUndefined();
+
+      const listed = await client.callTool({
+        name: "list_compensations",
+        arguments: {
+          workspace_path: openedResult.workspacePath,
+          sample_id: "comp_sample",
+        },
+      });
+      const listedResult = (listed.structuredContent as { result?: unknown } | undefined)?.result as {
+        ok: boolean;
+        count: number;
+        compensations: Array<{ id: string; channels: string[]; size: number }>;
+      };
+      expect(listedResult.ok).toBe(true);
+      expect(listedResult.count).toBe(1);
+      expect(listedResult.compensations[0]).toMatchObject({
+        id: "fcs_spillover_comp_sample",
+        channels: ["FITC-A", "PE-A"],
+        size: 2,
+      });
+
+      const matrix = await client.callTool({
+        name: "get_compensation_matrix",
+        arguments: {
+          workspace_path: openedResult.workspacePath,
+          compensation_id: "fcs_spillover_comp_sample",
+        },
+      });
+      const matrixResult = (matrix.structuredContent as { result?: unknown } | undefined)?.result as {
+        ok: boolean;
+        compensation: CompensationMatrix;
+        orientation: string;
+      };
+      expect(matrixResult.ok).toBe(true);
+      expect(matrixResult.compensation.matrix).toEqual([[1, 0.2], [0.1, 1]]);
+      expect(matrixResult.orientation).toContain("solve(S.T, Xraw.T).T");
+
+      const compensatedPlot = await client.callTool({
+        name: "render_plot",
+        arguments: {
+          workspace_path: openedResult.workspacePath,
+          sample_id: "comp_sample",
+          x: "FITC-A",
+          y: "PE-A",
+          max_events: 10,
+          compensation_id: "fcs_spillover_comp_sample",
+        },
+      });
+      const compensatedPlotResult = (compensatedPlot.structuredContent as { result?: unknown } | undefined)?.result as {
+        ok: boolean;
+        preview: { compensation?: { applied: boolean; id?: string }; points?: Array<[number, number]> };
+      };
+      expect(compensatedPlotResult.ok).toBe(true);
+      expect(compensatedPlotResult.preview.compensation).toMatchObject({
+        applied: true,
+        id: "fcs_spillover_comp_sample",
+      });
+      expect(compensatedPlotResult.preview.points?.[0]?.[0]).toBeCloseTo(10.1020408);
+
+      const unknown = await client.callTool({
+        name: "get_compensation_matrix",
+        arguments: {
+          workspace_path: openedResult.workspacePath,
+          compensation_id: "missing_comp",
+        },
+      });
+      const unknownResult = (unknown.structuredContent as { result?: unknown } | undefined)?.result as {
+        ok: boolean;
+        errors: Array<{ path: string; code: string }>;
+      };
+      expect(unknown.isError).toBe(true);
+      expect(unknownResult.ok).toBe(false);
+      expect(unknownResult.errors[0]).toMatchObject({ path: "/compensation_id", code: "unknown_compensation" });
     } finally {
       await client.close();
     }
