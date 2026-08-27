@@ -159,3 +159,52 @@ Acceptance criteria covered:
 - Raw behavior remains unchanged when no compensation is requested.
 - Tests pass.
 - Live validation records exact files and outputs.
+
+## Fixture Candidate Checks
+
+Input directory:
+
+```text
+C:\Users\fangxf\Research Tools\Flow data\3_parsing_test
+```
+
+Files checked:
+
+- `2_Accuri_C6.fcs`
+- `5_BD_FACSCANTO_II_filtered.fcs`
+
+Results:
+
+- `2_Accuri_C6.fcs`
+  - Size: 114,685 bytes.
+  - Events: 2,000.
+  - Parameters: 14.
+  - Embedded keyword: `$SPILLOVER`.
+  - Matrix shape: 8 x 8.
+  - Matrix channels are numeric parameter references: `3`, `4`, `5`, `6`, `9`, `10`, `11`, `12`.
+  - Fixed by resolving numeric references through FCS parameter order:
+    - `3` -> `FL1-A`
+    - `4` -> `FL2-A`
+    - `5` -> `FL3-A`
+    - `6` -> `FL4-A`
+    - `9` -> `FL1-H`
+    - `10` -> `FL2-H`
+    - `11` -> `FL3-H`
+    - `12` -> `FL4-H`
+  - Exact detector/channel matching now takes precedence over suffix-stripped matching, so `FL1-A` does not ambiguously match `FL1-H`.
+  - Explicit compensated preview of `FL1-A` vs `FL2-A` succeeds.
+
+- `5_BD_FACSCANTO_II_filtered.fcs`
+  - Size: 418,671 bytes.
+  - Events: 11,556.
+  - Parameters: 9.
+  - Embedded keyword: `$SPILLOVER`.
+  - Matrix shape: 6 x 6.
+  - Matrix channels are named fluorescence channels: `FITC-A`, `PE-A`, `PerCP-Cy5-5-A`, `PE-Cy7-A`, `APC-A`, `APC-Cy7-A`.
+  - Compensation discovery succeeds.
+
+Recommendation:
+
+- These two files are technically useful PR1 fixture candidates because they cover different embedded `$SPILLOVER` channel conventions.
+- Add them to `testdata/fixtures` only if redistribution rights are clear.
+- If rights are uncertain, keep them as local live-validation references and do not commit the FCS binaries.

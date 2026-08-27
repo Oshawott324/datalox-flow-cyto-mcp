@@ -101,6 +101,16 @@ export function compensationIdForKeyword(keyword: CompensationKeyword, sampleId:
   return `fcs_${normalizeCompensationKeyword(keyword)}_${sample}`;
 }
 
+function resolveParsedChannels(channels: string[], availableChannels: string[]): string[] {
+  return channels.map((channel) => {
+    const parameterNumber = Number.parseInt(channel, 10);
+    if (/^\d+$/.test(channel) && parameterNumber >= 1 && parameterNumber <= availableChannels.length) {
+      return availableChannels[parameterNumber - 1] ?? channel;
+    }
+    return channel;
+  });
+}
+
 export function parseSpilloverText(value: string): ParsedCompensationMatrix {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -152,13 +162,14 @@ export function extractSpilloverMatrices(input: {
     keywordsFound.push(keyword);
     try {
       const parsed = parseSpilloverText(raw);
+      const channels = resolveParsedChannels(parsed.channels, input.availableChannels);
       compensations.push({
         id: compensationIdForKeyword(keyword, input.sampleId),
         name: `FCS ${keyword}`,
         source: "fcs_keyword",
         sample: input.sampleId,
         keyword,
-        channels: parsed.channels,
+        channels,
         matrix: parsed.matrix,
       });
     } catch {
@@ -206,8 +217,12 @@ export function alignCompensationMatrix(
   const warnings: string[] = [];
 
   compensation.channels.forEach((channel, originalIndex) => {
-    const keys = [normalizeDetectorToken(channel), normalizeDetectorToken(detectorCore(channel))];
-    const candidates = [...new Set(keys.flatMap((key) => channelMap.get(key) ?? []))];
+    const exactKey = normalizeDetectorToken(channel);
+    const coreKey = normalizeDetectorToken(detectorCore(channel));
+    const exactCandidates = [...new Set(channelMap.get(exactKey) ?? [])];
+    const candidates = exactCandidates.length > 0
+      ? exactCandidates
+      : [...new Set(channelMap.get(coreKey) ?? [])];
     if (candidates.length === 0) {
       warnings.push(`Matrix channel ${channel} did not match any available sample channel.`);
       return;

@@ -322,6 +322,13 @@ describe("flowcyto core", () => {
     });
     expect(csv.compensations[0]?.id).toBe("fcs_spill_sample_001");
     expect(csv.compensations[0]?.matrix).toEqual([[1, 0.2], [0.1, 1]]);
+
+    const indexed = extractSpilloverMatrices({
+      keywords: { $SPILLOVER: "2,3,4,1,0.2,0.1,1" },
+      sampleId: "sample_001",
+      availableChannels: ["FSC-A", "SSC-A", "FL1-A", "FL2-A", "FL1-H", "FL2-H"],
+    });
+    expect(indexed.compensations[0]?.channels).toEqual(["FL1-A", "FL2-A"]);
   });
 
   it("aligns compensation to the channel intersection and leaves other columns pass-through", () => {
