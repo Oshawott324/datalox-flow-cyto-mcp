@@ -422,9 +422,15 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
 
     function readMcpAppConfig() {
       const output = window.openai && window.openai.toolOutput ? window.openai.toolOutput : null;
-      if (!output) return {};
-      if (output.result && typeof output.result === "object") return output.result;
-      return output;
+      const input = window.openai && window.openai.toolInput ? window.openai.toolInput : null;
+      if (!output && !input) return {};
+      if (output && output.structuredContent && output.structuredContent.result && typeof output.structuredContent.result === "object") {
+        return output.structuredContent.result;
+      }
+      if (output && output.result && typeof output.result === "object") return output.result;
+      if (output && typeof output === "object") return output;
+      if (input && typeof input === "object") return input;
+      return {};
     }
 
     function toolResultValue(response) {
@@ -436,7 +442,11 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
     }
 
     async function callFlowcytoTool(name, args) {
-      const response = await window.openai.callTool(name, args);
+      const compactArgs = {};
+      Object.entries(args || {}).forEach(([key, value]) => {
+        if (value !== undefined) compactArgs[key] = value;
+      });
+      const response = await window.openai.callTool(name, compactArgs);
       return toolResultValue(response);
     }
 

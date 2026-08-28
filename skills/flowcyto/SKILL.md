@@ -18,7 +18,8 @@ raw `.fcs` file or an existing `flowcyto.workspace.json`.
 
 Do not stop after `open_fcs` when the user asked to gate, draw, edit, or inspect
 the main population. Follow the returned `nextAction` immediately so the compact
-viewer opens. In fresh CLI agents this defaults to `open_gate_editor` with
+gate editor opens and the workspace has a live, user-visible gate-writing
+surface. In fresh CLI agents this defaults to `open_gate_editor` with
 `surface="native_window"`; in MCP Apps hosts use `surface="mcp_app"`.
 
 Use `render_plot` for agent-readable plot data such as FSC/SSC, marker plots,

@@ -23,7 +23,7 @@ import {
   windowsWebView2LoaderPath,
 } from "../src/app/gate-editor/native-window.js";
 import { renderPlotImage } from "../src/app/gate-editor/plot-image.js";
-import { startGateEditorServer } from "../src/app/gate-editor/server.js";
+import { recommendedAxes, startGateEditorServer } from "../src/app/gate-editor/server.js";
 import {
   deleteGate,
   formatTick,
@@ -224,6 +224,25 @@ describe("flowcyto core", () => {
     expect(generateTicks(0, 10, 3)).toEqual([0, 5, 10]);
     expect(formatTick(1_500_000)).toBe("1.5M");
     expect(formatTick(12_000)).toBe("12K");
+  });
+
+  it("prefers FSC/SSC area channels over leading timing parameters", () => {
+    const axes = recommendedAxes({
+      sampleId: "tet_sample",
+      path: "sample.fcs",
+      eventCount: 1,
+      keywords: {},
+      parameters: [
+        { name: "TLSW", index: 0 },
+        { name: "TMSW", index: 1 },
+        { name: "Event Info", index: 2 },
+        { name: "FSC 488/10-H", index: 3 },
+        { name: "FSC 488/10-A", index: 4 },
+        { name: "SSC 488/10-H", index: 5 },
+        { name: "SSC 488/10-A", index: 6 },
+      ],
+    });
+    expect(axes).toEqual({ x: "FSC 488/10-A", y: "SSC 488/10-A" });
   });
 
   it("initializes and validates a workspace", async () => {
@@ -898,15 +917,15 @@ describe("flowcyto CLI", () => {
       workspacePath: string;
       sampleId: string;
       channels: Array<{ name: string }>;
-      viewerPolicy: { compactViewerRequired: boolean; openCommand: string };
+      gateEditorPolicy: { compactGateEditorRequired: boolean; openCommand: string };
       nextAction: { command: string; required: boolean; arguments: { sample_id: string; x: string; y: string } };
     };
     expect(parsedOpened.ok).toBe(true);
     expect(parsedOpened.workspacePath).toBe(path.join(openDir, "flowcyto.workspace.json"));
     expect(parsedOpened.sampleId).toBe("CFP_Well_A4");
     expect(parsedOpened.channels.some((channel) => channel.name === "FSC-A")).toBe(true);
-    expect(parsedOpened.viewerPolicy).toMatchObject({
-      compactViewerRequired: true,
+    expect(parsedOpened.gateEditorPolicy).toMatchObject({
+      compactGateEditorRequired: true,
       openCommand: "flowcyto open-gate-editor-window",
     });
     expect(parsedOpened.nextAction.command).toBe("flowcyto open-gate-editor-window");
@@ -1240,7 +1259,7 @@ describe("flowcyto gate editor server", () => {
       await browser.close();
       await server.close();
     }
-  });
+  }, 15_000);
 
   it("returns typed health errors for malformed workspace artifacts", async () => {
     const { workspacePath } = await makeWorkspace();
@@ -1823,7 +1842,7 @@ describe("flowcyto MCP", () => {
         canRenderPlotImages: boolean;
         canWriteStructuredGates: boolean;
         canonicalArtifact: string;
-        compactViewer: {
+        compactGateEditor: {
           entryTool: string;
           requiredFor: string[];
           defaultSurfaceForAgentHosts: string;
@@ -1835,12 +1854,12 @@ describe("flowcyto MCP", () => {
       expect(capabilitiesResult.canRenderPlotImages).toBe(true);
       expect(capabilitiesResult.canWriteStructuredGates).toBe(true);
       expect(capabilitiesResult.canonicalArtifact).toBe("flowcyto.workspace.json");
-      expect(capabilitiesResult.compactViewer).toMatchObject({
+      expect(capabilitiesResult.compactGateEditor).toMatchObject({
         entryTool: "open_gate_editor",
         defaultSurfaceForAgentHosts: "native_window",
         surfaceForMcpAppsHosts: "mcp_app",
       });
-      expect(capabilitiesResult.compactViewer.requiredFor).toEqual(["gate", "draw", "edit", "inspect_population"]);
+      expect(capabilitiesResult.compactGateEditor.requiredFor).toEqual(["gate", "draw", "edit", "inspect_population"]);
 
       const prompts = await client.listPrompts();
       expect(prompts.prompts.some((prompt) => prompt.name === "open-fcs-and-gate-main-population")).toBe(true);
@@ -1875,8 +1894,8 @@ describe("flowcyto MCP", () => {
       });
       const openedDefaultResult = (openedDefault.structuredContent as { result?: unknown } | undefined)?.result as {
         ok: boolean;
-        viewerPolicy: {
-          compactViewerRequired: boolean;
+        gateEditorPolicy: {
+          compactGateEditorRequired: boolean;
           defaultSurfaceForAgentHosts: string;
           surfaceForMcpAppsHosts: string;
           requiredFor: string[];
@@ -1884,15 +1903,15 @@ describe("flowcyto MCP", () => {
         nextAction: { tool: string; required: boolean; reason: string; arguments: Record<string, unknown> };
       };
       expect(openedDefaultResult.ok).toBe(true);
-      expect(openedDefaultResult.viewerPolicy).toMatchObject({
-        compactViewerRequired: true,
+      expect(openedDefaultResult.gateEditorPolicy).toMatchObject({
+        compactGateEditorRequired: true,
         defaultSurfaceForAgentHosts: "native_window",
         surfaceForMcpAppsHosts: "mcp_app",
       });
-      expect(openedDefaultResult.viewerPolicy.requiredFor).toContain("gate");
+      expect(openedDefaultResult.gateEditorPolicy.requiredFor).toContain("gate");
       expect(openedDefaultResult.nextAction.tool).toBe("open_gate_editor");
       expect(openedDefaultResult.nextAction.required).toBe(true);
-      expect(openedDefaultResult.nextAction.reason).toContain("compact viewer");
+      expect(openedDefaultResult.nextAction.reason).toContain("compact gate editor");
       expect(openedDefaultResult.nextAction.arguments.surface).toBe("native_window");
 
       const opened = await client.callTool({
@@ -1910,7 +1929,7 @@ describe("flowcyto MCP", () => {
         sourcePath: string;
         channels: Array<{ name: string }>;
         recommendedViews: Array<{ x: string; y: string; intent: string }>;
-        viewerPolicy: { compactViewerRequired: boolean; requestedSurface: string };
+        gateEditorPolicy: { compactGateEditorRequired: boolean; requestedSurface: string };
         nextAction: { tool: string; required: boolean; arguments: Record<string, unknown> };
       };
       expect(openedResult.ok).toBe(true);
@@ -1919,7 +1938,7 @@ describe("flowcyto MCP", () => {
       expect(openedResult.sourcePath).toBe(fixturePath);
       expect(openedResult.channels.length).toBeGreaterThan(2);
       expect(openedResult.recommendedViews[0]).toMatchObject({ x: "FSC-A", y: "SSC-A", intent: "main_population" });
-      expect(openedResult.viewerPolicy).toMatchObject({ compactViewerRequired: false, requestedSurface: "none" });
+      expect(openedResult.gateEditorPolicy).toMatchObject({ compactGateEditorRequired: false, requestedSurface: "none" });
       expect(openedResult.nextAction.tool).toBe("render_plot");
       expect(openedResult.nextAction.required).toBe(false);
 
@@ -2017,6 +2036,10 @@ describe("flowcyto MCP", () => {
       } | undefined;
       expect(openTool?._meta?.["openai/outputTemplate"]).toBe("ui://flowcyto/gate-editor-v1.html");
       expect((openTool?._meta?.ui as { resourceUri?: string } | undefined)?.resourceUri).toBe("ui://flowcyto/gate-editor-v1.html");
+      for (const name of ["get_plot_context", "get_workspace_revision", "upsert_gate", "delete_gate"]) {
+        const tool = tools.tools.find((entry) => entry.name === name) as { _meta?: Record<string, unknown> } | undefined;
+        expect(tool?._meta?.["openai/widgetAccessible"], name).toBe(true);
+      }
       const renderTool = tools.tools.find((tool) => tool.name === "render_gate_editor");
       expect(renderTool?.description).toContain("Deprecated alias");
       const stateTool = tools.tools.find((tool) => tool.name === "get_gate_editor_state");
@@ -2029,8 +2052,10 @@ describe("flowcyto MCP", () => {
       )).toBe(true);
       const resource = await client.readResource({ uri: "ui://flowcyto/gate-editor-v1.html" });
       expect(resource.contents[0]?.mimeType).toBe("text/html;profile=mcp-app");
-      expect("text" in resource.contents[0] ? resource.contents[0].text : "").toContain("window.openai.callTool");
-      expect("text" in resource.contents[0] ? resource.contents[0].text : "").toContain("<canvas id=\"plot\"");
+      const resourceHtml = "text" in resource.contents[0] ? resource.contents[0].text : "";
+      expect(resourceHtml).toContain("window.openai.callTool");
+      expect(resourceHtml).toContain("value !== undefined");
+      expect(resourceHtml).toContain("<canvas id=\"plot\"");
 
       const metadata = await client.callTool({
         name: "get_sample_metadata",

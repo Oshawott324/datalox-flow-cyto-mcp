@@ -2903,7 +2903,7 @@ Product requirement:
 ```text
 When a user asks an agent to open, inspect, or gate an FCS file, the agent should
 open the compact Flowcyto surface as part of the tool chain. The user should not
-need a second prompt such as "now open the viewer".
+need a second prompt such as "now open the gate editor".
 ```
 
 Implementation:
@@ -2911,7 +2911,7 @@ Implementation:
 ```text
 open_fcs default nextAction now opens open_gate_editor
 nextAction.required = true
-viewerPolicy.compactViewerRequired = true
+gateEditorPolicy.compactGateEditorRequired = true
 non-UI agent default surface = native_window
 MCP Apps-capable host surface = mcp_app
 surface="none" remains the explicit render-only automation path
