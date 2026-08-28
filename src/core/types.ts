@@ -5,6 +5,45 @@ export type FlowcytoSample = {
   path: string;
 };
 
+export type CompensationKeyword = "$SPILLOVER" | "SPILLOVER" | "$COMP" | "COMP" | "$SPILL" | "SPILL";
+
+export type CompensationMatrix = {
+  id: string;
+  name?: string;
+  source: "fcs_keyword" | "manual";
+  sample?: string;
+  keyword?: CompensationKeyword;
+  channels: string[];
+  // matrix[i][j] = fraction of fluorochrome j spilling into detector i.
+  // Apply as Xcomp = Xraw * inv(S), implemented as solve(S.T, Xraw.T).T.
+  matrix: number[][];
+};
+
+export type CompensationStatus = {
+  detectedAsPreCompensated: boolean;
+  signals: string[];
+  embeddedMatrixFound: boolean;
+  suggestedCompensationId?: string;
+  recommendation: string;
+};
+
+export type CompensationDiagnostics = {
+  keywordsScanned: CompensationKeyword[];
+  keywordsFound: string[];
+  unparsedKeywordCandidates: string[];
+  availableChannels: string[];
+  matrixChannels?: string[];
+  alignmentWarnings?: string[];
+};
+
+export type AppliedCompensation = {
+  applied: boolean;
+  id?: string;
+  source?: CompensationMatrix["source"];
+  channels?: string[];
+  warnings?: string[];
+};
+
 export type FlowcytoView = {
   id: string;
   sample: string;
@@ -57,6 +96,8 @@ export type FlowcytoWorkspace = {
   samples: FlowcytoSample[];
   views: FlowcytoView[];
   gates: WorkspaceGate[];
+  compensations?: CompensationMatrix[];
+  compensationStatus?: Record<string, CompensationStatus>;
 };
 
 export type ValidationError = {
@@ -101,6 +142,7 @@ export type PreviewColumns = {
   y: Float32Array | Float64Array;
   totalEvents: number;
   filteredEvents: number;
+  compensation?: AppliedCompensation;
 };
 
 export type PreviewFormat = "auto" | "points" | "bins";
@@ -115,6 +157,7 @@ export type EventPreview = {
   totalEvents: number;
   filteredEvents: number;
   sampledEvents: number;
+  compensation?: AppliedCompensation;
   points?: Array<[number, number]>;
   bins?: {
     xMin: number;

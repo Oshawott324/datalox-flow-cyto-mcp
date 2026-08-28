@@ -1,4 +1,5 @@
 export * from "./types.js";
+export * from "./compensation.js";
 export * from "./fcs.js";
 export * from "./preview.js";
 export * from "./scale.js";

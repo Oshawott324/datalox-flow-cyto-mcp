@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 
-import { FlowcytoError, type PreviewColumns, type SampleMetadata, type SampleParameter, type WorkspaceGate } from "./types.js";
+import { alignCompensationMatrix, applyCompensationColumns } from "./compensation.js";
+import { FlowcytoError, type CompensationMatrix, type PreviewColumns, type SampleMetadata, type SampleParameter, type WorkspaceGate } from "./types.js";
 
 type TextDict = Record<string, string>;
 
@@ -271,8 +272,9 @@ export async function readPreviewColumns(input: {
   y: string;
   maxEvents?: number;
   parentGateChain?: WorkspaceGate[];
+  compensation?: CompensationMatrix;
 }): Promise<PreviewColumns> {
-  const { path, x, y, maxEvents, parentGateChain = [] } = input;
+  const { path, x, y, maxEvents, parentGateChain = [], compensation } = input;
   const { header, text } = await readHeaderText(path);
   const parameterCount = Number(text.$PAR) || 0;
   const totalEvents = Number(text.$TOT) || 0;
@@ -289,8 +291,21 @@ export async function readPreviewColumns(input: {
   parentGateChain.forEach((gate) => {
     gateParameterNames(gate).forEach((name) => neededNames.add(name));
   });
+  let alignedCompensation: CompensationMatrix | undefined;
+  let compensationWarnings: string[] = [];
+  if (compensation) {
+    const aligned = alignCompensationMatrix(compensation, parameters.map((parameter) => ({
+      name: parameter.name,
+      detector: parameter.detector,
+      marker: parameter.marker,
+    })));
+    alignedCompensation = aligned.compensation;
+    compensationWarnings = aligned.warnings;
+    alignedCompensation.channels.forEach((name) => neededNames.add(name));
+  }
+  const neededNameList = Array.from(neededNames);
   const neededIndexes = new Map<string, number>();
-  for (const name of neededNames) {
+  for (const name of neededNameList) {
     const index = parameterIndexByName.get(name);
     if (index === undefined) throw new FlowcytoError("unknown_parameter", `Parameter ${name} is not present.`, "/parent_gate_chain");
     neededIndexes.set(name, index);
@@ -314,24 +329,48 @@ export async function readPreviewColumns(input: {
     throw new FlowcytoError("invalid_fcs_data_segment", "FCS DATA segment is shorter than $TOT and parameter byte widths require.");
   }
   const view = new DataView(buffer.buffer, buffer.byteOffset + begin, expectedDataLength);
+  const readRow = (row: number): number[] => {
+    const rowOffset = row * rowSize;
+    return neededNameList.map((name) => {
+      const index = neededIndexes.get(name);
+      if (index === undefined) return Number.NaN;
+      return readValue({
+        view,
+        offset: rowOffset + offsets[index],
+        dtype,
+        bytes: layout[index],
+        littleEndian,
+      });
+    });
+  };
+  const maybeCompensateRows = (rows: number[][]): { rows: number[][]; compensation?: PreviewColumns["compensation"] } => {
+    if (!alignedCompensation) return { rows };
+    const applied = applyCompensationColumns({
+      values: rows,
+      channels: neededNameList,
+      compensation: alignedCompensation,
+    });
+    return {
+      rows: applied.values,
+      compensation: {
+        ...applied.compensation,
+        ...(compensationWarnings.length > 0 ? { warnings: compensationWarnings } : {}),
+      },
+    };
+  };
+  const rowToMap = (row: number[]): Map<string, number> => new Map(neededNameList.map((name, index) => [name, row[index]]));
 
   if (parentGateChain.length > 0) {
+    const rows: number[][] = [];
+    for (let row = 0; row < totalEvents; row += 1) {
+      rows.push(readRow(row));
+    }
+    const compensated = maybeCompensateRows(rows);
     const xs: number[] = [];
     const ys: number[] = [];
-    const rowValues = new Map<string, number>();
     let filteredEvents = 0;
-    for (let row = 0; row < totalEvents; row += 1) {
-      const rowOffset = row * rowSize;
-      rowValues.clear();
-      neededIndexes.forEach((index, name) => {
-        rowValues.set(name, readValue({
-          view,
-          offset: rowOffset + offsets[index],
-          dtype,
-          bytes: layout[index],
-          littleEndian,
-        }));
-      });
+    for (const row of compensated.rows) {
+      const rowValues = rowToMap(row);
       if (!parentGateChain.every((gate) => gateContainsEvent(gate, rowValues))) continue;
       filteredEvents += 1;
       xs.push(rowValues.get(x) ?? Number.NaN);
@@ -350,39 +389,30 @@ export async function readPreviewColumns(input: {
       y: Float64Array.from(sampledYs),
       totalEvents,
       filteredEvents,
+      ...(compensated.compensation ? { compensation: compensated.compensation } : {}),
     };
   }
 
   const targetEvents = maxEvents && maxEvents > 0 ? Math.min(maxEvents, totalEvents) : totalEvents;
   const stride = Math.max(1, Math.ceil(totalEvents / targetEvents));
   const sampledEvents = Math.ceil(totalEvents / stride);
-  const xs = new Float64Array(sampledEvents);
-  const ys = new Float64Array(sampledEvents);
-
+  const rows: number[][] = [];
   let cursor = 0;
   for (let row = 0; row < totalEvents && cursor < sampledEvents; row += stride) {
-    const rowOffset = row * rowSize;
-    xs[cursor] = readValue({
-      view,
-      offset: rowOffset + offsets[xIndex],
-      dtype,
-      bytes: layout[xIndex],
-      littleEndian,
-    });
-    ys[cursor] = readValue({
-      view,
-      offset: rowOffset + offsets[yIndex],
-      dtype,
-      bytes: layout[yIndex],
-      littleEndian,
-    });
+    rows.push(readRow(row));
     cursor += 1;
   }
+  const compensated = maybeCompensateRows(rows);
+  const xColumn = neededNameList.indexOf(x);
+  const yColumn = neededNameList.indexOf(y);
+  const xs = Float64Array.from(compensated.rows.map((row) => row[xColumn]));
+  const ys = Float64Array.from(compensated.rows.map((row) => row[yColumn]));
 
   return {
-    x: cursor === xs.length ? xs : xs.slice(0, cursor),
-    y: cursor === ys.length ? ys : ys.slice(0, cursor),
+    x: xs,
+    y: ys,
     totalEvents,
     filteredEvents: totalEvents,
+    ...(compensated.compensation ? { compensation: compensated.compensation } : {}),
   };
 }
