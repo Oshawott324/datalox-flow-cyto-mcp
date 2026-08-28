@@ -91,6 +91,7 @@ async function makeWorkspace(): Promise<{ dir: string; workspacePath: string; wo
 async function writeTinyIntegerFcs(params: {
   fcsPath: string;
   channels: string[];
+  markers?: Array<string | undefined>;
   rows: number[][];
   extraKeywords?: Record<string, string>;
 }): Promise<void> {
@@ -119,6 +120,8 @@ async function writeTinyIntegerFcs(params: {
     params.channels.forEach((channel, index) => {
       const number = index + 1;
       entries.push(`$P${number}B`, "16", `$P${number}N`, channel, `$P${number}R`, "65535");
+      const marker = params.markers?.[index];
+      if (marker) entries.push(`$P${number}S`, marker);
     });
     for (const [key, value] of Object.entries(params.extraKeywords ?? {})) {
       entries.push(key, value);
@@ -569,6 +572,50 @@ describe("flowcyto core", () => {
     });
     expect(compensated.points?.[0]?.[0]).toBeCloseTo(10.1020408);
     expect(compensated.points?.[0]?.[1]).toBeCloseTo(18.9795918);
+  });
+
+  it("aligns spillover fluorochrome labels through partial $PnS marker metadata", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-pns-comp-fcs-"));
+    const fcsPath = path.join(dir, "pns_comp_sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath,
+      channels: ["FSC-A", "SSC-A", "FL1-A", "FL2-A"],
+      markers: [undefined, undefined, "FITC", "PE"],
+      rows: [
+        [1, 2, 12, 21],
+        [3, 4, 24, 42],
+      ],
+      extraKeywords: {
+        $SPILLOVER: "2,FITC,PE,1,0.2,0.1,1",
+      },
+    });
+
+    const opened = await openFcsArtifact({
+      path: fcsPath,
+      workspaceDir: dir,
+      sampleId: "pns_comp_sample",
+    });
+    expect(opened.compensationSummary.suggestedCompensationId).toBe("fcs_spillover_pns_comp_sample");
+
+    const metadata = await getSampleMetadata(opened.workspacePath, "pns_comp_sample");
+    expect(metadata.parameters[2]).toMatchObject({ name: "FL1-A", marker: "FITC" });
+    expect(metadata.parameters[3]).toMatchObject({ name: "FL2-A", marker: "PE" });
+
+    const preview = await getEventPreview({
+      workspacePath: opened.workspacePath,
+      sampleId: "pns_comp_sample",
+      x: "FL1-A",
+      y: "FL2-A",
+      maxEvents: 10,
+      compensationId: "fcs_spillover_pns_comp_sample",
+    });
+    expect(preview.compensation).toMatchObject({
+      applied: true,
+      id: "fcs_spillover_pns_comp_sample",
+      channels: ["FL1-A", "FL2-A"],
+    });
+    expect(preview.points?.[0]?.[0]).toBeCloseTo(10.1020408);
+    expect(preview.points?.[0]?.[1]).toBeCloseTo(18.9795918);
   });
 
   it("returns a capped deterministic event preview", async () => {

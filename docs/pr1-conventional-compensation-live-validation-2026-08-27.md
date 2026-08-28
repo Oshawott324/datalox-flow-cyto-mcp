@@ -208,3 +208,25 @@ Recommendation:
 - These two files are technically useful PR1 fixture candidates because they cover different embedded `$SPILLOVER` channel conventions.
 - Add them to `testdata/fixtures` only if redistribution rights are clear.
 - If rights are uncertain, keep them as local live-validation references and do not commit the FCS binaries.
+
+## Marker Alias Coverage
+
+A common BD-style naming pattern is:
+
+```text
+$SPILLOVER channels: FITC, PE
+$PnN detector names: FL1-A, FL2-A
+$PnS marker names:   FITC, PE
+```
+
+This is covered by the same alias path added for detector/visible-name alignment:
+
+- FCS metadata keeps both `$PnN` as `detector` and `$PnS` as `marker`.
+- `alignCompensationMatrix` matches matrix channels against `name`, `detector`, and `marker`.
+- The aligned matrix returns the canonical preview channel names, so callers can still render `FL1-A` vs `FL2-A`.
+
+Regression coverage:
+
+- Synthetic FCS with partial `$PnS` marker metadata keeps display names as `$PnN`.
+- Embedded `$SPILLOVER` uses fluorochrome labels `FITC` and `PE`.
+- Explicit compensated preview of `FL1-A` vs `FL2-A` succeeds.
