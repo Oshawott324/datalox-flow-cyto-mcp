@@ -29,6 +29,15 @@ render MCP image content, use the `render_plot_image` file output path under
 `.datalox/cache/plots/`. Use `get_plot_context` for the active compact editor
 view.
 
+Host surface choice:
+
+- In MCP Apps hosts, use `surface="mcp_app"` and let the embedded gate editor
+  call widget-accessible tools when the host supports `openai/widgetAccessible`.
+- In CLI, VS Code, or hosts without embedded MCP app support, use
+  `surface="native_window"` for manual gating when a native window is available.
+- For render-only automation or hosts that cannot show a UI, use `surface="none"`
+  and call `render_plot_image` for a deterministic SVG file.
+
 Write gates through `upsert_gate` with `expected_revision` from `render_plot` or
 `get_plot_context`. Do not patch `flowcyto.workspace.json` directly when
 `upsert_gate` is available.
@@ -36,6 +45,27 @@ Write gates through `upsert_gate` with `expected_revision` from `render_plot` or
 Use Flowcyto preview/render outputs for gate geometry. Do not create local
 Python plots, inspect local preview URLs, or infer gates from screenshots when
 `render_plot` or `get_plot_context` is available.
+
+## Compensation
+
+Compensation is agent-explicit. Never silently apply compensation just because
+`open_fcs` discovers an embedded matrix.
+
+When `open_fcs` returns `compensationSummary.available=true`, inspect the
+available matrix before using it:
+
+```text
+open_fcs -> list_compensations -> get_compensation_matrix
+```
+
+Apply conventional compensation only by passing the chosen `compensation_id` to
+`render_plot`, `render_plot_image`, `get_plot_context`, or `open_gate_editor`.
+If the file appears pre-compensated, spectral, or ambiguous, ask the user before
+passing `compensation_id`.
+
+If `compensationSummary.available=false`, proceed without compensation and
+surface `list_compensations` diagnostics to the user if compensation was
+expected.
 
 ## CLI Fallback
 
