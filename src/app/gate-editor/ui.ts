@@ -556,11 +556,11 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       });
       function addChildren(parentId, depth) {
         (childrenByParent.get(parentId) || []).forEach((gate) => {
-          values.push({ id: gate.id, label: "\u00a0\u00a0\u00a0".repeat(depth) + (depth > 0 ? "- " : "") + gateLabel(gate) });
+          values.push({ id: gate.id, label: "\u00a0\u00a0\u00a0".repeat(depth) + gateLabel(gate) });
           addChildren(gate.id, depth + 1);
         });
       }
-      addChildren("root", 0);
+      addChildren("root", 1);
       parentSelect.innerHTML = "";
       values.forEach((entry) => {
         const option = document.createElement("option");
@@ -1195,7 +1195,7 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
         });
       }
 
-      renderChildren("root", 0);
+      renderChildren("root", 1);
       if (state.workspace.gates.some((gate) => gate.sample === state.sampleId) && !state.gateTrayUserClosed) {
         setGateTrayOpen(true);
       }
