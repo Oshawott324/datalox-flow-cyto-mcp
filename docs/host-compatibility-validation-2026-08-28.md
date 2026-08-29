@@ -13,6 +13,9 @@ and PR1 conventional compensation work landed on `main`.
 This is a host compatibility exercise. It should not change core gating,
 compensation, preview, or workspace semantics.
 
+Before running this checklist, register Flowcyto MCP in the target host using
+[mcp-host-setup.md](mcp-host-setup.md).
+
 ## Stable Contract
 
 Agents should use the same product contract in every host:
@@ -138,11 +141,62 @@ Add one subsection per live host run.
 
 ### Codex Desktop
 
-Status: pending fresh-host run after PR2 and PR3 merged.
+Status: passed fresh-host MCP contract run.
+
+Observed:
+
+- `open_fcs` succeeded.
+- `open_fcs.nextAction` was followed immediately.
+- Gate editor opened.
+- `get_plot_context` loaded the intended FSC/SSC view:
+  `FSC 488/10-A` vs `SSC 488/10-A`.
+- The host did not stop on a timing plot such as `TLSW` vs `TMSW`.
+- No gate was written during this run.
+- No compensation was applied.
+- `compensationSummary.available=true`.
+- `list_compensations` and `get_compensation_matrix` found one embedded
+  conventional matrix: `fcs_spillover_B1_44_1-1`.
+- The agent reported that compensation should be confirmed before applying.
+
+Workspace:
+
+```text
+C:\tmp\flowcyto-host-validation\codex-desktop\flowcyto.workspace.json
+```
+
+Sample/context:
+
+- Sample: `B1_44_1-1`
+- Events: `68,814`
+- Revision: `1`
+- Existing gates: none
+
+Classification: pass.
 
 ### Claude Desktop
 
-Status: pending fresh-host run.
+Status: blocked before Flowcyto MCP contract run.
+
+Observed:
+
+- Claude session refreshed available MCP servers.
+- Connected servers were `claude-code-remote`, `remote-devices`, `visualize`,
+  and `claude-in-chrome`.
+- Flowcyto MCP tools were not present.
+- The linked Windows machine was visible, but the proxied MCP servers did not
+  include Flowcyto.
+- No `open_fcs`, `get_plot_context`, `render_plot`, `upsert_gate`,
+  `get_workspace_revision`, `list_compensations`, or `get_compensation_matrix`
+  tool was available to call.
+
+Required next action:
+
+- Register Flowcyto MCP in Claude Desktop on the linked Windows machine.
+- Restart Claude Desktop or restart the MCP server.
+- Re-run the same fresh-host prompt.
+
+Classification: `mcp_contract` not reached; host setup blocked by missing
+Flowcyto MCP registration.
 
 ### VS Code / Codex CLI
 

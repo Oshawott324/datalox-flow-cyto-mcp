@@ -16,6 +16,9 @@ JSON, and reflect agent-side changes live in the open surface.
 
 Use Node.js 20 or newer.
 
+For host-specific setup in Codex, Claude Desktop, VS Code, and Cursor, see
+[docs/mcp-host-setup.md](docs/mcp-host-setup.md).
+
 Register the published alpha package directly in an MCP host:
 
 ```json
