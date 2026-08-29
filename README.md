@@ -263,6 +263,8 @@ get_sample_metadata
 get_event_preview
 upsert_gate
 delete_gate
+list_compensations
+get_compensation_matrix
 render_gate_editor (deprecated alias)
 get_gate_editor_state (deprecated alias)
 ```
