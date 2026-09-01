@@ -1676,8 +1676,8 @@ describe("flowcyto gate editor server", () => {
       const parentOptions = await page.locator("#parentSelect option").evaluateAll((options) =>
         options.map((option) => ({ value: (option as HTMLOptionElement).value, label: option.textContent || "" })),
       );
-      expect(parentOptions.find((option) => option.value === rootGate.id)?.label).toBe("Root Gate");
-      expect(parentOptions.find((option) => option.value === childWorkspace.gates[1]?.id)?.label).toContain("\u00a0\u00a0\u00a0- Child Gate");
+      expect(parentOptions.find((option) => option.value === rootGate.id)?.label).toBe("\u00a0\u00a0\u00a0Root Gate");
+      expect(parentOptions.find((option) => option.value === childWorkspace.gates[1]?.id)?.label).toContain("\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0Child Gate");
       await expect.poll(() => page.locator("#populationStats").textContent()).toContain("events");
       await expect.poll(() => page.locator("#gateTray").evaluate((element) => element.hasAttribute("hidden"))).toBe(false);
 
