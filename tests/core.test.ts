@@ -1632,6 +1632,9 @@ describe("flowcyto gate editor server", () => {
       await expect.poll(() => page.locator("#plot").getAttribute("aria-label")).toContain("biex");
       await page.locator("#xScale").selectOption("linear");
       await page.locator("#yScale").selectOption("linear");
+      await page.locator("#xSelect").selectOption("HDR-T");
+      await page.locator("#ySelect").selectOption("FSC-A");
+      await expect.poll(() => page.locator("#plot").getAttribute("aria-label")).toContain("HDR-T");
 
       await page.locator("#rectMode").click();
       const box = await page.locator("#plot").boundingBox();
@@ -1681,6 +1684,32 @@ describe("flowcyto gate editor server", () => {
       await expect.poll(() => page.locator("#populationStats").textContent()).toContain("events");
       await expect.poll(() => page.locator("#gateTray").evaluate((element) => element.hasAttribute("hidden"))).toBe(false);
 
+      await upsertGate({
+        workspacePath,
+        expectedRevision: 2,
+        gate: {
+          id: "root_fsc_ssc_gate",
+          name: "Root FSC SSC Gate",
+          sample: "sample_001",
+          parent: "root",
+          type: "rect",
+          x: "FSC-A",
+          y: "SSC-A",
+          xMin: 0,
+          xMax: 50,
+          yMin: 0,
+          yMax: 50,
+        },
+      });
+      await expect.poll(() => page.locator("#status").textContent()).toContain("Workspace revision 3");
+      await page.locator("#parentSelect").selectOption("root");
+      await expect.poll(() => page.locator("#xSelect").inputValue()).toBe("FSC-A");
+      expect(await page.locator("#ySelect").inputValue()).toBe("SSC-A");
+      await page.getByRole("button", { name: /^> Root Gate rect$/ }).click();
+      await expect.poll(() => page.locator("#parentSelect").inputValue()).toBe(rootGate.id);
+      await expect.poll(() => page.locator("#xSelect").inputValue()).toBe("HDR-T");
+      expect(await page.locator("#ySelect").inputValue()).toBe("FSC-A");
+
       await page.locator("#resetView").click();
       await page.mouse.wheel(0, -250);
       await page.locator("#selectMode").click();
@@ -1692,7 +1721,7 @@ describe("flowcyto gate editor server", () => {
       await page.locator("#parentSelect").selectOption("root");
       await upsertGate({
         workspacePath,
-        expectedRevision: 2,
+        expectedRevision: 3,
         gate: {
           id: "agent_gate",
           name: "<img src=x onerror=alert(1)>Agent Gate",
@@ -1707,7 +1736,7 @@ describe("flowcyto gate editor server", () => {
           yMax: 50,
         },
       });
-      await expect.poll(() => page.locator("#status").textContent()).toContain("Workspace revision 3");
+      await expect.poll(() => page.locator("#status").textContent()).toContain("Workspace revision 4");
       await expect.poll(() => page.locator("#gateList").textContent()).toContain("<img src=x onerror=alert(1)>Agent Gate");
       await expect.poll(() => page.locator("#gateList img").count()).toBe(0);
     } finally {

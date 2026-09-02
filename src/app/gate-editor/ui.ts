@@ -606,6 +606,42 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       return chain.reverse();
     }
 
+    function isAreaChannel(value, kind) {
+      const lower = String(value || "").toLowerCase();
+      if (!lower.includes(kind)) return false;
+      return lower.endsWith("-a") || lower.endsWith(" area") || lower.includes("/10-a");
+    }
+
+    function gateAxes(gate) {
+      if (!gate || typeof gate.x !== "string" || typeof gate.y !== "string") return null;
+      return { x: gate.x, y: gate.y };
+    }
+
+    function axesForParentContext(parentId) {
+      if (!state.workspace) return null;
+      const childGates = state.workspace.gates.filter((gate) =>
+        gate.sample === state.sampleId && gate.parent === parentId && gateAxes(gate)
+      );
+      const fscSscGate = childGates.find((gate) =>
+        (isAreaChannel(gate.x, "fsc") && isAreaChannel(gate.y, "ssc"))
+        || (isAreaChannel(gate.x, "ssc") && isAreaChannel(gate.y, "fsc"))
+      );
+      return gateAxes(fscSscGate || childGates[0]);
+    }
+
+    function navigateToParent(parentId) {
+      state.parent = parentId || "root";
+      state.selectedGateId = null;
+      state.draft = null;
+      const axes = axesForParentContext(state.parent);
+      if (axes) {
+        xSelect.value = axes.x;
+        ySelect.value = axes.y;
+      }
+      parentSelect.value = state.parent;
+      loadState("parent");
+    }
+
     function contextTitle() {
       const parts = [state.sampleId || "sample"];
       gateAncestry(state.parent).forEach((gate) => parts.push(gateLabel(gate)));
@@ -1170,11 +1206,7 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
           button.appendChild(name);
           button.appendChild(type);
           button.addEventListener("click", () => {
-            state.parent = gate.id;
-            state.selectedGateId = null;
-            state.draft = null;
-            parentSelect.value = gate.id;
-            loadState("parent");
+            navigateToParent(gate.id);
           });
           const edit = document.createElement("button");
           edit.type = "button";
@@ -1428,10 +1460,7 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
     });
     sampleSelect.addEventListener("change", () => loadState("sample"));
     parentSelect.addEventListener("change", () => {
-      state.parent = parentSelect.value || "root";
-      state.selectedGateId = null;
-      state.draft = null;
-      loadState("parent");
+      navigateToParent(parentSelect.value || "root");
     });
     xSelect.addEventListener("change", () => loadState("axis"));
     ySelect.addEventListener("change", () => loadState("axis"));
