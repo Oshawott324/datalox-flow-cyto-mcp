@@ -520,8 +520,8 @@ function validateCompensationShape(matrix: unknown, index: number): ValidationEr
   const id = asString(matrix.id);
   if (!id) errors.push(validationError(`/compensations/${index}/id`, "missing_compensation_id", "Compensation id is required."));
   const source = asString(matrix.source);
-  if (source !== "fcs_keyword" && source !== "manual") {
-    errors.push(validationError(`/compensations/${index}/source`, "invalid_compensation_source", "Compensation source must be fcs_keyword or manual."));
+  if (source !== "fcs_keyword" && source !== "controls" && source !== "manual") {
+    errors.push(validationError(`/compensations/${index}/source`, "invalid_compensation_source", "Compensation source must be fcs_keyword, controls, or manual."));
   }
   const channels = Array.isArray(matrix.channels) ? matrix.channels : [];
   if (channels.length === 0 || channels.some((channel) => typeof channel !== "string" || channel.length === 0)) {
@@ -729,4 +729,31 @@ export async function writeWorkspace(params: {
   if (!validation.ok) return validation;
   await atomicWriteJson(params.workspacePath, next);
   return { ok: true, errors: [], revision: next.revision };
+}
+
+export async function upsertCompensationMatrix(params: {
+  workspacePath: string;
+  compensation: CompensationMatrix;
+  expectedRevision: number;
+}): Promise<{ ok: true; workspacePath: string; revision: number; compensation: CompensationMatrix }> {
+  const workspace = await readWorkspace(params.workspacePath);
+  const next: FlowcytoWorkspace = {
+    ...workspace,
+    compensations: mergeCompensations(workspace, [params.compensation]),
+  };
+  const write = await writeWorkspace({
+    workspacePath: params.workspacePath,
+    workspace: next,
+    expectedRevision: params.expectedRevision,
+  });
+  if (!write.ok) {
+    const first = write.errors[0];
+    throw new FlowcytoError(first?.code ?? "workspace_compensation_update_failed", first?.message ?? "Unable to upsert compensation matrix.", first?.path ?? "/compensations");
+  }
+  return {
+    ok: true,
+    workspacePath: params.workspacePath,
+    revision: write.revision ?? workspace.revision + 1,
+    compensation: params.compensation,
+  };
 }

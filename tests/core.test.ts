@@ -29,6 +29,7 @@ import {
   applyCompensationColumns,
   deleteGate,
   detectCompensationStatus,
+  estimateCompensationFromControls,
   extractSpilloverMatrices,
   formatTick,
   FlowcytoError,
@@ -40,6 +41,7 @@ import {
   readPreviewColumns,
   readWorkspace,
   transformValue,
+  upsertCompensationMatrix,
   upsertGate,
   validateWorkspace,
   watchWorkspaceFile,
@@ -616,6 +618,96 @@ describe("flowcyto core", () => {
     });
     expect(preview.points?.[0]?.[0]).toBeCloseTo(10.1020408);
     expect(preview.points?.[0]?.[1]).toBeCloseTo(18.9795918);
+  });
+
+  it("estimates and stores conventional compensation from explicit single-stain controls", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-control-comp-"));
+    const unstainedPath = path.join(dir, "unstained.fcs");
+    const fitcPath = path.join(dir, "fitc.fcs");
+    const pePath = path.join(dir, "pe.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: unstainedPath,
+      channels: ["FSC-A", "SSC-A", "FITC-A", "PE-A"],
+      rows: [
+        [1, 2, 10, 20],
+        [1, 2, 10, 20],
+        [1, 2, 10, 20],
+      ],
+    });
+    await writeTinyIntegerFcs({
+      fcsPath: fitcPath,
+      channels: ["FSC-A", "SSC-A", "FITC-A", "PE-A"],
+      rows: [
+        [1, 2, 110, 40],
+        [1, 2, 110, 40],
+        [1, 2, 110, 40],
+      ],
+    });
+    await writeTinyIntegerFcs({
+      fcsPath: pePath,
+      channels: ["FSC-A", "SSC-A", "FITC-A", "PE-A"],
+      rows: [
+        [1, 2, 15, 220],
+        [1, 2, 15, 220],
+        [1, 2, 15, 220],
+      ],
+    });
+
+    const estimated = await estimateCompensationFromControls({
+      id: "controls_fitc_pe",
+      sample: "comp_sample",
+      channels: ["FITC-A", "PE-A"],
+      unstainedPath,
+      controls: [
+        { path: fitcPath, channel: "FITC-A" },
+        { path: pePath, channel: "PE-A" },
+      ],
+    });
+    expect(estimated.compensation).toMatchObject({
+      id: "controls_fitc_pe",
+      source: "controls",
+      sample: "comp_sample",
+      channels: ["FITC-A", "PE-A"],
+      matrix: [[1, 0.025], [0.2, 1]],
+    });
+    expect(estimated.diagnostics.method).toBe("median_ratio");
+
+    const { workspacePath } = await makeWorkspaceFromFixture(fixturePath, "comp_sample");
+    const upserted = await upsertCompensationMatrix({
+      workspacePath,
+      expectedRevision: 0,
+      compensation: estimated.compensation,
+    });
+    expect(upserted.revision).toBe(1);
+    const workspace = await readWorkspace(workspacePath);
+    expect(workspace.compensations?.[0]).toMatchObject({
+      id: "controls_fitc_pe",
+      source: "controls",
+      channels: ["FITC-A", "PE-A"],
+    });
+    await expect(upsertCompensationMatrix({
+      workspacePath,
+      expectedRevision: 0,
+      compensation: estimated.compensation,
+    })).rejects.toMatchObject({ code: "stale_revision" });
+  });
+
+  it("rejects missing or filename-only control-derived compensation mappings", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-control-comp-invalid-"));
+    const controlPath = path.join(dir, "FITC_control.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: controlPath,
+      channels: ["FITC-A", "PE-A"],
+      rows: [[100, 20], [100, 20]],
+    });
+    await expect(estimateCompensationFromControls({
+      channels: ["FITC-A", "PE-A"],
+      controls: [{ path: controlPath, channel: "FITC-A" }],
+    })).rejects.toMatchObject({ code: "missing_compensation_control" });
+    await expect(estimateCompensationFromControls({
+      channels: ["FITC-A"],
+      controls: [{ path: controlPath, channel: "FITC_control.fcs" }],
+    })).rejects.toMatchObject({ code: "unknown_compensation_control_channel" });
   });
 
   it("returns a capped deterministic event preview", async () => {
@@ -2409,6 +2501,67 @@ describe("flowcyto MCP", () => {
       expect(unknown.isError).toBe(true);
       expect(unknownResult.ok).toBe(false);
       expect(unknownResult.errors[0]).toMatchObject({ path: "/compensation_id", code: "unknown_compensation" });
+
+      const unstainedPath = path.join(dir, "unstained.fcs");
+      const fitcPath = path.join(dir, "fitc_control.fcs");
+      const pePath = path.join(dir, "pe_control.fcs");
+      await writeTinyIntegerFcs({
+        fcsPath: unstainedPath,
+        channels: ["FITC-A", "PE-A"],
+        rows: [[10, 20], [10, 20], [10, 20]],
+      });
+      await writeTinyIntegerFcs({
+        fcsPath: fitcPath,
+        channels: ["FITC-A", "PE-A"],
+        rows: [[110, 40], [110, 40], [110, 40]],
+      });
+      await writeTinyIntegerFcs({
+        fcsPath: pePath,
+        channels: ["FITC-A", "PE-A"],
+        rows: [[15, 220], [15, 220], [15, 220]],
+      });
+      const estimated = await client.callTool({
+        name: "estimate_compensation_from_controls",
+        arguments: {
+          id: "controls_fitc_pe",
+          sample: "comp_sample",
+          channels: ["FITC-A", "PE-A"],
+          unstained_path: unstainedPath,
+          controls: [
+            { path: fitcPath, channel: "FITC-A" },
+            { path: pePath, channel: "PE-A" },
+          ],
+        },
+      });
+      const estimatedResult = (estimated.structuredContent as { result?: unknown } | undefined)?.result as {
+        ok: boolean;
+        compensation: CompensationMatrix;
+        diagnostics: { method: string };
+      };
+      expect(estimatedResult.ok).toBe(true);
+      expect(estimatedResult.compensation).toMatchObject({
+        id: "controls_fitc_pe",
+        source: "controls",
+        matrix: [[1, 0.025], [0.2, 1]],
+      });
+      expect(estimatedResult.diagnostics.method).toBe("median_ratio");
+
+      const upserted = await client.callTool({
+        name: "upsert_compensation_matrix",
+        arguments: {
+          workspace_path: openedResult.workspacePath,
+          expected_revision: 1,
+          compensation: estimatedResult.compensation,
+        },
+      });
+      const upsertedResult = (upserted.structuredContent as { result?: unknown } | undefined)?.result as {
+        ok: boolean;
+        revision: number;
+        compensation: CompensationMatrix;
+      };
+      expect(upsertedResult.ok).toBe(true);
+      expect(upsertedResult.revision).toBe(2);
+      expect(upsertedResult.compensation.source).toBe("controls");
     } finally {
       await client.close();
     }
@@ -2426,6 +2579,7 @@ describe("flowcyto MCP", () => {
       expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
         "close_gate_editor",
         "delete_gate",
+        "estimate_compensation_from_controls",
         "get_compensation_matrix",
         "get_event_preview",
         "get_gate_editor_state",
@@ -2442,6 +2596,7 @@ describe("flowcyto MCP", () => {
         "render_gate_editor",
         "render_plot",
         "render_plot_image",
+        "upsert_compensation_matrix",
         "upsert_gate",
         "validate_workspace",
         "write_workspace",

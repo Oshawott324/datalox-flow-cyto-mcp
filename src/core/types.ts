@@ -10,7 +10,7 @@ export type CompensationKeyword = "$SPILLOVER" | "SPILLOVER" | "$COMP" | "COMP" 
 export type CompensationMatrix = {
   id: string;
   name?: string;
-  source: "fcs_keyword" | "manual";
+  source: "fcs_keyword" | "controls" | "manual";
   sample?: string;
   keyword?: CompensationKeyword;
   channels: string[];
@@ -143,6 +143,13 @@ export type PreviewColumns = {
   totalEvents: number;
   filteredEvents: number;
   compensation?: AppliedCompensation;
+};
+
+export type FcsColumns = {
+  channels: string[];
+  values: number[][];
+  totalEvents: number;
+  sampledEvents: number;
 };
 
 export type PreviewFormat = "auto" | "points" | "bins";
