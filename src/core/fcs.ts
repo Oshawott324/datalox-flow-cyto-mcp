@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 
 import { alignCompensationMatrix, applyCompensationColumns } from "./compensation.js";
-import { FlowcytoError, type CompensationMatrix, type PreviewColumns, type SampleMetadata, type SampleParameter, type WorkspaceGate } from "./types.js";
+import { FlowcytoError, type CompensationMatrix, type FcsColumns, type PreviewColumns, type SampleMetadata, type SampleParameter, type WorkspaceGate } from "./types.js";
 
 type TextDict = Record<string, string>;
 
@@ -263,6 +263,68 @@ export async function readFcsMetadata(path: string, sampleId = ""): Promise<Samp
     eventCount: Number.isFinite(eventCount) ? eventCount : null,
     parameters: parseParameterMetadata(text, parameterCount),
     keywords: text,
+  };
+}
+
+export async function readFcsColumns(input: {
+  path: string;
+  channels: string[];
+  maxEvents?: number;
+}): Promise<FcsColumns> {
+  const { path, channels, maxEvents } = input;
+  if (channels.length === 0) {
+    throw new FlowcytoError("missing_channels", "At least one channel is required.", "/channels");
+  }
+  const { header, text } = await readHeaderText(path);
+  const parameterCount = Number(text.$PAR) || 0;
+  const totalEvents = Number(text.$TOT) || 0;
+  if (!parameterCount || !totalEvents) {
+    throw new FlowcytoError("invalid_fcs_parameters", `Invalid FCS file ${path}: missing $PAR or $TOT.`);
+  }
+  const parameters = parseParameterMetadata(text, parameterCount);
+  const parameterIndexByName = new Map(parameters.map((parameter, index) => [parameter.name, index]));
+  const indexes = channels.map((channel) => {
+    const index = parameterIndexByName.get(channel);
+    if (index === undefined) throw new FlowcytoError("unknown_parameter", `Parameter ${channel} is not present.`, "/channels");
+    return index;
+  });
+  const dtype = (text.$DATATYPE || "F").toUpperCase();
+  const byteOrder = (text.$BYTEORD || "1,2,3,4").replace(/\s+/g, "");
+  const littleEndian = byteOrderIsLittleEndian(byteOrder);
+  const layout = rowByteLayout(text, parameterCount, dtype);
+  const rowSize = layout.reduce((sum, bytes) => sum + bytes, 0);
+  const offsets = layout.reduce<number[]>((acc, bytes, index) => {
+    acc[index] = index === 0 ? 0 : acc[index - 1] + layout[index - 1];
+    return acc;
+  }, []);
+  const { begin, end } = dataBounds(header, text);
+  const declaredLength = end - begin + 1;
+  const expectedDataLength = totalEvents * rowSize;
+  const buffer = await fs.readFile(path);
+  const availableLength = buffer.byteLength - begin;
+  if (begin < 0 || expectedDataLength < 0 || availableLength < expectedDataLength || declaredLength < expectedDataLength) {
+    throw new FlowcytoError("invalid_fcs_data_segment", "FCS DATA segment is shorter than $TOT and parameter byte widths require.");
+  }
+  const view = new DataView(buffer.buffer, buffer.byteOffset + begin, expectedDataLength);
+  const targetEvents = maxEvents && maxEvents > 0 ? Math.min(maxEvents, totalEvents) : totalEvents;
+  const stride = Math.max(1, Math.ceil(totalEvents / targetEvents));
+  const sampledEvents = Math.ceil(totalEvents / stride);
+  const values: number[][] = [];
+  for (let row = 0; row < totalEvents && values.length < sampledEvents; row += stride) {
+    const rowOffset = row * rowSize;
+    values.push(indexes.map((index) => readValue({
+      view,
+      offset: rowOffset + offsets[index],
+      dtype,
+      bytes: layout[index],
+      littleEndian,
+    })));
+  }
+  return {
+    channels,
+    values,
+    totalEvents,
+    sampledEvents: values.length,
   };
 }
 

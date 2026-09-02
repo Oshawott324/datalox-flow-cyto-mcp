@@ -21,12 +21,14 @@ import { getGateEditorState, getPlotContext, recommendedAxes, startGateEditorSer
 import {
   FlowcytoError,
   deleteGate,
+  estimateCompensationFromControls,
   getEventPreview,
   getSampleMetadata,
   listSamples,
   openFcsArtifact,
   openWorkspace,
   readWorkspace,
+  upsertCompensationMatrix,
   upsertGate,
   validateWorkspace,
   writeWorkspace,
@@ -81,7 +83,7 @@ const FlowcytoCapabilities = {
   canWriteStructuredGates: true,
   liveRefreshAfterUpsertGate: true,
   canonicalArtifact: "flowcyto.workspace.json",
-  primaryTools: ["open_fcs", "list_compensations", "get_compensation_matrix", "render_plot", "render_plot_image", "open_gate_editor", "get_plot_context", "upsert_gate"],
+  primaryTools: ["open_fcs", "list_compensations", "get_compensation_matrix", "estimate_compensation_from_controls", "upsert_compensation_matrix", "render_plot", "render_plot_image", "open_gate_editor", "get_plot_context", "upsert_gate"],
   preferredWorkflowResource: OPEN_FCS_WORKFLOW_RESOURCE_URI,
   compactGateEditor: {
     entryTool: "open_gate_editor",
@@ -801,6 +803,65 @@ server.registerTool(
       },
     };
   }),
+);
+
+server.registerTool(
+  "estimate_compensation_from_controls",
+  {
+    description: "Estimate a conventional spillover compensation matrix from explicit single-stain control mappings using deterministic median ratios. This does not write the workspace and never infers mappings from filenames.",
+    inputSchema: {
+      id: z.string().optional(),
+      name: z.string().optional(),
+      sample: z.string().optional(),
+      channels: z.array(z.string()).optional(),
+      controls: z.array(z.object({
+        path: z.string(),
+        channel: z.string(),
+      })),
+      unstained_path: z.string().optional(),
+      max_events: z.number().int().positive().optional(),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({ id, name, sample, channels, controls, unstained_path, max_events }) => toolContent(() =>
+    estimateCompensationFromControls({
+      id,
+      name,
+      sample,
+      channels,
+      controls,
+      unstainedPath: unstained_path,
+      maxEvents: max_events,
+    })),
+);
+
+server.registerTool(
+  "upsert_compensation_matrix",
+  {
+    description: "Store a reviewed compensation matrix in flowcyto.workspace.json with revision safety. Use this after estimate_compensation_from_controls or manual matrix review; applying still requires explicit compensation_id on preview/render/editor tools.",
+    inputSchema: {
+      workspace_path: z.string(),
+      expected_revision: z.number().int().nonnegative(),
+      compensation: z.object({
+        id: z.string(),
+        name: z.string().optional(),
+        source: z.enum(["fcs_keyword", "controls", "manual"]),
+        sample: z.string().optional(),
+        keyword: z.enum(["$SPILLOVER", "SPILLOVER", "$COMP", "COMP", "$SPILL", "SPILL"]).optional(),
+        channels: z.array(z.string()),
+        matrix: z.array(z.array(z.number())),
+      }),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: false },
+  },
+  async ({ workspace_path, expected_revision, compensation }) => toolContent(() =>
+    upsertCompensationMatrix({
+      workspacePath: workspace_path,
+      expectedRevision: expected_revision,
+      compensation,
+    })),
 );
 
 server.registerTool(

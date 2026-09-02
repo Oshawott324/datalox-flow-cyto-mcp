@@ -265,6 +265,8 @@ upsert_gate
 delete_gate
 list_compensations
 get_compensation_matrix
+estimate_compensation_from_controls
+upsert_compensation_matrix
 render_gate_editor (deprecated alias)
 get_gate_editor_state (deprecated alias)
 ```

@@ -67,6 +67,16 @@ If `compensationSummary.available=false`, proceed without compensation and
 surface `list_compensations` diagnostics to the user if compensation was
 expected.
 
+For control-derived compensation, use explicit mappings only:
+
+```text
+estimate_compensation_from_controls -> upsert_compensation_matrix
+```
+
+Do not infer single-stain control mappings from filenames alone. Ask the user
+for the detector/channel controlled by each file when the mapping is not already
+explicit.
+
 ## CLI Fallback
 
 Use the CLI for setup, validation, fixture checks, or hosts without MCP.

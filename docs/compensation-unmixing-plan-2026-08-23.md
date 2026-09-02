@@ -735,7 +735,10 @@ Live validation:
 
 ## PR2 Scope: Estimate Conventional Compensation from Controls
 
-PR2 may port `build_spillover_from_controls` after validation.
+PR2 should use a deterministic median-ratio estimator first. Jinting's fixture
+validation found that this reproduces the available flowCore reference matrix,
+while the rebuilt top-bright-event OLS approach did not. Keep OLS out of the
+runtime path until it is validated against real panels.
 
 Inputs needed:
 
@@ -752,6 +755,17 @@ upsert_compensation_matrix
 ```
 
 Do not infer control mappings from filenames as the only mechanism. Filename mapping can be an agent helper, but the final tool call should carry explicit mappings.
+
+Estimator contract:
+
+- Compute per-channel medians for the unstained control when provided.
+- For each single-stain control, compute per-channel medians.
+- For fluorochrome/control `j` and detector `i`, estimate
+  `S[i][j] = (median(control_j at detector_i) - median(unstained_i)) /
+  (median(control_j at detector_j) - median(unstained_j))`.
+- Set the diagonal to `1`.
+- Error when any mapped primary control is not brighter than unstained
+  background.
 
 Validation requirements:
 

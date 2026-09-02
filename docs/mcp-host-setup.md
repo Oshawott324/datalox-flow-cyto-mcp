@@ -276,6 +276,10 @@ If compensation exists:
 - The agent should only apply it by explicitly passing `compensation_id`.
 - If the file may already be compensated or spectral/unmixed, confirm with the
   user before applying conventional compensation.
+- For control-derived compensation, use `estimate_compensation_from_controls`
+  with explicit control-to-channel mappings, then store the reviewed matrix with
+  `upsert_compensation_matrix`.
+- Do not infer control mappings from filenames alone.
 
 ## References
 
