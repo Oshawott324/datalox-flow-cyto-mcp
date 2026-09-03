@@ -36,6 +36,7 @@ import {
   generateTicks,
   getEventPreview,
   getSampleMetadata,
+  importFlowJoWorkspace,
   initWorkspace,
   openFcsArtifact,
   readPreviewColumns,
@@ -54,6 +55,7 @@ import {
 const execFileAsync = promisify(execFile);
 const fixturePath = path.resolve("testdata/fixtures/CFP_Well_A4.fcs");
 const fixtureManifestPath = path.resolve("testdata/fixtures/manifest.json");
+const flowJoFixtureDir = path.resolve("testdata/fixtures/flowjo");
 
 type FixtureManifest = {
   fixtures: Array<{
@@ -408,6 +410,64 @@ describe("flowcyto core", () => {
 
     const validation = await validateWorkspace(workspacePath);
     expect(validation).toEqual({ ok: true, errors: [] });
+  });
+
+  it("imports nested linear FlowJo gates into a canonical workspace", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-import-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["FSC-A", "SSC-A", "FITC-A"],
+      rows: [[100, 200, 300], [150, 250, 350], [200, 300, 400]],
+    });
+    const result = await importFlowJoWorkspace({
+      wspPath: path.join(flowJoFixtureDir, "nested-hierarchy.wsp"),
+      workspaceDir: dir,
+      samplePathMap: { "sample.fcs": samplePath },
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      samplesImported: 1,
+      gatesImported: 3,
+      compensationsImported: 0,
+      warnings: [],
+    });
+    const workspace = await readWorkspace(result.workspacePath);
+    const expected = JSON.parse(await fs.readFile(path.join(flowJoFixtureDir, "nested-hierarchy-expected-gates.json"), "utf8")) as WorkspaceGate[];
+    expect(workspace.samples).toEqual([{ id: "sample", path: "sample.fcs" }]);
+    expect(workspace.gates).toEqual(expected);
+    expect((await validateWorkspace(result.workspacePath)).ok).toBe(true);
+  });
+
+  it("imports linear FlowJo rectangle gates with explicit sample id mapping", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-rect-import-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["FSC-A", "SSC-A"],
+      rows: [[100, 200], [150, 250]],
+    });
+    const result = await importFlowJoWorkspace({
+      wspPath: path.join(flowJoFixtureDir, "minimal-linear-rect.wsp"),
+      workspaceDir: dir,
+      sampleIdMap: { "sample.fcs": "rect_sample" },
+      samplePathMap: { "sample.fcs": samplePath },
+    });
+    const workspace = await readWorkspace(result.workspacePath);
+    expect(workspace.samples).toEqual([{ id: "rect_sample", path: "sample.fcs" }]);
+    expect(workspace.gates).toEqual([{
+      id: "gate-rect-001",
+      name: "Main Population",
+      sample: "rect_sample",
+      parent: "root",
+      type: "rect",
+      x: "FSC-A",
+      y: "SSC-A",
+      xMin: 40000,
+      xMax: 220000,
+      yMin: 15000,
+      yMax: 120000,
+    }]);
   });
 
   it("reads metadata without requiring event data in the workspace", async () => {
@@ -1800,7 +1860,7 @@ describe("flowcyto gate editor server", () => {
       await page.getByRole("button", { name: /^> Root Gate rect$/ }).click();
       await expect.poll(() => page.locator("#parentSelect").inputValue()).toBe(rootGate.id);
       await expect.poll(() => page.locator("#xSelect").inputValue()).toBe("HDR-T");
-      expect(await page.locator("#ySelect").inputValue()).toBe("FSC-A");
+      await expect.poll(() => page.locator("#ySelect").inputValue()).toBe("FSC-A");
 
       await page.locator("#resetView").click();
       await page.mouse.wheel(0, -250);
@@ -2586,6 +2646,7 @@ describe("flowcyto MCP", () => {
         "get_plot_context",
         "get_sample_metadata",
         "get_workspace_revision",
+        "import_flowjo_workspace",
         "list_compensations",
         "list_samples",
         "open_fcs",
@@ -2626,6 +2687,35 @@ describe("flowcyto MCP", () => {
       expect(resourceHtml).toContain("window.openai.callTool");
       expect(resourceHtml).toContain("value !== undefined");
       expect(resourceHtml).toContain("<canvas id=\"plot\"");
+
+      const flowJoDir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-mcp-flowjo-import-"));
+      const flowJoSamplePath = path.join(flowJoDir, "sample.fcs");
+      await writeTinyIntegerFcs({
+        fcsPath: flowJoSamplePath,
+        channels: ["FSC-A", "SSC-A"],
+        rows: [[100, 200], [150, 250]],
+      });
+      const imported = await client.callTool({
+        name: "import_flowjo_workspace",
+        arguments: {
+          wsp_path: path.join(flowJoFixtureDir, "minimal-linear-rect.wsp"),
+          workspace_dir: flowJoDir,
+          sample_path_map: { "sample.fcs": flowJoSamplePath },
+        },
+      });
+      const importedResult = (imported.structuredContent as { result?: unknown } | undefined)?.result as {
+        ok: boolean;
+        workspacePath: string;
+        samplesImported: number;
+        gatesImported: number;
+      };
+      expect(importedResult).toMatchObject({ ok: true, samplesImported: 1, gatesImported: 1 });
+      expect((await readWorkspace(importedResult.workspacePath)).gates[0]).toMatchObject({
+        id: "gate-rect-001",
+        type: "rect",
+        x: "FSC-A",
+        y: "SSC-A",
+      });
 
       const metadata = await client.callTool({
         name: "get_sample_metadata",

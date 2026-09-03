@@ -23,6 +23,7 @@ import {
   deleteGate,
   estimateCompensationFromControls,
   getEventPreview,
+  importFlowJoWorkspace,
   getSampleMetadata,
   listSamples,
   openFcsArtifact,
@@ -83,7 +84,7 @@ const FlowcytoCapabilities = {
   canWriteStructuredGates: true,
   liveRefreshAfterUpsertGate: true,
   canonicalArtifact: "flowcyto.workspace.json",
-  primaryTools: ["open_fcs", "list_compensations", "get_compensation_matrix", "estimate_compensation_from_controls", "upsert_compensation_matrix", "render_plot", "render_plot_image", "open_gate_editor", "get_plot_context", "upsert_gate"],
+  primaryTools: ["open_fcs", "import_flowjo_workspace", "list_compensations", "get_compensation_matrix", "estimate_compensation_from_controls", "upsert_compensation_matrix", "render_plot", "render_plot_image", "open_gate_editor", "get_plot_context", "upsert_gate"],
   preferredWorkflowResource: OPEN_FCS_WORKFLOW_RESOURCE_URI,
   compactGateEditor: {
     entryTool: "open_gate_editor",
@@ -668,6 +669,31 @@ server.registerTool(
     outputSchema: JsonResultSchema,
   },
   async ({ path }) => toolContent(() => openWorkspace(path)),
+);
+
+server.registerTool(
+  "import_flowjo_workspace",
+  {
+    description: "Import FlowJo .wsp gates into a canonical flowcyto.workspace.json. Requires explicit sample_path_map when FlowJo file URIs are not valid local FCS paths. Supports linear polygon, rectangle, and range gates in this initial import path.",
+    inputSchema: {
+      wsp_path: z.string(),
+      workspace_dir: z.string(),
+      sample_id_map: z.record(z.string(), z.string()).optional(),
+      sample_path_map: z.record(z.string(), z.string()).optional(),
+      overwrite_gates: z.boolean().optional(),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: false },
+  },
+  async ({ wsp_path, workspace_dir, sample_id_map, sample_path_map, overwrite_gates }) => toolContent(() =>
+    importFlowJoWorkspace({
+      wspPath: wsp_path,
+      workspaceDir: workspace_dir,
+      sampleIdMap: sample_id_map,
+      samplePathMap: sample_path_map,
+      overwriteGates: overwrite_gates,
+    }),
+  ),
 );
 
 server.registerTool(

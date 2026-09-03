@@ -16,6 +16,11 @@ open_fcs -> open_gate_editor -> render_plot or get_plot_context -> upsert_gate -
 Use `open_fcs` when the user asks to open, inspect, render, analyze, or gate a
 raw `.fcs` file or an existing `flowcyto.workspace.json`.
 
+Use `import_flowjo_workspace` when the user provides a FlowJo `.wsp` file and
+wants FlowJo gates converted into `flowcyto.workspace.json`. If the `.wsp`
+contains stale or machine-specific FCS paths, pass an explicit
+`sample_path_map`; do not guess sample bindings from nearby files.
+
 Do not stop after `open_fcs` when the user asked to gate, draw, edit, or inspect
 the main population. Follow the returned `nextAction` immediately so the compact
 gate editor opens and the workspace has a live, user-visible gate-writing

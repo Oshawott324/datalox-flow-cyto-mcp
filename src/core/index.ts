@@ -2,6 +2,7 @@ export * from "./types.js";
 export * from "./compensation.js";
 export * from "./compensation-controls.js";
 export * from "./fcs.js";
+export * from "./flowjo-import.js";
 export * from "./preview.js";
 export * from "./scale.js";
 export * from "./colormap.js";
