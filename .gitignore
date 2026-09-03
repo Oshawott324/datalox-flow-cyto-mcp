@@ -12,6 +12,10 @@ datalox-trajectory-mcp/
 # fetched external fixtures are installed from the manifest
 testdata/fixtures/downloaded/
 
+# raw lab data — never commit FCS files or real lab .wsp files
+testdata/fixtures/**/*.fcs
+testdata/fixtures/flowjo/reference-*.wsp
+
 # Datalox host-adoption scaffolding, not product source
 .claude/
 .cursor/

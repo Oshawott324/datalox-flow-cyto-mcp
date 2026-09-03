@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hand-crafted FlowJo 10 .wsp fixture for import parser unit tests.
+  Tests gate hierarchy: three levels of nesting (root -> Lymphocytes -> Live -> CD4+).
+  All axes linear. No compensation.
+
+  NOT validated by opening in FlowJo. Validates XML structure and parser only.
+-->
+<Workspace version="20.0" creator="FlowJo-hand-crafted-fixture"
+  xmlns:gating="http://www.isac-net.org/std/Gating-ML/v2.0/gating"
+  xmlns:data-type="http://www.isac-net.org/std/Gating-ML/v2.0/datatypes"
+  xmlns:transforms="http://www.isac-net.org/std/Gating-ML/v2.0/transformations">
+  <SampleList>
+    <Sample>
+      <DataSet uri="file:///testdata/fixtures/flowjo/sample.fcs" keyword="$CYT"/>
+      <SampleNode name="sample.fcs" owningGroup="" count="10000">
+        <Subpopulations>
+          <!-- Level 1: Lymphocytes polygon on FSC-A vs SSC-A -->
+          <Gate name="Lymphocytes" owningGroup="" count="7000" eventsInside="7000"
+            gating:id="gate-lymph-001" gating:parent_id="">
+            <gating:PolygonGate gating:id="gate-lymph-001" gating:parent_id="">
+              <gating:dimension gating:compensation-ref="uncompensated">
+                <data-type:parameter data-type:name="FSC-A"/>
+              </gating:dimension>
+              <gating:dimension gating:compensation-ref="uncompensated">
+                <data-type:parameter data-type:name="SSC-A"/>
+              </gating:dimension>
+              <gating:vertex>
+                <gating:coordinate data-type:value="50000"/>
+                <gating:coordinate data-type:value="20000"/>
+              </gating:vertex>
+              <gating:vertex>
+                <gating:coordinate data-type:value="200000"/>
+                <gating:coordinate data-type:value="20000"/>
+              </gating:vertex>
+              <gating:vertex>
+                <gating:coordinate data-type:value="200000"/>
+                <gating:coordinate data-type:value="100000"/>
+              </gating:vertex>
+              <gating:vertex>
+                <gating:coordinate data-type:value="50000"/>
+                <gating:coordinate data-type:value="100000"/>
+              </gating:vertex>
+            </gating:PolygonGate>
+            <Subpopulations>
+              <!-- Level 2: Live rect on FSC-A vs SSC-A -->
+              <Gate name="Live" owningGroup="" count="6500" eventsInside="6500"
+                gating:id="gate-live-002" gating:parent_id="gate-lymph-001">
+                <gating:RectangleGate gating:id="gate-live-002" gating:parent_id="gate-lymph-001">
+                  <gating:dimension gating:compensation-ref="uncompensated"
+                    gating:min="60000" gating:max="190000">
+                    <data-type:parameter data-type:name="FSC-A"/>
+                  </gating:dimension>
+                  <gating:dimension gating:compensation-ref="uncompensated"
+                    gating:min="25000" gating:max="90000">
+                    <data-type:parameter data-type:name="SSC-A"/>
+                  </gating:dimension>
+                </gating:RectangleGate>
+                <Subpopulations>
+                  <!-- Level 3: CD4+ polygon on FSC-A vs SSC-A (placeholder axes) -->
+                  <Gate name="CD4+" owningGroup="" count="2000" eventsInside="2000"
+                    gating:id="gate-cd4-003" gating:parent_id="gate-live-002">
+                    <gating:PolygonGate gating:id="gate-cd4-003" gating:parent_id="gate-live-002">
+                      <gating:dimension gating:compensation-ref="uncompensated">
+                        <data-type:parameter data-type:name="FSC-A"/>
+                      </gating:dimension>
+                      <gating:dimension gating:compensation-ref="uncompensated">
+                        <data-type:parameter data-type:name="SSC-A"/>
+                      </gating:dimension>
+                      <gating:vertex>
+                        <gating:coordinate data-type:value="80000"/>
+                        <gating:coordinate data-type:value="30000"/>
+                      </gating:vertex>
+                      <gating:vertex>
+                        <gating:coordinate data-type:value="150000"/>
+                        <gating:coordinate data-type:value="30000"/>
+                      </gating:vertex>
+                      <gating:vertex>
+                        <gating:coordinate data-type:value="150000"/>
+                        <gating:coordinate data-type:value="70000"/>
+                      </gating:vertex>
+                    </gating:PolygonGate>
+                  </Gate>
+                </Subpopulations>
+              </Gate>
+            </Subpopulations>
+          </Gate>
+        </Subpopulations>
+      </SampleNode>
+    </Sample>
+  </SampleList>
+</Workspace>
