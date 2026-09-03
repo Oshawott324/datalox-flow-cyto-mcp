@@ -147,13 +147,76 @@ This comparison is automatic and does not require expert annotation for routine 
 - Do not write FCS files.
 - Do not make import the live state; `flowcyto.workspace.json` remains canonical.
 
+### Known Failure Modes (from prior Datalox FlowJo export experience)
+
+The old Datalox FlowJo export did not work initially and required iteration. Known root causes
+that trip up any fresh implementation:
+
+**1. Coordinate space (most common failure)**
+
+FlowJo gate vertices are stored in **display space**, which depends on the axis transform:
+
+| Transform | Display space |
+|---|---|
+| Linear | Raw FCS channel values (same as data space) |
+| Log | `log10(raw)` — e.g. a value of 1000 is stored as `3.0` |
+| Biexponential / Logicle | Non-linear mapping; cannot be approximated as log |
+
+For import: parse the transform from the `.wsp`, invert it, convert display coordinates back to
+raw FCS values before storing in `flowcyto.workspace.json`.
+
+For export: apply the transform forward, converting raw FCS values to display coordinates before
+writing vertices to `.wsp`.
+
+**Start with linear and log only.** Biexponential/logicle require numeric root-finding for the
+inverse and should be a follow-up. If a `.wsp` uses biexponential transforms, skip those gates
+and emit a warning, rather than importing incorrect coordinates silently.
+
+**2. FlowJo XML schema version**
+
+FlowJo uses Gating-ML 2.0 namespaces but wraps them in FlowJo-specific `<Gate>` elements.
+The schema has changed across versions:
+
+- FlowJo 10.x: `<Gate name="..." gating:id="...">` wrapping `<gating:PolygonGate ...>`
+- FlowJo 7/X: different element names and attribute layouts
+
+**Target FlowJo 10.x only.** Validate with FlowJo 10.8 or newer. Do not try to support all
+versions in PR A or PR B.
+
+**3. Compensation parameter name references**
+
+FlowJo gate dimensions reference compensation by name (`gating:compensation-ref="..."`) which
+must exactly match a defined `<CompensationMatrix name="...">`. If the names do not match,
+FlowJo silently applies no compensation to those gates.
+
+**4. Gate ID format**
+
+FlowJo expects gate IDs in UUID format. Using arbitrary strings may cause FlowJo to reject or
+misbehave when reading the `.wsp`. Generate v4 UUIDs for gate and parent IDs.
+
+**5. Real fixture requirement**
+
+Do not rely on a hand-crafted fixture alone for export validation. Before declaring PR B
+merge-ready:
+
+1. Export a reference `.wsp` from FlowJo using the tetramer dataset (export the gated workspace
+   to a `.wsp` via File → Export → Workspace).
+2. Add that file as `testdata/fixtures/flowjo/reference-flowjo10-export.wsp`.
+3. Parse it with the import tool and confirm gate coordinates round-trip correctly.
+4. Then generate a new `.wsp` from the same workspace.json and open it in FlowJo to confirm gates
+   appear correctly.
+
+The hand-crafted fixtures in `testdata/fixtures/flowjo/` test the parser structure but do NOT
+substitute for this live validation step.
+
 ### Implementation Notes
 
-- Use a small XML parser such as `fast-xml-parser` or `@xmldom/xmldom`; Node.js does not provide
-  built-in XML parsing.
+- Add `fast-xml-parser` as a dependency (small, ESM-compatible, TypeScript types included).
+  It handles namespaced XML without requiring DOM or DOMParser.
 - Parse one sample at a time; build gate hierarchy from nested XML `<Subpopulations>`.
 - Validate output with `validateWorkspace` before returning `ok: true`.
-- Add fixture `.wsp` files for at least one polygon gate and one rectangle gate.
+- Use crypto.randomUUID() for gate IDs on export (available in Node.js 20+).
+- See `testdata/fixtures/flowjo/` for hand-crafted fixtures covering the parser structure.
 
 ---
 
@@ -230,6 +293,22 @@ Output:
   "compensationExported": true
 }
 ```
+
+### Known Failure Modes for Export
+
+Same coordinate-space issue applies in reverse: vertices in `flowcyto.workspace.json` are in
+raw FCS data space. Before writing to `.wsp`, apply the axis transform so FlowJo reads them
+in display space. For linear axes (FSC/SSC drawn in the compact editor) this is a no-op. For
+fluorescence channels on log/biexp axes, the conversion is required.
+
+**The export path that failed in old Datalox was most likely the coordinate transform step.**
+The old code eventually handled this; the key is to apply it per-axis, not per-gate, since the
+same gate can span a linear X axis and a biexp Y axis.
+
+For compensation references on export: write `gating:compensation-ref="uncompensated"` for
+FSC/SSC (linear) gates. For fluorescence gates, reference the compensation matrix by name. If
+the workspace has no applied compensation, emit `gating:compensation-ref="uncompensated"` for
+all dimensions.
 
 ### Reusable Ideas from Old Branch
 

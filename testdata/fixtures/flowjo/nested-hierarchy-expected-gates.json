@@ -1,0 +1,44 @@
+[
+  {
+    "id": "gate-lymph-001",
+    "name": "Lymphocytes",
+    "sample": "sample",
+    "parent": "root",
+    "type": "polygon",
+    "x": "FSC-A",
+    "y": "SSC-A",
+    "vertices": [
+      [50000, 20000],
+      [200000, 20000],
+      [200000, 100000],
+      [50000, 100000]
+    ]
+  },
+  {
+    "id": "gate-live-002",
+    "name": "Live",
+    "sample": "sample",
+    "parent": "gate-lymph-001",
+    "type": "rect",
+    "x": "FSC-A",
+    "y": "SSC-A",
+    "xMin": 60000,
+    "xMax": 190000,
+    "yMin": 25000,
+    "yMax": 90000
+  },
+  {
+    "id": "gate-cd4-003",
+    "name": "CD4+",
+    "sample": "sample",
+    "parent": "gate-live-002",
+    "type": "polygon",
+    "x": "FSC-A",
+    "y": "SSC-A",
+    "vertices": [
+      [80000, 30000],
+      [150000, 30000],
+      [150000, 70000]
+    ]
+  }
+]

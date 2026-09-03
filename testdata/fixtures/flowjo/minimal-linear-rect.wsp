@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hand-crafted FlowJo 10 .wsp fixture for import parser unit tests.
+  Axes: FSC-A vs SSC-A (linear — display space equals data space, no transform inversion needed).
+  Gate: one rectangle gate "Main Population".
+  Compensation: uncompensated.
+
+  NOT validated by opening in FlowJo. Validates XML structure and parser only.
+-->
+<Workspace version="20.0" creator="FlowJo-hand-crafted-fixture"
+  xmlns:gating="http://www.isac-net.org/std/Gating-ML/v2.0/gating"
+  xmlns:data-type="http://www.isac-net.org/std/Gating-ML/v2.0/datatypes"
+  xmlns:transforms="http://www.isac-net.org/std/Gating-ML/v2.0/transformations">
+  <SampleList>
+    <Sample>
+      <DataSet uri="file:///testdata/fixtures/flowjo/sample.fcs" keyword="$CYT"/>
+      <SampleNode name="sample.fcs" owningGroup="" count="10000">
+        <Subpopulations>
+          <Gate name="Main Population" owningGroup="" count="8000" eventsInside="8000"
+            gating:id="gate-rect-001" gating:parent_id="">
+            <gating:RectangleGate gating:id="gate-rect-001" gating:parent_id="">
+              <!-- min/max in data space (linear axes) -->
+              <gating:dimension gating:compensation-ref="uncompensated"
+                gating:min="40000" gating:max="220000">
+                <data-type:parameter data-type:name="FSC-A"/>
+              </gating:dimension>
+              <gating:dimension gating:compensation-ref="uncompensated"
+                gating:min="15000" gating:max="120000">
+                <data-type:parameter data-type:name="SSC-A"/>
+              </gating:dimension>
+            </gating:RectangleGate>
+          </Gate>
+        </Subpopulations>
+      </SampleNode>
+    </Sample>
+  </SampleList>
+</Workspace>
