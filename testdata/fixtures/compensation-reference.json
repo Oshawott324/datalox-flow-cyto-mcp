@@ -1,0 +1,285 @@
+{
+  "version": 1,
+  "generator": "scripts/compensation-reference.py",
+  "reference": "numpy.linalg.solve(S.T, X.T).T",
+  "orientation": "spillover[i][j] = fraction of fluorochrome i appearing in detector j; Xcomp = Xraw @ inv(S)",
+  "significantDigits": 12,
+  "cases": [
+    {
+      "id": "identity_2x2",
+      "description": "Identity spillover leaves values untouched.",
+      "notes": "Baseline no-op. Also covers negative and zero events, which are legitimate in compensated flow data.",
+      "channels": [
+        "FITC-A",
+        "PE-A"
+      ],
+      "spillover": [
+        [
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0
+        ]
+      ],
+      "raw": [
+        [
+          100.0,
+          200.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          -50.0,
+          12.5
+        ]
+      ],
+      "expected": [
+        [
+          100.0,
+          200.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          -50.0,
+          12.5
+        ]
+      ],
+      "conditionNumber": 1.0
+    },
+    {
+      "id": "asymmetric_2x2",
+      "description": "Asymmetric 2x2 spillover; the orientation-discriminating case.",
+      "notes": "The off-diagonal terms differ (0.20 vs 0.05), so transposing S changes the answer. A symmetric fixture would pass under either orientation and prove nothing.",
+      "channels": [
+        "FITC-A",
+        "PE-A"
+      ],
+      "spillover": [
+        [
+          1.0,
+          0.2
+        ],
+        [
+          0.05,
+          1.0
+        ]
+      ],
+      "raw": [
+        [
+          100.0,
+          200.0
+        ],
+        [
+          1000.0,
+          50.0
+        ],
+        [
+          0.0,
+          300.0
+        ]
+      ],
+      "expected": [
+        [
+          90.9090909091,
+          181.818181818
+        ],
+        [
+          1007.57575758,
+          -151.515151515
+        ],
+        [
+          -15.1515151515,
+          303.03030303
+        ]
+      ],
+      "conditionNumber": 1.2848
+    },
+    {
+      "id": "asymmetric_3x3",
+      "description": "Asymmetric 3x3 spillover with realistic cascade into longer wavelengths.",
+      "notes": "Spill is much larger toward longer wavelengths than backward, matching real detector behavior.",
+      "channels": [
+        "FITC-A",
+        "PE-A",
+        "APC-A"
+      ],
+      "spillover": [
+        [
+          1.0,
+          0.22,
+          0.01
+        ],
+        [
+          0.008,
+          1.0,
+          0.14
+        ],
+        [
+          0.0004,
+          0.003,
+          1.0
+        ]
+      ],
+      "raw": [
+        [
+          1000.0,
+          300.0,
+          50.0
+        ],
+        [
+          10.0,
+          5000.0,
+          800.0
+        ],
+        [
+          0.0,
+          0.0,
+          2500.0
+        ]
+      ],
+      "expected": [
+        [
+          999.348024274,
+          80.0570390569,
+          28.7985342893
+        ],
+        [
+          -30.0903393665,
+          5006.32162703,
+          99.4158756089
+        ],
+        [
+          -0.942045595488,
+          -7.2958424842,
+          2501.0308384
+        ]
+      ],
+      "conditionNumber": 1.30864
+    },
+    {
+      "id": "flowcore_compref_4x4",
+      "description": "flowCore's published FACSCalibur reference matrix (extdata/compdata/compref).",
+      "notes": "Externally published matrix, not one we invented. flowCore computed it from the single-stain controls in extdata/compdata/data via its own spillover() estimator, so it independently corroborates the row=fluorochrome / column=detector orientation.",
+      "channels": [
+        "FL1-H",
+        "FL2-H",
+        "FL3-H",
+        "FL4-H"
+      ],
+      "spillover": [
+        [
+          1.0,
+          0.242022277631,
+          0.0320837058202,
+          0.00112781555369
+        ],
+        [
+          0.00772204774836,
+          1.0,
+          0.14078823194,
+          0.00263268909406
+        ],
+        [
+          0.0150806322244,
+          0.175589903184,
+          1.0,
+          0.229593859843
+        ],
+        [
+          0.000759031864602,
+          0.000962045888046,
+          0.00321861379453,
+          1.0
+        ]
+      ],
+      "raw": [
+        [
+          500.0,
+          200.0,
+          100.0,
+          40.0
+        ],
+        [
+          50.0,
+          900.0,
+          300.0,
+          60.0
+        ],
+        [
+          10.0,
+          20.0,
+          700.0,
+          250.0
+        ]
+      ],
+      "expected": [
+        [
+          498.346311987,
+          66.2669721926,
+          74.6103547554,
+          22.1334176107
+        ],
+        [
+          40.6744216234,
+          858.935078604,
+          177.712696911,
+          16.8910737137
+        ],
+        [
+          -0.0267481961111,
+          -105.550130615,
+          714.58358518,
+          86.2139073428
+        ]
+      ],
+      "conditionNumber": 1.56485
+    },
+    {
+      "id": "near_singular_2x2",
+      "description": "Near-singular spillover; documents where the solve degrades.",
+      "notes": "Condition number is high, so small input error is amplified roughly by that factor. The solve still succeeds; this is a precision caveat, not a failure case. PR1 raises singular_compensation_matrix only when the solve itself fails.",
+      "channels": [
+        "PE-A",
+        "PE-Cy5-A"
+      ],
+      "spillover": [
+        [
+          1.0,
+          0.98
+        ],
+        [
+          0.97,
+          1.0
+        ]
+      ],
+      "raw": [
+        [
+          100.0,
+          100.0
+        ],
+        [
+          500.0,
+          490.0
+        ]
+      ],
+      "expected": [
+        [
+          60.7287449393,
+          40.4858299595
+        ],
+        [
+          500.0,
+          0.0
+        ]
+      ],
+      "conditionNumber": 78.961
+    }
+  ]
+}
