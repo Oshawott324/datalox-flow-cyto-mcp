@@ -63,10 +63,14 @@ type FixtureManifest = {
   fixtures: Array<{
     id: string;
     path: string;
+    instrument?: string;
+    classification?: "raw" | "compensated" | "unmixed";
     expected?: {
       minParameters?: number;
       minEvents?: number;
       requiredKeywords?: string[];
+      spilloverKeyword?: string | null;
+      spilloverChannels?: string[];
     };
   }>;
 };
@@ -714,6 +718,27 @@ describe("flowcyto core", () => {
       }
       for (const keyword of fixture.expected?.requiredKeywords ?? []) {
         expect(metadata.keywords, `${fixture.id} missing ${keyword}`).toHaveProperty(keyword);
+      }
+
+      // Pin the spillover evidence each fixture is carried for. `null` asserts the
+      // absence of every variant, so a fixture cannot quietly be adopted as an
+      // embedded-matrix baseline when it has no matrix at all.
+      if (fixture.expected?.spilloverKeyword !== undefined) {
+        const extracted = extractSpilloverMatrices({
+          keywords: metadata.keywords,
+          sampleId: fixture.id,
+          availableChannels: metadata.parameters.map((parameter) => parameter.name),
+        });
+        if (fixture.expected.spilloverKeyword === null) {
+          expect(extracted.diagnostics.keywordsFound, `${fixture.id} unexpectedly carries a spillover keyword`).toEqual([]);
+          expect(extracted.compensations, fixture.id).toEqual([]);
+        } else {
+          expect(extracted.diagnostics.keywordsFound, fixture.id).toContain(fixture.expected.spilloverKeyword);
+          expect(extracted.compensations[0]?.keyword, fixture.id).toBe(fixture.expected.spilloverKeyword);
+          if (fixture.expected.spilloverChannels) {
+            expect(extracted.compensations[0]?.channels, fixture.id).toEqual(fixture.expected.spilloverChannels);
+          }
+        }
       }
 
       const x = metadata.parameters[0]?.name;

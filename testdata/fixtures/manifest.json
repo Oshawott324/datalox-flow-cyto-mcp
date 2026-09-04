@@ -9,8 +9,16 @@
       "expected": {
         "minParameters": 2,
         "minEvents": 1,
-        "requiredKeywords": ["$PAR", "$TOT", "$DATATYPE"]
-      }
+        "requiredKeywords": [
+          "$PAR",
+          "$TOT",
+          "$DATATYPE"
+        ],
+        "spilloverKeyword": null
+      },
+      "instrument": "MACSQuant",
+      "classification": "raw",
+      "notes": "Detector-named channels (V2-A, Y2-A, B1-A). No spillover keyword of any variant."
     },
     {
       "id": "flowcore-0877408774-B08",
@@ -22,8 +30,16 @@
       "expected": {
         "minParameters": 2,
         "minEvents": 1,
-        "requiredKeywords": ["$PAR", "$TOT", "$DATATYPE"]
-      }
+        "requiredKeywords": [
+          "$PAR",
+          "$TOT",
+          "$DATATYPE"
+        ],
+        "spilloverKeyword": null
+      },
+      "instrument": "FACSCalibur",
+      "classification": "raw",
+      "notes": "FCS2.0 / CellQuest. No spillover keyword."
     },
     {
       "id": "flowcore-0877408774-E07",
@@ -35,8 +51,16 @@
       "expected": {
         "minParameters": 2,
         "minEvents": 1,
-        "requiredKeywords": ["$PAR", "$TOT", "$DATATYPE"]
-      }
+        "requiredKeywords": [
+          "$PAR",
+          "$TOT",
+          "$DATATYPE"
+        ],
+        "spilloverKeyword": null
+      },
+      "instrument": "FACSCalibur",
+      "classification": "raw",
+      "notes": "FCS2.0 / CellQuest. No spillover keyword."
     },
     {
       "id": "flowcore-comp-060909-001",
@@ -48,7 +72,51 @@
       "expected": {
         "minParameters": 2,
         "minEvents": 1,
-        "requiredKeywords": ["$PAR", "$TOT", "$DATATYPE"]
+        "requiredKeywords": [
+          "$PAR",
+          "$TOT",
+          "$DATATYPE"
+        ],
+        "spilloverKeyword": null
+      },
+      "instrument": "FACSCalibur",
+      "classification": "raw",
+      "notes": "Unstained control of the flowCore compdata single-stain set (see comp_match). Carries NO spillover keyword, despite the plan naming it the PR1 embedded-matrix baseline. Kept as a control fixture."
+    },
+    {
+      "id": "peacoqc-111-raw",
+      "path": "testdata/fixtures/downloaded/peacoqc-111.fcs",
+      "source": "Bioconductor PeacoQC extdata",
+      "sourceUrl": "https://bioconductor.org/packages/3.23/bioc/src/contrib/PeacoQC_1.22.0.tar.gz",
+      "packagePath": "PeacoQC/inst/extdata/111.fcs",
+      "license": "GPL-3.0-or-later",
+      "instrument": "LSRII",
+      "classification": "raw",
+      "notes": "FCS3.0 / BD FACSDiva. Real 13x13 SPILL matrix. The PR1 embedded-matrix baseline that flowcore-comp-060909-001 was expected to be.",
+      "expected": {
+        "minParameters": 2,
+        "minEvents": 1,
+        "requiredKeywords": [
+          "$PAR",
+          "$TOT",
+          "$DATATYPE"
+        ],
+        "spilloverKeyword": "SPILL",
+        "spilloverChannels": [
+          "B515-A",
+          "G560-A",
+          "G610-A",
+          "G660-A",
+          "G710-A",
+          "G780-A",
+          "R660-A",
+          "R710-A",
+          "R780-A",
+          "V450-A",
+          "V545-A",
+          "V585-A",
+          "V800-A"
+        ]
       }
     }
   ]
