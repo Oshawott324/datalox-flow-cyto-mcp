@@ -345,7 +345,4 @@ not the downloaded FCS binaries.
 
 ## License
 
-This project is licensed under AGPL-3.0-or-later. See [LICENSE](LICENSE).
-
-Commercial licensing can be offered separately for organizations that need to
-embed, redistribute, or deploy the product without AGPL obligations.
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
