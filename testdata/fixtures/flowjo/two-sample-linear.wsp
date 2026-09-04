@@ -1,7 +1,24 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Workspace version="20.0" creator="FlowJo-hand-crafted-fixture"
   xmlns:gating="http://www.isac-net.org/std/Gating-ML/v2.0/gating"
+  xmlns:transforms="http://www.isac-net.org/std/Gating-ML/v2.0/transformations"
   xmlns:data-type="http://www.isac-net.org/std/Gating-ML/v2.0/datatypes">
+  <Cytometers>
+    <Cytometer name="Test Cytometer" linearRescale="10000">
+      <TransformStore>
+        <MatrixID matrixId="uncompensated">
+          <Transforms>
+            <transforms:linear transforms:minRange="0" transforms:maxRange="214748" gain="1">
+              <data-type:parameter data-type:name="FSC-A"/>
+            </transforms:linear>
+            <transforms:linear transforms:minRange="0" transforms:maxRange="214748" gain="1">
+              <data-type:parameter data-type:name="SSC-A"/>
+            </transforms:linear>
+          </Transforms>
+        </MatrixID>
+      </TransformStore>
+    </Cytometer>
+  </Cytometers>
   <SampleList>
     <Sample>
       <DataSet uri="file:///testdata/fixtures/flowjo/b1.fcs" keyword="$CYT"/>
