@@ -81,7 +81,9 @@ export async function estimateCompensationFromControls(input: EstimateCompensati
 
   const controlsByChannel = new Map(input.controls.map((control) => [control.channel, control]));
   const controlDiagnostics: EstimateCompensationFromControlsResult["diagnostics"]["controls"] = [];
-  const columns: number[][] = [];
+  // One row per single-stain control: row = source fluorochrome, column = destination
+  // detector, matching CompensationMatrix.matrix and the FCS $SPILLOVER convention.
+  const rows: number[][] = [];
 
   for (const fluorochromeChannel of channels) {
     const control = controlsByChannel.get(fluorochromeChannel);
@@ -101,13 +103,13 @@ export async function estimateCompensationFromControls(input: EstimateCompensati
     if (!Number.isFinite(denominator) || denominator <= 0) {
       throw new FlowcytoError("insufficient_control_signal", `Control ${fluorochromeChannel} is not brighter than unstained background.`, "/controls");
     }
-    columns.push(medians.map((value, detectorIndex) => {
+    rows.push(medians.map((value, detectorIndex) => {
       if (detectorIndex === primaryIndex) return 1;
       return (value - unstainedMedians[detectorIndex]) / denominator;
     }));
   }
 
-  const matrix = channels.map((_, detectorIndex) => columns.map((column) => column[detectorIndex]));
+  const matrix = rows;
   return {
     ok: true,
     compensation: {

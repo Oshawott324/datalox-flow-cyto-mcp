@@ -888,6 +888,57 @@ describe("flowcyto core", () => {
     expect(preview.points?.[0]?.[1]).toBeCloseTo(18.9795918);
   });
 
+  it("agrees on matrix orientation between embedded keywords and single-stain controls", async () => {
+    // Both paths write CompensationMatrix.matrix and both are consumed by
+    // applyCompensationColumns, so they must use the same convention. They did not:
+    // the control estimator was transposed relative to the embedded parser, and
+    // nothing compared them. Same panel, both routes, one expected matrix.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-orientation-"));
+    const channels = ["FSC-A", "SSC-A", "FITC-A", "PE-A"];
+
+    // FITC leaks 20% into PE; PE leaks 2.5% into FITC.
+    const expected = [[1, 0.2], [0.025, 1]];
+
+    const embedded = extractSpilloverMatrices({
+      keywords: { $SPILLOVER: "2,FITC-A,PE-A,1,0.2,0.025,1" },
+      sampleId: "orientation",
+      availableChannels: channels,
+    }).compensations[0];
+    expect(embedded.matrix).toEqual(expected);
+
+    // Single-stain controls describing that same panel, on top of a shared background.
+    const unstainedPath = path.join(dir, "unstained.fcs");
+    const fitcPath = path.join(dir, "fitc.fcs");
+    const pePath = path.join(dir, "pe.fcs");
+    const triple = (row: number[]): number[][] => [row, row, row];
+    await writeTinyIntegerFcs({ fcsPath: unstainedPath, channels, rows: triple([1, 2, 10, 20]) });
+    // FITC control: 100 over background in FITC, and 20 of that lands in PE.
+    await writeTinyIntegerFcs({ fcsPath: fitcPath, channels, rows: triple([1, 2, 110, 40]) });
+    // PE control: 200 over background in PE, and 5 of that lands in FITC.
+    await writeTinyIntegerFcs({ fcsPath: pePath, channels, rows: triple([1, 2, 15, 220]) });
+
+    const estimated = await estimateCompensationFromControls({
+      channels: ["FITC-A", "PE-A"],
+      unstainedPath,
+      controls: [
+        { path: fitcPath, channel: "FITC-A" },
+        { path: pePath, channel: "PE-A" },
+      ],
+    });
+    expect(estimated.compensation.matrix).toEqual(expected);
+    expect(estimated.compensation.matrix).toEqual(embedded.matrix);
+
+    // And the shared apply path must therefore treat them identically.
+    const applyVia = (matrix: number[][]) => applyCompensationColumns({
+      values: [[100, 200]],
+      channels: ["FITC-A", "PE-A"],
+      compensation: { id: "orientation", source: "manual", channels: ["FITC-A", "PE-A"], matrix },
+    }).values[0];
+    const viaEmbedded = applyVia(embedded.matrix);
+    const viaControls = applyVia(estimated.compensation.matrix);
+    viaEmbedded.forEach((value, index) => expect(viaControls[index]).toBeCloseTo(value, 10));
+  });
+
   it("estimates and stores conventional compensation from explicit single-stain controls", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-control-comp-"));
     const unstainedPath = path.join(dir, "unstained.fcs");
@@ -936,7 +987,10 @@ describe("flowcyto core", () => {
       source: "controls",
       sample: "comp_sample",
       channels: ["FITC-A", "PE-A"],
-      matrix: [[1, 0.025], [0.2, 1]],
+      // Background-subtracted, the FITC control reads 100 in FITC and 20 in PE, so
+      // FITC leaks 20% into the PE detector: that belongs at matrix[FITC][PE].
+      // The PE control reads 5 in FITC against 200 in PE, giving 2.5% the other way.
+      matrix: [[1, 0.2], [0.025, 1]],
     });
     expect(estimated.diagnostics.method).toBe("median_ratio");
 
@@ -2810,7 +2864,8 @@ describe("flowcyto MCP", () => {
       expect(estimatedResult.compensation).toMatchObject({
         id: "controls_fitc_pe",
         source: "controls",
-        matrix: [[1, 0.025], [0.2, 1]],
+        // Same controls as the core-level test: FITC leaks 20% into PE.
+        matrix: [[1, 0.2], [0.025, 1]],
       });
       expect(estimatedResult.diagnostics.method).toBe("median_ratio");
 
