@@ -81,7 +81,10 @@
       },
       "instrument": "FACSCalibur",
       "classification": "raw",
-      "notes": "Unstained control of the flowCore compdata single-stain set (see comp_match). Carries NO spillover keyword, despite the plan naming it the PR1 embedded-matrix baseline. Kept as a control fixture."
+      "notes": "Unstained control of the flowCore compdata single-stain set (see comp_match). Carries NO spillover keyword, despite the plan naming it the PR1 embedded-matrix baseline. Kept as a control fixture.",
+      "control": {
+        "role": "unstained"
+      }
     },
     {
       "id": "peacoqc-111-raw",
@@ -153,6 +156,110 @@
           "V585-A",
           "V800-A"
         ]
+      }
+    },
+    {
+      "id": "flowcore-comp-060909-002",
+      "path": "testdata/fixtures/downloaded/flowcore-comp-060909.002.fcs",
+      "source": "Bioconductor flowCore compensation extdata",
+      "sourceUrl": "https://bioconductor.org/packages/3.22/bioc/src/contrib/flowCore_2.22.1.tar.gz",
+      "packagePath": "flowCore/inst/extdata/compdata/data/060909.002",
+      "license": "Artistic-2.0",
+      "instrument": "FACSCalibur",
+      "classification": "raw",
+      "notes": "Single-stain control. Channel assignment comes from the compdata comp_match file, not from the filename, which carries no channel information.",
+      "control": {
+        "role": "single_stain",
+        "channel": "FL1-H",
+        "mappingSource": "flowCore compdata comp_match"
+      },
+      "expected": {
+        "minParameters": 2,
+        "minEvents": 1,
+        "requiredKeywords": [
+          "$PAR",
+          "$TOT",
+          "$DATATYPE"
+        ],
+        "spilloverKeyword": null
+      }
+    },
+    {
+      "id": "flowcore-comp-060909-003",
+      "path": "testdata/fixtures/downloaded/flowcore-comp-060909.003.fcs",
+      "source": "Bioconductor flowCore compensation extdata",
+      "sourceUrl": "https://bioconductor.org/packages/3.22/bioc/src/contrib/flowCore_2.22.1.tar.gz",
+      "packagePath": "flowCore/inst/extdata/compdata/data/060909.003",
+      "license": "Artistic-2.0",
+      "instrument": "FACSCalibur",
+      "classification": "raw",
+      "notes": "Single-stain control. comp_match maps .003 to FL2-H while .004 maps to FL4-H, so ordinal position does not track channel order.",
+      "control": {
+        "role": "single_stain",
+        "channel": "FL2-H",
+        "mappingSource": "flowCore compdata comp_match"
+      },
+      "expected": {
+        "minParameters": 2,
+        "minEvents": 1,
+        "requiredKeywords": [
+          "$PAR",
+          "$TOT",
+          "$DATATYPE"
+        ],
+        "spilloverKeyword": null
+      }
+    },
+    {
+      "id": "flowcore-comp-060909-004",
+      "path": "testdata/fixtures/downloaded/flowcore-comp-060909.004.fcs",
+      "source": "Bioconductor flowCore compensation extdata",
+      "sourceUrl": "https://bioconductor.org/packages/3.22/bioc/src/contrib/flowCore_2.22.1.tar.gz",
+      "packagePath": "flowCore/inst/extdata/compdata/data/060909.004",
+      "license": "Artistic-2.0",
+      "instrument": "FACSCalibur",
+      "classification": "raw",
+      "notes": "Single-stain control mapped to FL4-H by comp_match, out of ordinal order.",
+      "control": {
+        "role": "single_stain",
+        "channel": "FL4-H",
+        "mappingSource": "flowCore compdata comp_match"
+      },
+      "expected": {
+        "minParameters": 2,
+        "minEvents": 1,
+        "requiredKeywords": [
+          "$PAR",
+          "$TOT",
+          "$DATATYPE"
+        ],
+        "spilloverKeyword": null
+      }
+    },
+    {
+      "id": "flowcore-comp-060909-005",
+      "path": "testdata/fixtures/downloaded/flowcore-comp-060909.005.fcs",
+      "source": "Bioconductor flowCore compensation extdata",
+      "sourceUrl": "https://bioconductor.org/packages/3.22/bioc/src/contrib/flowCore_2.22.1.tar.gz",
+      "packagePath": "flowCore/inst/extdata/compdata/data/060909.005",
+      "license": "Artistic-2.0",
+      "instrument": "FACSCalibur",
+      "classification": "raw",
+      "notes": "Single-stain control mapped to FL3-H by comp_match, out of ordinal order.",
+      "control": {
+        "role": "single_stain",
+        "channel": "FL3-H",
+        "mappingSource": "flowCore compdata comp_match"
+      },
+      "expected": {
+        "minParameters": 2,
+        "minEvents": 1,
+        "requiredKeywords": [
+          "$PAR",
+          "$TOT",
+          "$DATATYPE"
+        ],
+        "spilloverKeyword": null
       }
     }
   ]

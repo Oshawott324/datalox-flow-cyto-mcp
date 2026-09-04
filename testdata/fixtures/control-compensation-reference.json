@@ -1,0 +1,343 @@
+{
+  "version": 1,
+  "generator": "scripts/control-compensation-reference.py",
+  "channels": [
+    "FL1-H",
+    "FL2-H",
+    "FL3-H",
+    "FL4-H"
+  ],
+  "orientation": "matrix[i][j] = fraction of fluorochrome i appearing in detector j",
+  "significantDigits": 12,
+  "controls": {
+    "unstained": "flowcore-comp-060909-001",
+    "singleStain": {
+      "flowcore-comp-060909-002": "FL1-H",
+      "flowcore-comp-060909-003": "FL2-H",
+      "flowcore-comp-060909-004": "FL4-H",
+      "flowcore-comp-060909-005": "FL3-H"
+    },
+    "mappingSource": "flowCore compdata comp_match, transcribed into manifest control blocks",
+    "eventCounts": {
+      "flowcore-comp-060909-001": 10000,
+      "flowcore-comp-060909-002": 8805,
+      "flowcore-comp-060909-003": 7485,
+      "flowcore-comp-060909-004": 10000,
+      "flowcore-comp-060909-005": 10000
+    }
+  },
+  "flowcoreCompref": [
+    [
+      1.0,
+      0.242022277631,
+      0.0320837058202,
+      0.00112781555369
+    ],
+    [
+      0.00772204774836,
+      1.0,
+      0.14078823194,
+      0.00263268909406
+    ],
+    [
+      0.0150806322244,
+      0.175589903184,
+      1.0,
+      0.229593859843
+    ],
+    [
+      0.000759031864602,
+      0.000962045888046,
+      0.00321861379453,
+      1.0
+    ]
+  ],
+  "medianEstimate": {
+    "description": "Linearize per $PnE, take per-channel medians, subtract unstained medians, row-normalize by the stain's own channel.",
+    "matrix": [
+      [
+        1.0,
+        0.242022277631,
+        0.0320837058202,
+        0.00112781555369
+      ],
+      [
+        0.00772204774836,
+        1.0,
+        0.14078823194,
+        0.00263268909406
+      ],
+      [
+        0.0150806322244,
+        0.175589903184,
+        1.0,
+        0.229593859843
+      ],
+      [
+        0.000759031864602,
+        0.000962045888046,
+        0.00321861379453,
+        1.0
+      ]
+    ],
+    "maxAbsErrorVsCompref": 3.60822e-16
+  },
+  "brightEventOlsVariants": [
+    {
+      "brightestPercent": 50.0,
+      "matrix": [
+        [
+          1.0,
+          0.247956831221,
+          0.0325998097729,
+          0.00262423830223
+        ],
+        [
+          0.00840555856737,
+          1.0,
+          0.150962291756,
+          0.00405521201191
+        ],
+        [
+          0.0134501747118,
+          0.144845282792,
+          1.0,
+          0.164156060592
+        ],
+        [
+          0.00309271700734,
+          0.00388657559505,
+          0.0270610802439,
+          1.0
+        ]
+      ],
+      "maxAbsErrorVsCompref": 0.0654378
+    },
+    {
+      "brightestPercent": 20.0,
+      "matrix": [
+        [
+          1.0,
+          0.25289551485,
+          0.0329873234642,
+          0.00310066637977
+        ],
+        [
+          0.00880646324316,
+          1.0,
+          0.155368687428,
+          0.00458639359372
+        ],
+        [
+          0.0138746221226,
+          0.138677967394,
+          1.0,
+          0.156998331956
+        ],
+        [
+          0.00335083494481,
+          0.0042909313341,
+          0.0337702290491,
+          1.0
+        ]
+      ],
+      "maxAbsErrorVsCompref": 0.0725955
+    },
+    {
+      "brightestPercent": 10.0,
+      "matrix": [
+        [
+          1.0,
+          0.258061415667,
+          0.0335052160685,
+          0.00351544334249
+        ],
+        [
+          0.00920964552683,
+          1.0,
+          0.158927411265,
+          0.00502852838279
+        ],
+        [
+          0.0153824919629,
+          0.136040570243,
+          1.0,
+          0.154618513685
+        ],
+        [
+          0.00336147185361,
+          0.00439407965854,
+          0.0388009794667,
+          1.0
+        ]
+      ],
+      "maxAbsErrorVsCompref": 0.0749753
+    },
+    {
+      "brightestPercent": 5.0,
+      "matrix": [
+        [
+          1.0,
+          0.263506859384,
+          0.0341684876334,
+          0.00410514314391
+        ],
+        [
+          0.00962080725162,
+          1.0,
+          0.1622639112,
+          0.00544565059002
+        ],
+        [
+          0.0171157999413,
+          0.133908910678,
+          1.0,
+          0.153316396361
+        ],
+        [
+          0.00312045549901,
+          0.00383929956874,
+          0.0436828985999,
+          1.0
+        ]
+      ],
+      "maxAbsErrorVsCompref": 0.0762775
+    },
+    {
+      "brightestPercent": 1.0,
+      "matrix": [
+        [
+          1.0,
+          0.272619381263,
+          0.0358490509691,
+          0.00527030529019
+        ],
+        [
+          0.0103364174764,
+          1.0,
+          0.170542700452,
+          0.00621813917801
+        ],
+        [
+          0.0242507828617,
+          0.136409543633,
+          1.0,
+          0.157625387249
+        ],
+        [
+          0.00222103843897,
+          0.00285806009934,
+          0.0536260233217,
+          1.0
+        ]
+      ],
+      "maxAbsErrorVsCompref": 0.0719685
+    }
+  ],
+  "failureModes": {
+    "filenameOrdinalMapping": {
+      "description": "Channels assigned by sorted filename order instead of comp_match.",
+      "mapping": {
+        "flowcore-comp-060909-002": "FL1-H",
+        "flowcore-comp-060909-003": "FL2-H",
+        "flowcore-comp-060909-004": "FL3-H",
+        "flowcore-comp-060909-005": "FL4-H"
+      },
+      "matrix": [
+        [
+          1.0,
+          0.242022277631,
+          0.0320837058202,
+          0.00112781555369
+        ],
+        [
+          0.00772204774836,
+          1.0,
+          0.14078823194,
+          0.00263268909406
+        ],
+        [
+          0.235825704187,
+          0.298900691248,
+          1.0,
+          310.692759006
+        ],
+        [
+          0.0656839526751,
+          0.764784839213,
+          4.35551717578,
+          1.0
+        ]
+      ],
+      "maxAbsErrorVsCompref": 310.463,
+      "conditionNumber": 358.768,
+      "correctConditionNumber": 1.56485
+    },
+    "noUnstainedBackground": {
+      "description": "No unstained control, so medians are not background-subtracted.",
+      "matrix": [
+        [
+          1.0,
+          0.245824406892,
+          0.0358663762448,
+          0.0088964911282
+        ],
+        [
+          0.0128639694494,
+          1.0,
+          0.144595990307,
+          0.0117574326592
+        ],
+        [
+          0.0791475543941,
+          0.237137370566,
+          1.0,
+          0.330773912299
+        ],
+        [
+          0.0121881418484,
+          0.0135772714211,
+          0.0133352143216,
+          1.0
+        ]
+      ],
+      "maxAbsErrorVsCompref": 0.10118
+    },
+    "insufficientEvents": {
+      "description": "Median estimator on subsampled controls, 20 fixed seeds per size.",
+      "trials": 20,
+      "results": [
+        {
+          "eventsPerControl": 2000,
+          "medianMaxAbsError": 0.00402164,
+          "worstMaxAbsError": 0.011059
+        },
+        {
+          "eventsPerControl": 1000,
+          "medianMaxAbsError": 0.00756549,
+          "worstMaxAbsError": 0.0218088
+        },
+        {
+          "eventsPerControl": 300,
+          "medianMaxAbsError": 0.0114973,
+          "worstMaxAbsError": 0.0298719
+        },
+        {
+          "eventsPerControl": 100,
+          "medianMaxAbsError": 0.0281003,
+          "worstMaxAbsError": 0.0636493
+        },
+        {
+          "eventsPerControl": 30,
+          "medianMaxAbsError": 0.0381797,
+          "worstMaxAbsError": 0.139751
+        },
+        {
+          "eventsPerControl": 10,
+          "medianMaxAbsError": 0.0705155,
+          "worstMaxAbsError": 0.504222
+        }
+      ]
+    }
+  }
+}
