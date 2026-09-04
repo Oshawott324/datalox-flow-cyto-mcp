@@ -5,7 +5,7 @@ import { XMLParser } from "fast-xml-parser";
 
 import { readFcsMetadata } from "./fcs.js";
 import { validateWorkspaceObject, writeWorkspace } from "./workspace.js";
-import { FlowcytoError, type FlowcytoSample, type FlowcytoWorkspace, type WorkspaceGate } from "./types.js";
+import { FlowcytoError, type FlowcytoSample, type FlowcytoWorkspace, type SampleMetadata, type WorkspaceGate } from "./types.js";
 
 type XmlNode = Record<string, unknown>;
 type ImportedGateBase = {
@@ -14,6 +14,7 @@ type ImportedGateBase = {
   sample: string;
   parent: string;
 };
+type ChannelResolver = (channel: string) => string;
 
 export type ImportFlowJoWorkspaceInput = {
   wspPath: string;
@@ -84,15 +85,16 @@ function sampleIdFor(input: ImportFlowJoWorkspaceInput, sampleName: string, data
   return sanitizeId(mapped ?? stem, `sample_${index + 1}`);
 }
 
-function parameterName(dimension: XmlNode | null): string | undefined {
-  const parameter = asRecord(dimension?.parameter);
-  return stringAttr(parameter, "name");
+function parameterName(dimension: XmlNode | null, resolveChannel: ChannelResolver): string | undefined {
+  const parameter = asRecord(dimension?.parameter) ?? asRecord(dimension?.["fcs-dimension"]);
+  const name = stringAttr(parameter, "name");
+  return name ? resolveChannel(name) : undefined;
 }
 
-function parsePolygonGate(node: XmlNode, base: ImportedGateBase): WorkspaceGate | null {
+function parsePolygonGate(node: XmlNode, base: ImportedGateBase, resolveChannel: ChannelResolver): WorkspaceGate | null {
   const dimensions = arrayOf(node.dimension).map(asRecord).filter((entry): entry is XmlNode => entry !== null);
-  const x = parameterName(dimensions[0] ?? null);
-  const y = parameterName(dimensions[1] ?? null);
+  const x = parameterName(dimensions[0] ?? null, resolveChannel);
+  const y = parameterName(dimensions[1] ?? null, resolveChannel);
   const vertices = arrayOf(node.vertex).map(asRecord).map((vertex) => {
     const coordinates = arrayOf(vertex?.coordinate).map(asRecord);
     const xValue = numberAttr(coordinates[0] ?? null, "value");
@@ -103,12 +105,12 @@ function parsePolygonGate(node: XmlNode, base: ImportedGateBase): WorkspaceGate 
   return { ...base, type: "polygon", x, y, vertices };
 }
 
-function parseRectangleGate(node: XmlNode, base: ImportedGateBase): WorkspaceGate | null {
+function parseRectangleGate(node: XmlNode, base: ImportedGateBase, resolveChannel: ChannelResolver): WorkspaceGate | null {
   const dimensions = arrayOf(node.dimension).map(asRecord).filter((entry): entry is XmlNode => entry !== null);
   const xDimension = dimensions[0] ?? null;
   const yDimension = dimensions[1] ?? null;
-  const x = parameterName(xDimension);
-  const y = parameterName(yDimension);
+  const x = parameterName(xDimension, resolveChannel);
+  const y = parameterName(yDimension, resolveChannel);
   const xMin = numberAttr(xDimension, "min");
   const xMax = numberAttr(xDimension, "max");
   const yMin = numberAttr(yDimension, "min");
@@ -117,32 +119,34 @@ function parseRectangleGate(node: XmlNode, base: ImportedGateBase): WorkspaceGat
   return { ...base, type: "rect", x, y, xMin, xMax, yMin, yMax };
 }
 
-function parseRangeGate(node: XmlNode, base: ImportedGateBase): WorkspaceGate | null {
+function parseRangeGate(node: XmlNode, base: ImportedGateBase, resolveChannel: ChannelResolver): WorkspaceGate | null {
   const dimension = asRecord(arrayOf(node.dimension)[0]);
-  const x = parameterName(dimension);
+  const x = parameterName(dimension, resolveChannel);
   const min = numberAttr(dimension, "min");
   const max = numberAttr(dimension, "max");
   if (!x || min === undefined || max === undefined) return null;
   return { ...base, type: "range", x, min, max };
 }
 
-function parseGateWrapper(wrapper: XmlNode, sampleId: string, parentId: string, warnings: string[]): WorkspaceGate | null {
-  const polygon = asRecord(wrapper.PolygonGate);
-  const rectangle = asRecord(wrapper.RectangleGate);
-  const range = asRecord(wrapper.RangeGate) ?? asRecord(wrapper.IntervalGate);
-  const unsupported = ["EllipsoidGate", "QuadrantGate", "BooleanGate"].find((key) => wrapper[key] !== undefined);
+function parseGateWrapper(wrapper: XmlNode, sampleId: string, parentId: string, warnings: string[], resolveChannel: ChannelResolver): WorkspaceGate | null {
+  const flowJoGate = asRecord(wrapper.Gate);
+  const geometryParent = flowJoGate ?? wrapper;
+  const polygon = asRecord(geometryParent.PolygonGate);
+  const rectangle = asRecord(geometryParent.RectangleGate);
+  const range = asRecord(geometryParent.RangeGate) ?? asRecord(geometryParent.IntervalGate);
+  const unsupported = ["EllipsoidGate", "QuadrantGate", "BooleanGate"].find((key) => geometryParent[key] !== undefined);
   const gateNode = polygon ?? rectangle ?? range;
   const name = stringAttr(wrapper, "name") ?? stringAttr(gateNode, "name");
-  const id = stringAttr(gateNode, "id") ?? stringAttr(wrapper, "id") ?? sanitizeId(name ?? "gate", "gate");
+  const id = stringAttr(gateNode, "id") ?? stringAttr(flowJoGate, "id") ?? stringAttr(wrapper, "id") ?? sanitizeId(name ?? "gate", "gate");
   const base = {
     id: sanitizeId(id, "flowjo_gate"),
     name,
     sample: sampleId,
     parent: parentId,
   };
-  if (polygon) return parsePolygonGate(polygon, base);
-  if (rectangle) return parseRectangleGate(rectangle, base);
-  if (range) return parseRangeGate(range, base);
+  if (polygon) return parsePolygonGate(polygon, base, resolveChannel);
+  if (rectangle) return parseRectangleGate(rectangle, base, resolveChannel);
+  if (range) return parseRangeGate(range, base, resolveChannel);
   if (unsupported) warnings.push(`${unsupported} skipped for gate ${name ?? id}.`);
   return null;
 }
@@ -150,15 +154,18 @@ function parseGateWrapper(wrapper: XmlNode, sampleId: string, parentId: string, 
 function collectGateWrappers(subpopulations: unknown): XmlNode[] {
   const root = asRecord(subpopulations);
   if (!root) return [];
-  return arrayOf(root.Gate).map(asRecord).filter((entry): entry is XmlNode => entry !== null);
+  return [
+    ...arrayOf(root.Gate),
+    ...arrayOf(root.Population),
+  ].map(asRecord).filter((entry): entry is XmlNode => entry !== null);
 }
 
-function appendNestedGates(wrappers: XmlNode[], sampleId: string, parentId: string, gates: WorkspaceGate[], warnings: string[]): void {
+function appendNestedGates(wrappers: XmlNode[], sampleId: string, parentId: string, gates: WorkspaceGate[], warnings: string[], resolveChannel: ChannelResolver): void {
   for (const wrapper of wrappers) {
-    const gate = parseGateWrapper(wrapper, sampleId, parentId, warnings);
+    const gate = parseGateWrapper(wrapper, sampleId, parentId, warnings, resolveChannel);
     const nextParent = gate?.id ?? parentId;
     if (gate) gates.push(gate);
-    appendNestedGates(collectGateWrappers(wrapper.Subpopulations), sampleId, nextParent, gates, warnings);
+    appendNestedGates(collectGateWrappers(wrapper.Subpopulations), sampleId, nextParent, gates, warnings, resolveChannel);
   }
 }
 
@@ -192,6 +199,38 @@ function pathForWorkspace(rootDir: string, samplePath: string): string {
   return relative && !relative.startsWith("..") && !path.isAbsolute(relative) ? relative : resolved;
 }
 
+function normalizedChannel(value: string): string {
+  return value.toLowerCase().replace(/[\s_-]+/g, "");
+}
+
+function channelAliases(value: string): string[] {
+  const values = [value];
+  for (const prefix of ["FJComp-", "Comp-", "C_"]) {
+    if (value.toLowerCase().startsWith(prefix.toLowerCase())) values.push(value.slice(prefix.length));
+  }
+  return values;
+}
+
+function channelResolver(metadata: SampleMetadata): ChannelResolver {
+  const byToken = new Map<string, string>();
+  for (const parameter of metadata.parameters) {
+    for (const alias of channelAliases(parameter.name)) byToken.set(normalizedChannel(alias), parameter.name);
+    if (parameter.detector) {
+      for (const alias of channelAliases(parameter.detector)) byToken.set(normalizedChannel(alias), parameter.name);
+    }
+    if (parameter.marker) {
+      for (const alias of channelAliases(parameter.marker)) byToken.set(normalizedChannel(alias), parameter.name);
+    }
+  }
+  return (channel) => {
+    for (const alias of channelAliases(channel)) {
+      const resolved = byToken.get(normalizedChannel(alias));
+      if (resolved) return resolved;
+    }
+    return channel;
+  };
+}
+
 async function readFlowJoSamples(input: ImportFlowJoWorkspaceInput, workspace: XmlNode): Promise<{ samples: FlowcytoSample[]; gates: WorkspaceGate[]; warnings: string[] }> {
   const sampleNodes = arrayOf(asRecord(workspace.SampleList)?.Sample).map(asRecord).filter((entry): entry is XmlNode => entry !== null);
   const warnings: string[] = [];
@@ -207,9 +246,9 @@ async function readFlowJoSamples(input: ImportFlowJoWorkspaceInput, workspace: X
     const sampleName = stringAttr(sampleNode, "name") ?? fileNameFromUri(dataUri);
     const sampleId = sampleIdFor(input, sampleName, dataUri, index);
     const samplePath = resolveSamplePath(input, sampleName, dataUri);
-    await readFcsMetadata(samplePath, sampleId);
+    const metadata = await readFcsMetadata(samplePath, sampleId);
     samples.push({ id: sampleId, path: pathForWorkspace(rootDir, samplePath) });
-    appendNestedGates(collectGateWrappers(sampleNode?.Subpopulations), sampleId, "root", gates, warnings);
+    appendNestedGates(collectGateWrappers(sampleNode?.Subpopulations), sampleId, "root", gates, warnings, channelResolver(metadata));
   }
   return { samples, gates, warnings };
 }
