@@ -56,6 +56,7 @@ import {
 const execFileAsync = promisify(execFile);
 const fixturePath = path.resolve("testdata/fixtures/CFP_Well_A4.fcs");
 const fixtureManifestPath = path.resolve("testdata/fixtures/manifest.json");
+const compensationReferencePath = path.resolve("testdata/fixtures/compensation-reference.json");
 const flowJoFixtureDir = path.resolve("testdata/fixtures/flowjo");
 
 type FixtureManifest = {
@@ -67,6 +68,17 @@ type FixtureManifest = {
       minEvents?: number;
       requiredKeywords?: string[];
     };
+  }>;
+};
+
+type CompensationReference = {
+  reference: string;
+  cases: Array<{
+    id: string;
+    channels: string[];
+    spillover: number[][];
+    raw: number[][];
+    expected: number[][];
   }>;
 };
 
@@ -886,6 +898,66 @@ describe("flowcyto core", () => {
     });
     expect(preview.points?.[0]?.[0]).toBeCloseTo(10.1020408);
     expect(preview.points?.[0]?.[1]).toBeCloseTo(18.9795918);
+  });
+
+  it("matches the external numpy compensation reference", async () => {
+    const reference = JSON.parse(await fs.readFile(compensationReferencePath, "utf8")) as CompensationReference;
+    expect(reference.reference).toBe("numpy.linalg.solve(S.T, X.T).T");
+    expect(reference.cases.length).toBeGreaterThan(0);
+
+    for (const testCase of reference.cases) {
+      const applied = applyCompensationColumns({
+        channels: testCase.channels,
+        values: testCase.raw,
+        compensation: {
+          id: `reference_${testCase.id}`,
+          source: "manual",
+          channels: testCase.channels,
+          matrix: testCase.spillover,
+        },
+      });
+
+      // Relative tolerance: the reference is rounded to 12 significant digits and
+      // ml-matrix and LAPACK take different elimination paths, so exact equality is
+      // not expected. 1e-9 relative is far tighter than any spillover difference
+      // that could change an analysis result.
+      testCase.expected.forEach((expectedRow, rowIndex) => {
+        expectedRow.forEach((expectedValue, columnIndex) => {
+          const actual = applied.values[rowIndex]?.[columnIndex];
+          const tolerance = Math.max(Math.abs(expectedValue), 1) * 1e-9;
+          expect(
+            Math.abs((actual ?? Number.NaN) - expectedValue),
+            `${testCase.id} [${rowIndex}][${columnIndex}] expected ${expectedValue}, got ${actual}`,
+          ).toBeLessThan(tolerance);
+        });
+      });
+    }
+  });
+
+  it("keeps spillover orientation detectable, so a transposed matrix cannot pass unnoticed", async () => {
+    // Guards the reference fixture itself. If every case were symmetric, the test
+    // above would pass against a transposed implementation and prove nothing.
+    const reference = JSON.parse(await fs.readFile(compensationReferencePath, "utf8")) as CompensationReference;
+    const asymmetric = reference.cases.filter((testCase) => testCase.spillover
+      .some((row, i) => row.some((value, j) => Math.abs(value - testCase.spillover[j][i]) > 1e-12)));
+    expect(asymmetric.length, "reference must contain asymmetric matrices").toBeGreaterThan(0);
+
+    for (const testCase of asymmetric) {
+      const transposed = testCase.spillover.map((_, i) => testCase.spillover.map((row) => row[i]));
+      const applied = applyCompensationColumns({
+        channels: testCase.channels,
+        values: testCase.raw,
+        compensation: {
+          id: `transposed_${testCase.id}`,
+          source: "manual",
+          channels: testCase.channels,
+          matrix: transposed,
+        },
+      });
+      const differs = testCase.expected.some((expectedRow, rowIndex) => expectedRow
+        .some((expectedValue, columnIndex) => Math.abs((applied.values[rowIndex]?.[columnIndex] ?? Number.NaN) - expectedValue) > 1e-6));
+      expect(differs, `${testCase.id} produces identical output when transposed`).toBe(true);
+    }
   });
 
   it("agrees on matrix orientation between embedded keywords and single-stain controls", async () => {

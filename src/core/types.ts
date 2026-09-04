@@ -19,6 +19,8 @@ export type CompensationMatrix = {
   // $SPILLOVER/SPILL keyword layout and flowCore's spillover() output, so matrices
   // from embedded keywords and from single-stain controls are directly comparable.
   // Apply as Xcomp = Xraw * inv(S), implemented as solve(S.T, Xraw.T).T.
+  // Verified against numpy in testdata/fixtures/compensation-reference.json; see
+  // docs/compensation-numeric-validation-2026-09-04.md for the worked example.
   matrix: number[][];
 };
 
