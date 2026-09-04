@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Hand-crafted FlowJo-style fixture using Population wrappers around Gate geometry. -->
+<Workspace version="20.0" creator="FlowJo-hand-crafted-fixture"
+  xmlns:gating="http://www.isac-net.org/std/Gating-ML/v2.0/gating"
+  xmlns:data-type="http://www.isac-net.org/std/Gating-ML/v2.0/datatypes"
+  xmlns:transforms="http://www.isac-net.org/std/Gating-ML/v2.0/transformations">
+  <SampleList>
+    <Sample>
+      <DataSet uri="file:///testdata/fixtures/flowjo/sample.fcs" sampleID="19"/>
+      <SampleNode name="sample.fcs" owningGroup="" count="10000" sampleID="19">
+        <Subpopulations>
+          <Population name="Lymphocytes" owningGroup="Samples" count="7000">
+            <Gate gating:id="ID1783181596">
+              <gating:PolygonGate eventsInside="1">
+                <gating:dimension>
+                  <gating:fcs-dimension data-type:name="FS00-A"/>
+                </gating:dimension>
+                <gating:dimension>
+                  <gating:fcs-dimension data-type:name="SS02-A"/>
+                </gating:dimension>
+                <gating:vertex>
+                  <gating:coordinate data-type:value="50000"/>
+                  <gating:coordinate data-type:value="20000"/>
+                </gating:vertex>
+                <gating:vertex>
+                  <gating:coordinate data-type:value="200000"/>
+                  <gating:coordinate data-type:value="20000"/>
+                </gating:vertex>
+                <gating:vertex>
+                  <gating:coordinate data-type:value="200000"/>
+                  <gating:coordinate data-type:value="100000"/>
+                </gating:vertex>
+              </gating:PolygonGate>
+            </Gate>
+            <Subpopulations>
+              <Population name="Single Cells" owningGroup="Samples" count="6500">
+                <Gate gating:id="ID1054706104" gating:parent_id="ID1783181596">
+                  <gating:RectangleGate eventsInside="1">
+                    <gating:dimension gating:min="21592.577696526507" gating:max="166066.5521023766">
+                      <gating:fcs-dimension data-type:name="FS00-A"/>
+                    </gating:dimension>
+                    <gating:dimension gating:min="59077.2610441767" gating:max="88831.50200803213">
+                      <gating:fcs-dimension data-type:name="SS02-A"/>
+                    </gating:dimension>
+                  </gating:RectangleGate>
+                </Gate>
+              </Population>
+              <Population name="Compensated Alias" owningGroup="Samples" count="1000">
+                <Gate gating:id="IDCOMPALIAS" gating:parent_id="ID1783181596">
+                  <gating:RangeGate eventsInside="1">
+                    <gating:dimension gating:min="10" gating:max="100">
+                      <gating:fcs-dimension data-type:name="Comp-FL19-A"/>
+                    </gating:dimension>
+                  </gating:RangeGate>
+                </Gate>
+              </Population>
+            </Subpopulations>
+          </Population>
+        </Subpopulations>
+      </SampleNode>
+    </Sample>
+  </SampleList>
+</Workspace>
