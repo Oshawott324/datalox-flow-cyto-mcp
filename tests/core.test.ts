@@ -57,6 +57,7 @@ const execFileAsync = promisify(execFile);
 const fixturePath = path.resolve("testdata/fixtures/CFP_Well_A4.fcs");
 const fixtureManifestPath = path.resolve("testdata/fixtures/manifest.json");
 const compensationReferencePath = path.resolve("testdata/fixtures/compensation-reference.json");
+const controlCompensationReferencePath = path.resolve("testdata/fixtures/control-compensation-reference.json");
 const flowJoFixtureDir = path.resolve("testdata/fixtures/flowjo");
 
 type FixtureManifest = {
@@ -65,6 +66,7 @@ type FixtureManifest = {
     path: string;
     instrument?: string;
     classification?: "raw" | "compensated" | "unmixed";
+    control?: { role: "unstained" | "single_stain"; channel?: string; mappingSource?: string };
     expected?: {
       minParameters?: number;
       minEvents?: number;
@@ -84,6 +86,17 @@ type CompensationReference = {
     raw: number[][];
     expected: number[][];
   }>;
+};
+
+type ControlCompensationReference = {
+  channels: string[];
+  controls: { unstained: string; singleStain: Record<string, string> };
+  flowcoreCompref: number[][];
+  medianEstimate: { matrix: number[][]; maxAbsErrorVsCompref: number };
+  failureModes: {
+    filenameOrdinalMapping: { maxAbsErrorVsCompref: number; conditionNumber: number };
+    noUnstainedBackground: { maxAbsErrorVsCompref: number };
+  };
 };
 
 async function readFixtureManifest(): Promise<FixtureManifest> {
@@ -923,6 +936,107 @@ describe("flowcyto core", () => {
     });
     expect(preview.points?.[0]?.[0]).toBeCloseTo(10.1020408);
     expect(preview.points?.[0]?.[1]).toBeCloseTo(18.9795918);
+  });
+
+  it("keeps the single-stain control mapping explicit and complete", async () => {
+    // Guards the boundary that control-to-channel mapping is declared data, not
+    // inferred. The reference analysis reads this mapping; if it drifts from
+    // flowCore's comp_match the estimate silently stops matching compref.
+    const manifest = await readFixtureManifest();
+    const controls = manifest.fixtures.filter((fixture) => fixture.control);
+    const unstained = controls.filter((fixture) => fixture.control?.role === "unstained");
+    const singleStains = controls.filter((fixture) => fixture.control?.role === "single_stain");
+
+    expect(unstained).toHaveLength(1);
+    expect(singleStains.length).toBeGreaterThanOrEqual(2);
+    for (const fixture of singleStains) {
+      expect(fixture.control?.channel, `${fixture.id} must declare its channel`).toBeTruthy();
+      expect(fixture.control?.mappingSource, `${fixture.id} must record where the mapping came from`).toBeTruthy();
+    }
+
+    const channels = singleStains.map((fixture) => fixture.control?.channel);
+    expect(new Set(channels).size, "each channel may be claimed by only one control").toBe(channels.length);
+
+    // The mapping must not be recoverable from filename order. That is the failure
+    // mode the reference analysis quantifies, and it only stays exercised if the
+    // fixture set keeps a corpus where guessing is wrong.
+    const byFilename = [...singleStains].sort((a, b) => a.id.localeCompare(b.id)).map((f) => f.control?.channel);
+    expect(byFilename, "controls must not happen to be in channel order").not.toEqual([...channels].sort());
+  });
+
+  it("carries a control-derived reference that reproduces flowCore's published matrix", async () => {
+    const reference = JSON.parse(await fs.readFile(controlCompensationReferencePath, "utf8")) as ControlCompensationReference;
+
+    expect(reference.medianEstimate.maxAbsErrorVsCompref).toBeLessThan(1e-12);
+    reference.flowcoreCompref.forEach((row, i) => row.forEach((expectedValue, j) => {
+      expect(reference.medianEstimate.matrix[i][j]).toBeCloseTo(expectedValue, 10);
+    }));
+
+    // Failure modes must stay failures. If any of these quietly starts agreeing with
+    // compref, the analysis behind the estimator guardrails no longer holds.
+    expect(reference.failureModes.filenameOrdinalMapping.maxAbsErrorVsCompref).toBeGreaterThan(1);
+    expect(reference.failureModes.filenameOrdinalMapping.conditionNumber).toBeGreaterThan(100);
+    expect(reference.failureModes.noUnstainedBackground.maxAbsErrorVsCompref).toBeGreaterThan(0.05);
+
+    // The reference matrix must be consumable by the shipped compensation path.
+    const applied = applyCompensationColumns({
+      channels: reference.channels,
+      values: [[100, 50, 20, 10]],
+      compensation: {
+        id: "control_reference",
+        source: "controls",
+        channels: reference.channels,
+        matrix: reference.medianEstimate.matrix,
+      },
+    });
+    expect(applied.compensation.applied).toBe(true);
+    applied.values[0].forEach((value) => expect(Number.isFinite(value)).toBe(true));
+  });
+
+  it("recovers a known spillover matrix from synthesised single-stain controls", async () => {
+    // End-to-end check of the shipped estimator against a matrix we chose, on linear
+    // data. Each control is synthesised as brightness * S[stain] + background, which
+    // is exactly what a single-stain acquisition measures, so the estimator must
+    // return S. Uses round values so 16-bit integer storage is lossless.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-control-recover-"));
+    const channels = ["FL1-A", "FL2-A", "FL3-A"];
+    const spillover = [
+      [1, 0.2, 0.05],
+      [0.01, 1, 0.15],
+      [0.002, 0.03, 1],
+    ];
+    const brightness = 10000;
+    const background = [10, 20, 30];
+    const triple = (row: number[]): number[][] => [row, row, row];
+
+    const unstainedPath = path.join(dir, "unstained.fcs");
+    await writeTinyIntegerFcs({ fcsPath: unstainedPath, channels, rows: triple(background) });
+
+    const controls = await Promise.all(spillover.map(async (row, index) => {
+      const controlPath = path.join(dir, `stain-${index}.fcs`);
+      const observed = row.map((coefficient, detector) => brightness * coefficient + background[detector]);
+      expect(observed.every((value) => Number.isInteger(value) && value <= 65535)).toBe(true);
+      await writeTinyIntegerFcs({ fcsPath: controlPath, channels, rows: triple(observed) });
+      return { path: controlPath, channel: channels[index] };
+    }));
+
+    const estimated = await estimateCompensationFromControls({ channels, unstainedPath, controls });
+    expect(estimated.compensation.channels).toEqual(channels);
+    spillover.forEach((row, i) => row.forEach((expectedValue, j) => {
+      expect(estimated.compensation.matrix[i][j], `matrix[${i}][${j}]`).toBeCloseTo(expectedValue, 12);
+    }));
+
+    // Compensating the background-subtracted controls must put each stain entirely
+    // back into its own detector and zero the others. Background is subtracted first
+    // because compensation is linear and would otherwise redistribute it too.
+    const applied = applyCompensationColumns({
+      channels,
+      values: spillover.map((row) => row.map((coefficient) => brightness * coefficient)),
+      compensation: estimated.compensation,
+    });
+    applied.values.forEach((row, stain) => row.forEach((value, detector) => {
+      expect(value, `stain ${stain} in detector ${detector}`).toBeCloseTo(stain === detector ? brightness : 0, 6);
+    }));
   });
 
   it("cannot distinguish an already-compensated export from its raw source", async () => {
