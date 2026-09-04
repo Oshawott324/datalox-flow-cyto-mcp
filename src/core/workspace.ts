@@ -698,7 +698,31 @@ async function atomicWriteJson(filePath: string, value: unknown): Promise<void> 
   } finally {
     await handle.close();
   }
-  await fs.rename(temp, target);
+  await renameWithTransientRetry(temp, target);
+}
+
+function isTransientRenameError(error: unknown): boolean {
+  if (!isRecord(error)) return false;
+  return error.code === "EPERM" || error.code === "EACCES";
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function renameWithTransientRetry(source: string, target: string): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      await fs.rename(source, target);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (process.platform !== "win32" || !isTransientRenameError(error)) throw error;
+      await delay(15 * (attempt + 1));
+    }
+  }
+  throw lastError;
 }
 
 export async function writeWorkspace(params: {

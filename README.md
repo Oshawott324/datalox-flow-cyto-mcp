@@ -251,6 +251,7 @@ The host should discover these tools:
 
 ```text
 open_fcs
+import_flowjo_workspace
 render_plot
 render_plot_image
 open_gate_editor
@@ -334,7 +335,8 @@ not the downloaded FCS binaries.
 - Not a full FlowJo replacement.
 - FCS parser coverage is fixture-driven but still incomplete.
 - No Gating-ML import/export yet.
-- No FlowJo workspace import/export yet.
+- FlowJo workspace import is limited to linear polygon, rectangle, and range
+  gates; FlowJo export is not implemented yet.
 - No public-network HTTP security posture yet.
 - Real named MCP-host validation is still required before public beta.
 - The UI is optimized for manual gating and visual review, not full batch
