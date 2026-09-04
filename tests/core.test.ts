@@ -470,6 +470,92 @@ describe("flowcyto core", () => {
     }]);
   });
 
+  it("skips unsupported FlowJo gate types with warnings, promotes orphaned children to parent", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-unsupported-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["FSC-A", "SSC-A"],
+      rows: [[100, 200], [150, 250]],
+    });
+    const result = await importFlowJoWorkspace({
+      wspPath: path.join(flowJoFixtureDir, "unsupported-gate-types.wsp"),
+      workspaceDir: dir,
+      samplePathMap: { "sample.fcs": samplePath },
+    });
+    // EllipsoidGate and BooleanGate each produce a warning; child of EllipsoidGate is imported
+    expect(result.warnings.length).toBeGreaterThanOrEqual(2);
+    expect(result.warnings.some((w) => w.includes("EllipsoidGate"))).toBe(true);
+    expect(result.warnings.some((w) => w.includes("BooleanGate"))).toBe(true);
+    // 2 supported gates: "Child of Ellipsoid" (promoted to root) + "Supported Sibling"
+    expect(result.gatesImported).toBe(2);
+    const workspace = await readWorkspace(result.workspacePath);
+    // Child of unsupported EllipsoidGate is promoted to root parent
+    const child = workspace.gates.find((g) => g.name === "Child of Ellipsoid");
+    expect(child?.parent).toBe("root");
+    const sibling = workspace.gates.find((g) => g.name === "Supported Sibling");
+    expect(sibling?.parent).toBe("root");
+  });
+
+  it("does not overwrite existing gates when overwriteGates is false (default)", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-noreplace-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["FSC-A", "SSC-A"],
+      rows: [[100, 200], [150, 250]],
+    });
+    // First import
+    await importFlowJoWorkspace({
+      wspPath: path.join(flowJoFixtureDir, "minimal-linear-rect.wsp"),
+      workspaceDir: dir,
+      samplePathMap: { "sample.fcs": samplePath },
+    });
+    // Manually widen the gate in the workspace
+    const workspacePath = path.join(dir, "flowcyto.workspace.json");
+    const before = await readWorkspace(workspacePath);
+    const modified = { ...before, gates: before.gates.map((g) => g.type === "rect" ? { ...g, xMax: 999999 } : g) };
+    await fs.writeFile(workspacePath, `${JSON.stringify(modified, null, 2)}\n`, "utf8");
+    // Re-import with default overwriteGates=false; should not clobber the modified gate.
+    await importFlowJoWorkspace({
+      wspPath: path.join(flowJoFixtureDir, "minimal-linear-rect.wsp"),
+      workspaceDir: dir,
+      samplePathMap: { "sample.fcs": samplePath },
+    });
+    const after = await readWorkspace(workspacePath);
+    const gate = after.gates.find((g) => g.id === "gate-rect-001");
+    expect(gate?.type === "rect" && gate.xMax).toBe(999999);
+  });
+
+  it("overwrites existing gates when overwriteGates is true", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-overwrite-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["FSC-A", "SSC-A"],
+      rows: [[100, 200], [150, 250]],
+    });
+    await importFlowJoWorkspace({
+      wspPath: path.join(flowJoFixtureDir, "minimal-linear-rect.wsp"),
+      workspaceDir: dir,
+      samplePathMap: { "sample.fcs": samplePath },
+    });
+    const workspacePath = path.join(dir, "flowcyto.workspace.json");
+    const before = await readWorkspace(workspacePath);
+    const modified = { ...before, gates: before.gates.map((g) => g.type === "rect" ? { ...g, xMax: 999999 } : g) };
+    await fs.writeFile(workspacePath, `${JSON.stringify(modified, null, 2)}\n`, "utf8");
+    // Re-import with overwriteGates=true; should restore the original gate bounds.
+    await importFlowJoWorkspace({
+      wspPath: path.join(flowJoFixtureDir, "minimal-linear-rect.wsp"),
+      workspaceDir: dir,
+      samplePathMap: { "sample.fcs": samplePath },
+      overwriteGates: true,
+    });
+    const after = await readWorkspace(workspacePath);
+    const gate = after.gates.find((g) => g.id === "gate-rect-001");
+    expect(gate?.type === "rect" && gate.xMax).toBe(220000);
+  });
+
   it("reads metadata without requiring event data in the workspace", async () => {
     const { workspacePath } = await makeWorkspace();
     const metadata = await getSampleMetadata(workspacePath, "sample_001");
