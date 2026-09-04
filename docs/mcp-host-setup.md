@@ -104,7 +104,7 @@ enabled = true
 
 After setup, a fresh Codex session should expose tools such as `open_fcs`,
 `open_gate_editor`, `render_plot_image`, `import_flowjo_workspace`,
-`list_compensations`, and
+`export_flowjo_workspace`, `list_compensations`, and
 `get_compensation_matrix`.
 
 ## Claude Desktop

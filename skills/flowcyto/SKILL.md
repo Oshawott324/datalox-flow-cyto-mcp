@@ -21,6 +21,11 @@ wants FlowJo gates converted into `flowcyto.workspace.json`. If the `.wsp`
 contains stale or machine-specific FCS paths, pass an explicit
 `sample_path_map`; do not guess sample bindings from nearby files.
 
+Use `export_flowjo_workspace` when the user wants to hand off Flowcyto gates to
+FlowJo. The current export path writes reference-only `.wsp` files for polygon,
+rectangle, and range gates. Do not claim portable bundles, compensated FCS
+export, or full FlowJo transform compatibility unless those tools are added.
+
 Do not stop after `open_fcs` when the user asked to gate, draw, edit, or inspect
 the main population. Follow the returned `nextAction` immediately so the compact
 gate editor opens and the workspace has a live, user-visible gate-writing

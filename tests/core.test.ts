@@ -30,6 +30,7 @@ import {
   deleteGate,
   detectCompensationStatus,
   estimateCompensationFromControls,
+  exportFlowJoWorkspace,
   extractSpilloverMatrices,
   formatTick,
   FlowcytoError,
@@ -554,6 +555,84 @@ describe("flowcyto core", () => {
     const after = await readWorkspace(workspacePath);
     const gate = after.gates.find((g) => g.id === "gate-rect-001");
     expect(gate?.type === "rect" && gate.xMax).toBe(220000);
+  });
+
+  it("exports Flowcyto gates to FlowJo .wsp and imports them back", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-export-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["FSC-A", "SSC-A", "FITC-A"],
+      rows: [[100, 200, 300], [150, 250, 350]],
+    });
+    const { workspacePath } = await initWorkspace({ rootDir: dir, samplePath, sampleId: "sample" });
+    await upsertGate({
+      workspacePath,
+      expectedRevision: 0,
+      gate: {
+        id: "lymph",
+        name: "Lymphocytes",
+        sample: "sample",
+        parent: "root",
+        type: "polygon",
+        x: "FSC-A",
+        y: "SSC-A",
+        vertices: [[10, 20], [100, 20], [100, 80]],
+      },
+    });
+    await upsertGate({
+      workspacePath,
+      expectedRevision: 1,
+      gate: {
+        id: "live",
+        name: "Live",
+        sample: "sample",
+        parent: "lymph",
+        type: "rect",
+        x: "FSC-A",
+        y: "SSC-A",
+        xMin: 20,
+        xMax: 90,
+        yMin: 25,
+        yMax: 75,
+      },
+    });
+    await upsertGate({
+      workspacePath,
+      expectedRevision: 2,
+      gate: {
+        id: "fitc_positive",
+        name: "FITC+",
+        sample: "sample",
+        parent: "live",
+        type: "range",
+        x: "FITC-A",
+        min: 300,
+        max: 900,
+      },
+    });
+    const outputPath = path.join(dir, "exported.wsp");
+    const exported = await exportFlowJoWorkspace({ workspacePath, outputPath });
+    expect(exported).toMatchObject({
+      ok: true,
+      wspPath: outputPath,
+      samplesExported: 1,
+      gatesExported: 3,
+      compensationExported: false,
+    });
+    const xml = await fs.readFile(outputPath, "utf8");
+    expect(xml).toContain("<gating:PolygonGate");
+    expect(xml).toContain("<gating:RectangleGate");
+    expect(xml).toContain("<gating:RangeGate");
+
+    const roundTripDir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-roundtrip-"));
+    const imported = await importFlowJoWorkspace({
+      wspPath: outputPath,
+      workspaceDir: roundTripDir,
+      samplePathMap: { "sample.fcs": samplePath },
+    });
+    const roundTripWorkspace = await readWorkspace(imported.workspacePath);
+    expect(roundTripWorkspace.gates).toEqual((await readWorkspace(workspacePath)).gates);
   });
 
   it("reads metadata without requiring event data in the workspace", async () => {
@@ -2726,6 +2805,7 @@ describe("flowcyto MCP", () => {
         "close_gate_editor",
         "delete_gate",
         "estimate_compensation_from_controls",
+        "export_flowjo_workspace",
         "get_compensation_matrix",
         "get_event_preview",
         "get_gate_editor_state",
@@ -2802,6 +2882,21 @@ describe("flowcyto MCP", () => {
         x: "FSC-A",
         y: "SSC-A",
       });
+
+      const exportedPath = path.join(flowJoDir, "mcp-export.wsp");
+      const exported = await client.callTool({
+        name: "export_flowjo_workspace",
+        arguments: {
+          workspace_path: importedResult.workspacePath,
+          output_path: exportedPath,
+        },
+      });
+      const exportedResult = (exported.structuredContent as { result?: unknown } | undefined)?.result as {
+        ok: boolean;
+        wspPath: string;
+        gatesExported: number;
+      };
+      expect(exportedResult).toMatchObject({ ok: true, wspPath: exportedPath, gatesExported: 1 });
 
       const metadata = await client.callTool({
         name: "get_sample_metadata",
