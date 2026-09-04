@@ -322,6 +322,14 @@ export function detectCompensationStatus(input: {
 
   const embeddedMatrixFound = input.compensations.length > 0;
   const detectedAsPreCompensated = strongSignals.length > 0;
+  // detectedAsPreCompensated: false means the heuristics found no positive signal,
+  // not that the data is confirmed raw. A conventional export that has already been
+  // compensated keeps its spillover keyword and its unprefixed channel names, so it
+  // is indistinguishable from raw here. Say so, rather than leaving the caller to
+  // read a bare suggestion as an endorsement.
+  if (embeddedMatrixFound && !detectedAsPreCompensated) {
+    signals.push("Compensation state unverifiable: no signal distinguishes raw from already-compensated data.");
+  }
   const suggestedCompensationId = embeddedMatrixFound && input.compensations.length === 1 && !detectedAsPreCompensated
     ? input.compensations[0].id
     : undefined;
