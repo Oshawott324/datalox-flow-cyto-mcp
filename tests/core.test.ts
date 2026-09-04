@@ -635,6 +635,49 @@ describe("flowcyto core", () => {
     expect(roundTripWorkspace.gates).toEqual((await readWorkspace(workspacePath)).gates);
   });
 
+  it("exportFlowJoWorkspace rejects an unknown compensationId", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-export-comp-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["FSC-A", "SSC-A"],
+      rows: [[100, 200]],
+    });
+    const { workspacePath } = await initWorkspace({ rootDir: dir, samplePath, sampleId: "sample" });
+    const outputPath = path.join(dir, "out.wsp");
+    await expect(exportFlowJoWorkspace({
+      workspacePath,
+      outputPath,
+      compensationId: "no_such_comp",
+    })).rejects.toMatchObject({ code: "unknown_compensation" });
+  });
+
+  it("exportFlowJoWorkspace warns when compensationId is provided but not exported", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-export-compwarn-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["FSC-A", "SSC-A"],
+      rows: [[100, 200]],
+    });
+    const { workspacePath } = await initWorkspace({ rootDir: dir, samplePath, sampleId: "sample" });
+    await upsertCompensationMatrix({
+      workspacePath,
+      expectedRevision: 0,
+      compensation: {
+        id: "my_comp",
+        source: "manual",
+        channels: ["FSC-A", "SSC-A"],
+        matrix: [[1, 0], [0, 1]],
+      },
+    });
+    const outputPath = path.join(dir, "out.wsp");
+    const result = await exportFlowJoWorkspace({ workspacePath, outputPath, compensationId: "my_comp" });
+    expect(result).toMatchObject({ ok: true, compensationExported: false });
+    expect(result.warnings.length).toBeGreaterThan(0);
+    expect(result.warnings[0]).toMatch(/compensation/i);
+  });
+
   it("reads metadata without requiring event data in the workspace", async () => {
     const { workspacePath } = await makeWorkspace();
     const metadata = await getSampleMetadata(workspacePath, "sample_001");
