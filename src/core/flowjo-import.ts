@@ -15,6 +15,16 @@ type ImportedGateBase = {
   parent: string;
 };
 type ChannelResolver = (channel: string) => string;
+type CoordinateConverter = (channel: string, value: number, gateName: string) => number;
+type FlowJoTransform = {
+  kind: "linear" | "log" | "biex";
+  gain?: number;
+};
+type FlowJoTransformContext = {
+  linearRescale: number;
+  transformsByChannel: Map<string, FlowJoTransform>;
+  unsupportedWarnings: Set<string>;
+};
 
 export type ImportFlowJoWorkspaceInput = {
   wspPath: string;
@@ -101,7 +111,7 @@ function parameterName(dimension: XmlNode | null, resolveChannel: ChannelResolve
   return name ? resolveChannel(name) : undefined;
 }
 
-function parsePolygonGate(node: XmlNode, base: ImportedGateBase, resolveChannel: ChannelResolver): WorkspaceGate | null {
+function parsePolygonGate(node: XmlNode, base: ImportedGateBase, resolveChannel: ChannelResolver, convertCoordinate: CoordinateConverter): WorkspaceGate | null {
   const dimensions = arrayOf(node.dimension).map(asRecord).filter((entry): entry is XmlNode => entry !== null);
   const x = parameterName(dimensions[0] ?? null, resolveChannel);
   const y = parameterName(dimensions[1] ?? null, resolveChannel);
@@ -109,13 +119,15 @@ function parsePolygonGate(node: XmlNode, base: ImportedGateBase, resolveChannel:
     const coordinates = arrayOf(vertex?.coordinate).map(asRecord);
     const xValue = numberAttr(coordinates[0] ?? null, "value");
     const yValue = numberAttr(coordinates[1] ?? null, "value");
-    return xValue === undefined || yValue === undefined ? null : [xValue, yValue] as [number, number];
+    return xValue === undefined || yValue === undefined || !x || !y
+      ? null
+      : [convertCoordinate(x, xValue, base.name ?? base.id), convertCoordinate(y, yValue, base.name ?? base.id)] as [number, number];
   }).filter((vertex): vertex is [number, number] => vertex !== null);
   if (!x || !y || vertices.length < 3) return null;
   return { ...base, type: "polygon", x, y, vertices };
 }
 
-function parseRectangleGate(node: XmlNode, base: ImportedGateBase, resolveChannel: ChannelResolver): WorkspaceGate | null {
+function parseRectangleGate(node: XmlNode, base: ImportedGateBase, resolveChannel: ChannelResolver, convertCoordinate: CoordinateConverter): WorkspaceGate | null {
   const dimensions = arrayOf(node.dimension).map(asRecord).filter((entry): entry is XmlNode => entry !== null);
   const xDimension = dimensions[0] ?? null;
   const yDimension = dimensions[1] ?? null;
@@ -126,19 +138,30 @@ function parseRectangleGate(node: XmlNode, base: ImportedGateBase, resolveChanne
   const yMin = numberAttr(yDimension, "min");
   const yMax = numberAttr(yDimension, "max");
   if (!x || !y || xMin === undefined || xMax === undefined || yMin === undefined || yMax === undefined) return null;
-  return { ...base, type: "rect", x, y, xMin, xMax, yMin, yMax };
+  const gateName = base.name ?? base.id;
+  return {
+    ...base,
+    type: "rect",
+    x,
+    y,
+    xMin: convertCoordinate(x, xMin, gateName),
+    xMax: convertCoordinate(x, xMax, gateName),
+    yMin: convertCoordinate(y, yMin, gateName),
+    yMax: convertCoordinate(y, yMax, gateName),
+  };
 }
 
-function parseRangeGate(node: XmlNode, base: ImportedGateBase, resolveChannel: ChannelResolver): WorkspaceGate | null {
+function parseRangeGate(node: XmlNode, base: ImportedGateBase, resolveChannel: ChannelResolver, convertCoordinate: CoordinateConverter): WorkspaceGate | null {
   const dimension = asRecord(arrayOf(node.dimension)[0]);
   const x = parameterName(dimension, resolveChannel);
   const min = numberAttr(dimension, "min");
   const max = numberAttr(dimension, "max");
   if (!x || min === undefined || max === undefined) return null;
-  return { ...base, type: "range", x, min, max };
+  const gateName = base.name ?? base.id;
+  return { ...base, type: "range", x, min: convertCoordinate(x, min, gateName), max: convertCoordinate(x, max, gateName) };
 }
 
-function parseGateWrapper(wrapper: XmlNode, sampleId: string, parentId: string, warnings: string[], resolveChannel: ChannelResolver): WorkspaceGate | null {
+function parseGateWrapper(wrapper: XmlNode, sampleId: string, parentId: string, warnings: string[], resolveChannel: ChannelResolver, convertCoordinate: CoordinateConverter): WorkspaceGate | null {
   const flowJoGate = asRecord(wrapper.Gate);
   const geometryParent = flowJoGate ?? wrapper;
   const polygon = asRecord(geometryParent.PolygonGate);
@@ -154,9 +177,9 @@ function parseGateWrapper(wrapper: XmlNode, sampleId: string, parentId: string, 
     sample: sampleId,
     parent: parentId,
   };
-  if (polygon) return parsePolygonGate(polygon, base, resolveChannel);
-  if (rectangle) return parseRectangleGate(rectangle, base, resolveChannel);
-  if (range) return parseRangeGate(range, base, resolveChannel);
+  if (polygon) return parsePolygonGate(polygon, base, resolveChannel, convertCoordinate);
+  if (rectangle) return parseRectangleGate(rectangle, base, resolveChannel, convertCoordinate);
+  if (range) return parseRangeGate(range, base, resolveChannel, convertCoordinate);
   if (unsupported) warnings.push(`${unsupported} skipped for gate ${name ?? id}.`);
   return null;
 }
@@ -170,12 +193,12 @@ function collectGateWrappers(subpopulations: unknown): XmlNode[] {
   ].map(asRecord).filter((entry): entry is XmlNode => entry !== null);
 }
 
-function appendNestedGates(wrappers: XmlNode[], sampleId: string, parentId: string, gates: WorkspaceGate[], warnings: string[], resolveChannel: ChannelResolver): void {
+function appendNestedGates(wrappers: XmlNode[], sampleId: string, parentId: string, gates: WorkspaceGate[], warnings: string[], resolveChannel: ChannelResolver, convertCoordinate: CoordinateConverter): void {
   for (const wrapper of wrappers) {
-    const gate = parseGateWrapper(wrapper, sampleId, parentId, warnings, resolveChannel);
+    const gate = parseGateWrapper(wrapper, sampleId, parentId, warnings, resolveChannel, convertCoordinate);
     const nextParent = gate?.id ?? parentId;
     if (gate) gates.push(gate);
-    appendNestedGates(collectGateWrappers(wrapper.Subpopulations), sampleId, nextParent, gates, warnings, resolveChannel);
+    appendNestedGates(collectGateWrappers(wrapper.Subpopulations), sampleId, nextParent, gates, warnings, resolveChannel, convertCoordinate);
   }
 }
 
@@ -241,6 +264,53 @@ function channelResolver(metadata: SampleMetadata): ChannelResolver {
   };
 }
 
+function transformParameterName(transformNode: XmlNode, resolveChannel: ChannelResolver): string | undefined {
+  const parameter = asRecord(transformNode.parameter) ?? asRecord(transformNode["fcs-dimension"]);
+  const name = stringAttr(parameter, "name");
+  return name ? resolveChannel(name) : undefined;
+}
+
+function addTransforms(nodes: unknown, kind: FlowJoTransform["kind"], context: FlowJoTransformContext, resolveChannel: ChannelResolver): void {
+  for (const node of arrayOf(nodes).map(asRecord).filter((entry): entry is XmlNode => entry !== null)) {
+    const name = transformParameterName(node, resolveChannel);
+    if (!name || context.transformsByChannel.has(name)) continue;
+    context.transformsByChannel.set(name, { kind, gain: numberAttr(node, "gain") });
+  }
+}
+
+function flowJoTransformContext(workspace: XmlNode, resolveChannel: ChannelResolver): FlowJoTransformContext {
+  const context: FlowJoTransformContext = {
+    linearRescale: 1,
+    transformsByChannel: new Map(),
+    unsupportedWarnings: new Set(),
+  };
+  const cytometer = asRecord(arrayOf(asRecord(workspace.Cytometers)?.Cytometer)[0]);
+  if (!cytometer) return context;
+  context.linearRescale = numberAttr(cytometer, "linearRescale") ?? 1;
+  for (const matrixId of arrayOf(asRecord(cytometer.TransformStore)?.MatrixID).map(asRecord).filter((entry): entry is XmlNode => entry !== null)) {
+    const transforms = asRecord(matrixId.Transforms);
+    if (!transforms) continue;
+    addTransforms(transforms.linear, "linear", context, resolveChannel);
+    addTransforms(transforms.log, "log", context, resolveChannel);
+    addTransforms(transforms.biex, "biex", context, resolveChannel);
+  }
+  return context;
+}
+
+function coordinateConverter(context: FlowJoTransformContext, warnings: string[]): CoordinateConverter {
+  return (channel, value, gateName) => {
+    const transform = context.transformsByChannel.get(channel);
+    if (!transform) return value;
+    if (transform.kind === "linear") return value * context.linearRescale / (transform.gain ?? 1);
+    const warning = `FlowJo ${transform.kind} transform is not converted for gate ${gateName} channel ${channel}; coordinates imported as stored.`;
+    if (!context.unsupportedWarnings.has(warning)) {
+      context.unsupportedWarnings.add(warning);
+      warnings.push(warning);
+    }
+    return value;
+  };
+}
+
 async function readFlowJoSamples(input: ImportFlowJoWorkspaceInput, workspace: XmlNode): Promise<{ samples: FlowcytoSample[]; gates: WorkspaceGate[]; warnings: string[] }> {
   const sampleNodes = arrayOf(asRecord(workspace.SampleList)?.Sample).map(asRecord).filter((entry): entry is XmlNode => entry !== null);
   const warnings: string[] = [];
@@ -258,8 +328,10 @@ async function readFlowJoSamples(input: ImportFlowJoWorkspaceInput, workspace: X
     if (!shouldImportSample(input, sampleName, sampleId)) continue;
     const samplePath = resolveSamplePath(input, sampleName, dataUri);
     const metadata = await readFcsMetadata(samplePath, sampleId);
+    const resolveChannel = channelResolver(metadata);
+    const transformContext = flowJoTransformContext(workspace, resolveChannel);
     samples.push({ id: sampleId, path: pathForWorkspace(rootDir, samplePath) });
-    appendNestedGates(collectGateWrappers(sampleNode?.Subpopulations), sampleId, "root", gates, warnings, channelResolver(metadata));
+    appendNestedGates(collectGateWrappers(sampleNode?.Subpopulations), sampleId, "root", gates, warnings, resolveChannel, coordinateConverter(transformContext, warnings));
   }
   if (samples.length === 0) {
     throw new FlowcytoError("flowjo_sample_filter_no_match", "No FlowJo samples matched sampleNames/sampleIds filter.", "/sampleNames");

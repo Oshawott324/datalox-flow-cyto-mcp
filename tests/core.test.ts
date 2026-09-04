@@ -568,6 +568,12 @@ describe("flowcyto core", () => {
       x: "FSC-A",
       y: "SSC-A",
     })]);
+    const gate = workspace.gates[0];
+    expect(gate?.type === "polygon" ? gate.vertices : []).toEqual([
+      [500_000_000, 200_000_000],
+      [2_000_000_000, 200_000_000],
+      [2_000_000_000, 1_000_000_000],
+    ]);
   });
 
   it("fails when a FlowJo sample filter matches no samples", async () => {
