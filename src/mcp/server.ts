@@ -22,6 +22,7 @@ import {
   FlowcytoError,
   deleteGate,
   estimateCompensationFromControls,
+  exportFlowJoWorkspace,
   getEventPreview,
   importFlowJoWorkspace,
   getSampleMetadata,
@@ -84,7 +85,7 @@ const FlowcytoCapabilities = {
   canWriteStructuredGates: true,
   liveRefreshAfterUpsertGate: true,
   canonicalArtifact: "flowcyto.workspace.json",
-  primaryTools: ["open_fcs", "import_flowjo_workspace", "list_compensations", "get_compensation_matrix", "estimate_compensation_from_controls", "upsert_compensation_matrix", "render_plot", "render_plot_image", "open_gate_editor", "get_plot_context", "upsert_gate"],
+  primaryTools: ["open_fcs", "import_flowjo_workspace", "export_flowjo_workspace", "list_compensations", "get_compensation_matrix", "estimate_compensation_from_controls", "upsert_compensation_matrix", "render_plot", "render_plot_image", "open_gate_editor", "get_plot_context", "upsert_gate"],
   preferredWorkflowResource: OPEN_FCS_WORKFLOW_RESOURCE_URI,
   compactGateEditor: {
     entryTool: "open_gate_editor",
@@ -692,6 +693,29 @@ server.registerTool(
       sampleIdMap: sample_id_map,
       samplePathMap: sample_path_map,
       overwriteGates: overwrite_gates,
+    }),
+  ),
+);
+
+server.registerTool(
+  "export_flowjo_workspace",
+  {
+    description: "Export a canonical flowcyto.workspace.json to a FlowJo .wsp file. Initial scope writes reference_only XML for polygon, rectangle, and range gates; compensated FCS export and portable bundles are not implemented.",
+    inputSchema: {
+      workspace_path: z.string(),
+      output_path: z.string(),
+      bundle_mode: z.enum(["reference_only"]).optional(),
+      compensation_id: z.string().optional(),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: false },
+  },
+  async ({ workspace_path, output_path, bundle_mode, compensation_id }) => toolContent(() =>
+    exportFlowJoWorkspace({
+      workspacePath: workspace_path,
+      outputPath: output_path,
+      bundleMode: bundle_mode,
+      compensationId: compensation_id,
     }),
   ),
 );
