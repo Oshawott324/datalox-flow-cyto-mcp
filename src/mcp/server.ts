@@ -675,23 +675,29 @@ server.registerTool(
 server.registerTool(
   "import_flowjo_workspace",
   {
-    description: "Import FlowJo .wsp gates into a canonical flowcyto.workspace.json. Requires explicit sample_path_map when FlowJo file URIs are not valid local FCS paths. Supports linear polygon, rectangle, and range gates in this initial import path.",
+    description: "Import FlowJo .wsp gates into a canonical flowcyto.workspace.json. Pass sample_names or sample_ids for a single-sample import; omit them only for intentional batch import. Existing sample paths are preserved unless overwrite_samples=true. Requires explicit sample_path_map when FlowJo file URIs are not valid local FCS paths. Supports polygon, rectangle, and range gates in this initial import path.",
     inputSchema: {
       wsp_path: z.string(),
       workspace_dir: z.string(),
+      sample_names: z.array(z.string()).optional(),
+      sample_ids: z.array(z.string()).optional(),
       sample_id_map: z.record(z.string(), z.string()).optional(),
       sample_path_map: z.record(z.string(), z.string()).optional(),
+      overwrite_samples: z.boolean().optional(),
       overwrite_gates: z.boolean().optional(),
     },
     outputSchema: JsonResultSchema,
     annotations: { readOnlyHint: false },
   },
-  async ({ wsp_path, workspace_dir, sample_id_map, sample_path_map, overwrite_gates }) => toolContent(() =>
+  async ({ wsp_path, workspace_dir, sample_names, sample_ids, sample_id_map, sample_path_map, overwrite_samples, overwrite_gates }) => toolContent(() =>
     importFlowJoWorkspace({
       wspPath: wsp_path,
       workspaceDir: workspace_dir,
+      sampleNames: sample_names,
+      sampleIds: sample_ids,
       sampleIdMap: sample_id_map,
       samplePathMap: sample_path_map,
+      overwriteSamples: overwrite_samples,
       overwriteGates: overwrite_gates,
     }),
   ),
