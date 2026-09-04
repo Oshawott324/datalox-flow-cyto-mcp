@@ -14,7 +14,10 @@ export type CompensationMatrix = {
   sample?: string;
   keyword?: CompensationKeyword;
   channels: string[];
-  // matrix[i][j] = fraction of fluorochrome j spilling into detector i.
+  // matrix[i][j] = fraction of fluorochrome i's signal appearing in detector j.
+  // Row = source fluorochrome, column = destination detector. This matches the FCS
+  // $SPILLOVER/SPILL keyword layout and flowCore's spillover() output, so matrices
+  // from embedded keywords and from single-stain controls are directly comparable.
   // Apply as Xcomp = Xraw * inv(S), implemented as solve(S.T, Xraw.T).T.
   matrix: number[][];
 };
