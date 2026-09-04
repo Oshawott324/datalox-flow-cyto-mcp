@@ -118,6 +118,42 @@
           "V800-A"
         ]
       }
+    },
+    {
+      "id": "peacoqc-111-comp-trans",
+      "path": "testdata/fixtures/downloaded/peacoqc-111-comp-trans.fcs",
+      "source": "Bioconductor PeacoQC extdata",
+      "sourceUrl": "https://bioconductor.org/packages/3.23/bioc/src/contrib/PeacoQC_1.22.0.tar.gz",
+      "packagePath": "PeacoQC/inst/extdata/111_Comp_Trans.fcs",
+      "license": "GPL-3.0-or-later",
+      "instrument": "LSRII",
+      "classification": "compensated",
+      "notes": "The same sample as peacoqc-111-raw, already compensated and transformed. Retains the identical SPILL matrix and keeps unprefixed detector channel names, so no metadata signal distinguishes it from raw. Carried to demonstrate that gap, not for matrix coverage.",
+      "expected": {
+        "minParameters": 2,
+        "minEvents": 1,
+        "requiredKeywords": [
+          "$PAR",
+          "$TOT",
+          "$DATATYPE"
+        ],
+        "spilloverKeyword": "SPILL",
+        "spilloverChannels": [
+          "B515-A",
+          "G560-A",
+          "G610-A",
+          "G660-A",
+          "G710-A",
+          "G780-A",
+          "R660-A",
+          "R710-A",
+          "R780-A",
+          "V450-A",
+          "V545-A",
+          "V585-A",
+          "V800-A"
+        ]
+      }
     }
   ]
 }

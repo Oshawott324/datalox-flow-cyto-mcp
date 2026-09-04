@@ -925,6 +925,51 @@ describe("flowcyto core", () => {
     expect(preview.points?.[0]?.[1]).toBeCloseTo(18.9795918);
   });
 
+  it("cannot distinguish an already-compensated export from its raw source", async () => {
+    // Scenario C, with a real file pair rather than a hypothetical: PeacoQC ships the
+    // same sample raw and already compensated. The compensated export kept its SPILL
+    // keyword and its unprefixed detector channel names, so every signal the detector
+    // looks for is absent from both. This test documents the gap; it is expected to
+    // show the two as identical until some positive evidence of raw data exists.
+    const manifest = await readFixtureManifest();
+    const pair = ["peacoqc-111-raw", "peacoqc-111-comp-trans"]
+      .map((id) => manifest.fixtures.find((fixture) => fixture.id === id));
+    expect(pair.every(Boolean), "both PeacoQC fixtures must be in the manifest").toBe(true);
+    expect(pair[0]?.classification).toBe("raw");
+    expect(pair[1]?.classification).toBe("compensated");
+
+    const statuses = [];
+    for (const fixture of pair) {
+      const { workspacePath } = await makeWorkspaceFromFixture(path.resolve(fixture!.path), fixture!.id);
+      const metadata = await getSampleMetadata(workspacePath, fixture!.id);
+      const channels = metadata.parameters.map((parameter) => parameter.name);
+      const { compensations } = extractSpilloverMatrices({
+        keywords: metadata.keywords,
+        sampleId: "shared",
+        availableChannels: channels,
+      });
+      statuses.push(detectCompensationStatus({ keywords: metadata.keywords, channels, compensations }));
+    }
+    const [rawStatus, compensatedStatus] = statuses;
+
+    // Both carry a matrix, and neither trips a pre-compensation signal.
+    expect(rawStatus.embeddedMatrixFound).toBe(true);
+    expect(compensatedStatus.embeddedMatrixFound).toBe(true);
+    expect(compensatedStatus.detectedAsPreCompensated).toBe(false);
+
+    // The detector produces byte-identical output for raw and compensated data.
+    // Sample ids are normalized above so only the detection result is compared.
+    expect(compensatedStatus).toEqual(rawStatus);
+
+    // Since they cannot be told apart, the status must at least say so rather than
+    // offering a bare suggestion that reads as an endorsement.
+    for (const status of statuses) {
+      expect(status.signals).toContain(
+        "Compensation state unverifiable: no signal distinguishes raw from already-compensated data.",
+      );
+    }
+  });
+
   it("matches the external numpy compensation reference", async () => {
     const reference = JSON.parse(await fs.readFile(compensationReferencePath, "utf8")) as CompensationReference;
     expect(reference.reference).toBe("numpy.linalg.solve(S.T, X.T).T");
