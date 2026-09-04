@@ -19,8 +19,11 @@ type ChannelResolver = (channel: string) => string;
 export type ImportFlowJoWorkspaceInput = {
   wspPath: string;
   workspaceDir: string;
+  sampleNames?: string[];
+  sampleIds?: string[];
   sampleIdMap?: Record<string, string>;
   samplePathMap?: Record<string, string>;
+  overwriteSamples?: boolean;
   overwriteGates?: boolean;
 };
 
@@ -83,6 +86,13 @@ function sampleIdFor(input: ImportFlowJoWorkspaceInput, sampleName: string, data
   const stem = path.basename(fileName, path.extname(fileName));
   const mapped = input.sampleIdMap?.[sampleName] ?? input.sampleIdMap?.[fileName] ?? input.sampleIdMap?.[stem];
   return sanitizeId(mapped ?? stem, `sample_${index + 1}`);
+}
+
+function shouldImportSample(input: ImportFlowJoWorkspaceInput, sampleName: string, sampleId: string): boolean {
+  const hasNameFilter = input.sampleNames !== undefined && input.sampleNames.length > 0;
+  const hasIdFilter = input.sampleIds !== undefined && input.sampleIds.length > 0;
+  if (!hasNameFilter && !hasIdFilter) return true;
+  return (input.sampleNames ?? []).includes(sampleName) || (input.sampleIds ?? []).includes(sampleId);
 }
 
 function parameterName(dimension: XmlNode | null, resolveChannel: ChannelResolver): string | undefined {
@@ -245,10 +255,14 @@ async function readFlowJoSamples(input: ImportFlowJoWorkspaceInput, workspace: X
     const dataUri = stringAttr(dataSet, "uri") ?? "";
     const sampleName = stringAttr(sampleNode, "name") ?? fileNameFromUri(dataUri);
     const sampleId = sampleIdFor(input, sampleName, dataUri, index);
+    if (!shouldImportSample(input, sampleName, sampleId)) continue;
     const samplePath = resolveSamplePath(input, sampleName, dataUri);
     const metadata = await readFcsMetadata(samplePath, sampleId);
     samples.push({ id: sampleId, path: pathForWorkspace(rootDir, samplePath) });
     appendNestedGates(collectGateWrappers(sampleNode?.Subpopulations), sampleId, "root", gates, warnings, channelResolver(metadata));
+  }
+  if (samples.length === 0) {
+    throw new FlowcytoError("flowjo_sample_filter_no_match", "No FlowJo samples matched sampleNames/sampleIds filter.", "/sampleNames");
   }
   return { samples, gates, warnings };
 }
@@ -293,7 +307,7 @@ export async function importFlowJoWorkspace(input: ImportFlowJoWorkspaceInput): 
   const importedGates = uniquifyGateIds(imported.gates);
   const next: FlowcytoWorkspace = {
     ...current,
-    samples: mergeById(current.samples, imported.samples, true),
+    samples: mergeById(current.samples, imported.samples, input.overwriteSamples ?? false),
     gates: mergeById(current.gates, importedGates, input.overwriteGates ?? false),
   };
   const validation = await validateWorkspaceObject(workspacePath, next);

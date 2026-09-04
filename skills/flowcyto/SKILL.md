@@ -20,6 +20,11 @@ Use `import_flowjo_workspace` when the user provides a FlowJo `.wsp` file and
 wants FlowJo gates converted into `flowcyto.workspace.json`. If the `.wsp`
 contains stale or machine-specific FCS paths, pass an explicit
 `sample_path_map`; do not guess sample bindings from nearby files.
+If the user is working on one opened FCS file, pass `sample_names` or
+`sample_ids` so only the matching FlowJo sample is imported. Omit those filters
+only for an intentional batch import of every sample in the `.wsp`. Existing
+workspace sample paths are preserved unless `overwrite_samples=true` is
+explicitly requested.
 
 Use `export_flowjo_workspace` when the user wants to hand off Flowcyto gates to
 FlowJo. The current export path writes reference-only `.wsp` files for polygon,
