@@ -13,7 +13,7 @@ The shipped estimator got the two design decisions that matter **right**: it use
 It had two defects, one now fixed:
 
 1. **Transposed output** — returned row = detector instead of row = fluorochrome, disagreeing with the embedded-keyword path through the same `applyCompensationColumns`. Fixed in `fix/compensation-matrix-orientation`.
-2. **No `$PnE` linearization** — still open. On log-amplified data the estimate is wrong by a factor of 3–5.
+2. **No `$PnE` linearization** — fixed in `fix/compensation-pne-linearization`. On log-amplified data the estimate was wrong by a factor of 3–5.
 
 Against flowCore's published matrix, using its own five controls:
 
@@ -21,9 +21,9 @@ Against flowCore's published matrix, using its own five controls:
 |---|---|
 | As merged | 0.71533 |
 | With orientation fixed | 0.52646 |
-| Correct algorithm | **3.6e-16** |
+| With `$PnE` linearization as well | **3.6e-16** |
 
-The residual 0.526 is entirely the `$PnE` gap.
+The estimator now reproduces flowCore's published matrix exactly, end to end through the shipped code path, and a test asserts it.
 
 ## The algorithm, fully specified
 
@@ -34,7 +34,7 @@ Four steps. Every one is load-bearing.
 3. **Subtract the unstained control's per-channel medians.**
 4. **Row-normalize** each control's row by its own stain channel.
 
-Steps 2–4 are what `estimateCompensationFromControls` does. Step 1 is missing.
+Steps 2–4 were already what `estimateCompensationFromControls` does. Step 1 is added by `fix/compensation-pne-linearization`.
 
 Row `i` is the control for channel `i`; entry `[i][j]` is that stain's signal in detector `j` — the convention in [compensation-numeric-validation-2026-09-04.md](compensation-numeric-validation-2026-09-04.md).
 
@@ -47,7 +47,7 @@ FACSCalibur fluorescence channels are stored as 4-decade log values (`$PnE = 4,0
 | FL1-H → FL2-H | 0.2420 | 0.7231 (**3.0×**) |
 | FL2-H → FL3-H | 0.1408 | 0.6673 (**4.7×**) |
 
-Not a degradation — a different matrix. `readFcsColumns` has no `$PnE` handling, so this is live for any log-amplified control set.
+Not a degradation — a different matrix. `readFcsColumns` now linearizes, which is a no-op for the `$PnE = 0,0` of every digital instrument.
 
 It is also a **latent risk in the apply path**, though not currently a live bug there: `applyCompensationColumns` operates on stored values with no `$PnE` check. Every spillover-bearing fixture found is digital and linear (`$PnE = 0,0`), so it is correct on all of them, but a log-amplified file carrying a spillover keyword would be silently mis-compensated.
 
@@ -130,10 +130,10 @@ Closing these needs a panel with a real tandem (PE-Cy7 or APC-Cy7, where spillov
 
 Ordered by value. None are implemented here.
 
-1. **Linearize per `$PnE`**, or refuse log-amplified input with a structured error. Currently the only thing between a user and a 3–5× wrong matrix.
-2. **Require an unstained control**, or report that the estimate is background-uncorrected.
-3. **Add an explicit minimum-event threshold**, refusing rather than degrading below it.
-4. **Report the condition number** in the estimator result.
+1. **Require an unstained control**, or report that the estimate is background-uncorrected.
+2. **Add an explicit minimum-event threshold**, refusing rather than degrading below it.
+3. **Report the condition number** in the estimator result.
+4. **Surface linearization in the estimator diagnostics**, so callers can see that stored values were converted. Left out here because `diagnostics` is returned by an MCP tool and adding a field is a contract change.
 
 ## Reproducing
 
