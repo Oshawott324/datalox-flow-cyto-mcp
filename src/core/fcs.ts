@@ -143,6 +143,32 @@ function getParamNamesAuto(text: TextDict, parameterCount: number): { names: str
   return { names: Array.from({ length: parameterCount }, (_, index) => `P${index + 1}`), source: "$PnS" };
 }
 
+/**
+ * $PnE declares log amplification as "decades,offset". When decades > 0 the stored
+ * value is a log-scale channel number, not a fluorescence intensity, and must be
+ * converted before any arithmetic that assumes linearity — compensation included.
+ * Returns undefined for linear parameters ($PnE "0,0"), which is every digital
+ * instrument, so this is a no-op on modern files.
+ */
+function logAmplification(text: TextDict, parameterIndex: number): { decades: number; offset: number; range: number } | undefined {
+  const raw = text[`$P${parameterIndex}E`];
+  if (!raw) return undefined;
+  const [decadesRaw, offsetRaw] = raw.split(",");
+  const decades = Number(decadesRaw);
+  if (!Number.isFinite(decades) || decades <= 0) return undefined;
+  const range = Number(text[`$P${parameterIndex}R`]);
+  if (!Number.isFinite(range) || range <= 0) return undefined;
+  const offsetValue = Number(offsetRaw);
+  // A zero offset means a decade starting at 1, per FCS 3.1.
+  const offset = Number.isFinite(offsetValue) && offsetValue > 0 ? offsetValue : 1;
+  return { decades, offset, range };
+}
+
+function linearizeValue(value: number, amplification: { decades: number; offset: number; range: number } | undefined): number {
+  if (!amplification) return value;
+  return amplification.offset * 10 ** ((amplification.decades * value) / amplification.range);
+}
+
 function parseParameterMetadata(text: TextDict, parameterCount: number): SampleParameter[] {
   const { names } = getParamNamesAuto(text, parameterCount);
   return names.map((name, index) => {
@@ -309,16 +335,17 @@ export async function readFcsColumns(input: {
   const targetEvents = maxEvents && maxEvents > 0 ? Math.min(maxEvents, totalEvents) : totalEvents;
   const stride = Math.max(1, Math.ceil(totalEvents / targetEvents));
   const sampledEvents = Math.ceil(totalEvents / stride);
+  const amplifications = indexes.map((index) => logAmplification(text, index + 1));
   const values: number[][] = [];
   for (let row = 0; row < totalEvents && values.length < sampledEvents; row += stride) {
     const rowOffset = row * rowSize;
-    values.push(indexes.map((index) => readValue({
+    values.push(indexes.map((index, position) => linearizeValue(readValue({
       view,
       offset: rowOffset + offsets[index],
       dtype,
       bytes: layout[index],
       littleEndian,
-    })));
+    }), amplifications[position])));
   }
   return {
     channels,

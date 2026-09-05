@@ -938,6 +938,35 @@ describe("flowcyto core", () => {
     expect(preview.points?.[0]?.[1]).toBeCloseTo(18.9795918);
   });
 
+  it("reproduces flowCore's published matrix from the real single-stain controls", async () => {
+    // End-to-end against real log-amplified data: the five flowCore compdata controls
+    // through the shipped estimator must reproduce the matrix flowCore's own
+    // spillover() published from them. This is the check that $PnE linearization
+    // exists at all -- without it the FL1->FL2 coefficient comes out at 0.72
+    // instead of 0.24, and the assertion below fails by a wide margin.
+    const reference = JSON.parse(await fs.readFile(controlCompensationReferencePath, "utf8")) as ControlCompensationReference;
+    const manifest = await readFixtureManifest();
+    const resolve = (id: string) => {
+      const fixture = manifest.fixtures.find((entry) => entry.id === id);
+      expect(fixture, `${id} must be in the manifest`).toBeTruthy();
+      return path.resolve(fixture!.path);
+    };
+
+    const estimated = await estimateCompensationFromControls({
+      channels: reference.channels,
+      unstainedPath: resolve(reference.controls.unstained),
+      // Mapping is declared in the manifest from flowCore's comp_match, never guessed
+      // from filenames: .004 is FL4-H and .005 is FL3-H, so ordinal order is wrong.
+      controls: Object.entries(reference.controls.singleStain)
+        .map(([id, channel]) => ({ path: resolve(id), channel }))
+        .sort((a, b) => reference.channels.indexOf(a.channel) - reference.channels.indexOf(b.channel)),
+    });
+
+    reference.flowcoreCompref.forEach((row, i) => row.forEach((expectedValue, j) => {
+      expect(estimated.compensation.matrix[i][j], `matrix[${i}][${j}]`).toBeCloseTo(expectedValue, 9);
+    }));
+  });
+
   it("keeps the single-stain control mapping explicit and complete", async () => {
     // Guards the boundary that control-to-channel mapping is declared data, not
     // inferred. The reference analysis reads this mapping; if it drifts from
