@@ -11,6 +11,7 @@ to verify round-trip correctness.
 | `minimal-linear-polygon.wsp` | One polygon gate on FSC-A vs SSC-A (linear axes) | Import parser: polygon gate, no transform inversion needed |
 | `minimal-linear-rect.wsp` | One rect gate on FSC-A vs SSC-A | Import parser: rectangle gate |
 | `nested-hierarchy.wsp` | Three-level gate hierarchy | Import parser: gate hierarchy, parent_id chaining |
+| `transform-log-fasinh.wsp` | Log, FlowJo flog, fasinh, and unsupported biex gates | Import parser: exact inverse transform conversion where supported, warning contract for biex |
 
 ## Real FlowJo fixtures (NOT YET ADDED — required before PR B ships)
 
@@ -42,6 +43,6 @@ parser against real FlowJo output and as the round-trip target for the export to
 FlowJo stores gate vertices in display space (post-transform). See the plan doc for details:
 `docs/flowjo-import-export-plan-2026-09-02.md`
 
-The hand-crafted fixtures use linear axes only (FSC/SSC), so display space equals data space
-and no transform inversion is needed. Tests for fluorescence channels (log/biexp) require a
-real FlowJo fixture.
+The hand-crafted fixtures cover linear, log/flog, and fasinh transform inversion. FlowJo `biex`
+is still warning-only until the FlowJo/flowWorkspace spline coefficient path is implemented and
+validated against a real FlowJo workspace.

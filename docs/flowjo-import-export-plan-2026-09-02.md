@@ -87,8 +87,10 @@ FlowJo vertices are stored in **display space** (post-transform). To import corr
 2. Convert vertices back to **data space** (raw FCS units) so they apply correctly to raw FCS events.
 3. Store in `flowcyto.workspace.json` in data space (consistent with existing gate schema).
 
-This is the most important and most error-prone step. Start with linear and log transforms; add
-biexponential/logicle in a follow-up.
+This is the most important and most error-prone step. Linear, log/flog, and fasinh transforms
+can be inverted directly from their XML parameters. FlowJo `biex` requires the FlowJo/flowWorkspace
+spline coefficient algorithm or an equivalent validated implementation; do not approximate it as
+log/asinh because that silently moves fluorescence gates.
 
 ### Compensation Handling
 
@@ -172,9 +174,11 @@ raw FCS values before storing in `flowcyto.workspace.json`.
 For export: apply the transform forward, converting raw FCS values to display coordinates before
 writing vertices to `.wsp`.
 
-**Start with linear and log only.** Biexponential/logicle require numeric root-finding for the
-inverse and should be a follow-up. If a `.wsp` uses biexponential transforms, skip those gates
-and emit a warning, rather than importing incorrect coordinates silently.
+Linear, log/flog, and fasinh can be inverted from XML parameters. FlowJo `biex` is different:
+flowWorkspace reproduces it by building a calibration spline from `channelRange`, `maxValue`,
+`pos`, `neg`, and `widthBasis`. Until that spline path is ported or replaced with a validated
+implementation, keep `biex` gates explicit with warnings rather than importing incorrect
+coordinates silently.
 
 **2. FlowJo XML schema version**
 

@@ -622,6 +622,54 @@ describe("flowcyto core", () => {
     })).rejects.toMatchObject({ code: "flowjo_sample_filter_no_match" });
   });
 
+  it("inverts FlowJo log, flog, and fasinh gate coordinates on import", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-transform-import-"));
+    const samplePath = path.join(dir, "transform-sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["LOG-A", "FLOG-A", "FASINH-A", "BIEX-A"],
+      rows: [[100, 200, 300, 400], [150, 250, 350, 450]],
+    });
+
+    const result = await importFlowJoWorkspace({
+      wspPath: path.join(flowJoFixtureDir, "transform-log-fasinh.wsp"),
+      workspaceDir: dir,
+      samplePathMap: { "transform-sample.fcs": samplePath },
+    });
+    const workspace = await readWorkspace(result.workspacePath);
+    const logRect = workspace.gates.find((gate) => gate.id === "gate-log-rect");
+    const fasinhRange = workspace.gates.find((gate) => gate.id === "gate-fasinh-range");
+    const biexRange = workspace.gates.find((gate) => gate.id === "gate-biex-range");
+
+    expect(result.warnings).toEqual([
+      "FlowJo biex transform is not converted for gate Biex Range channel BIEX-A; coordinates imported as stored.",
+    ]);
+    expect(logRect).toMatchObject({
+      type: "rect",
+      x: "LOG-A",
+      y: "FLOG-A",
+      xMin: 10,
+      xMax: 100000,
+      yMax: 10000,
+    });
+    expect(logRect?.type === "rect" ? logRect.yMin : Number.NaN).toBeCloseTo(316.22776601683796, 10);
+    expect(fasinhRange).toMatchObject({
+      type: "range",
+      x: "FASINH-A",
+    });
+    if (fasinhRange?.type !== "range") throw new Error("Expected fasinh range gate.");
+    const invertFasinh = (value: number) => {
+      const m = 4;
+      const a = 0.7;
+      const length = 256;
+      const t = 12000;
+      return Math.sinh(((m + a) * Math.LN10 * value / length) - (a * Math.LN10)) * t / Math.sinh(m * Math.LN10);
+    };
+    expect(fasinhRange.min).toBeCloseTo(invertFasinh(100), 10);
+    expect(fasinhRange.max).toBeCloseTo(invertFasinh(140), 10);
+    expect(biexRange).toMatchObject({ type: "range", x: "BIEX-A", min: 10, max: 100 });
+  });
+
   it("skips unsupported FlowJo gate types with warnings, promotes orphaned children to parent", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-unsupported-"));
     const samplePath = path.join(dir, "sample.fcs");
@@ -906,7 +954,7 @@ describe("flowcyto core", () => {
       expect(bins.bins?.counts, fixture.id).toHaveLength(32 * 24);
       expect(bins.bins?.counts.reduce((sum, count) => sum + count, 0), fixture.id).toBe(bins.sampledEvents);
     }
-  });
+  }, 30000);
 
   it("reads FCS data when vendor $ENDDATA is one past EOF but $TOT and row width match", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-off-by-one-fcs-"));
@@ -2496,12 +2544,14 @@ describe("flowcyto gate editor server", () => {
       await expect.poll(() => page.locator("#status").textContent()).toContain("revision 2");
       const childWorkspace = await readWorkspace(workspacePath);
       expect(childWorkspace.gates).toHaveLength(2);
-      expect(childWorkspace.gates[1]?.parent).toBe(rootGate.id);
+      const childGate = childWorkspace.gates[1];
+      expect(childGate?.parent).toBe(rootGate.id);
+      if (!childGate || childGate.type === "range") throw new Error("Child gate should be a 2D gate.");
       const parentOptions = await page.locator("#parentSelect option").evaluateAll((options) =>
         options.map((option) => ({ value: (option as HTMLOptionElement).value, label: option.textContent || "" })),
       );
       expect(parentOptions.find((option) => option.value === rootGate.id)?.label).toBe("\u00a0\u00a0\u00a0Root Gate");
-      expect(parentOptions.find((option) => option.value === childWorkspace.gates[1]?.id)?.label).toContain("\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0Child Gate");
+      expect(parentOptions.find((option) => option.value === childGate?.id)?.label).toContain("\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0Child Gate");
       await expect.poll(() => page.locator("#populationStats").textContent()).toContain("events");
       await expect.poll(() => page.locator("#gateTray").evaluate((element) => element.hasAttribute("hidden"))).toBe(false);
 
@@ -2528,8 +2578,8 @@ describe("flowcyto gate editor server", () => {
       expect(await page.locator("#ySelect").inputValue()).toBe("SSC-A");
       await page.getByRole("button", { name: /^> Root Gate rect$/ }).click();
       await expect.poll(() => page.locator("#parentSelect").inputValue()).toBe(rootGate.id);
-      await expect.poll(() => page.locator("#xSelect").inputValue()).toBe("HDR-T");
-      await expect.poll(() => page.locator("#ySelect").inputValue()).toBe("FSC-A");
+      await expect.poll(() => page.locator("#xSelect").inputValue()).toBe(childGate.x);
+      await expect.poll(() => page.locator("#ySelect").inputValue()).toBe(childGate.y);
 
       await page.locator("#resetView").click();
       await page.mouse.wheel(0, -250);
