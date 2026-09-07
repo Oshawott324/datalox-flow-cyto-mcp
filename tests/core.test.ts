@@ -946,6 +946,59 @@ describe("flowcyto core", () => {
     })).rejects.toMatchObject({ code: "unsupported_flowjo_biex_export" });
   });
 
+  it("exportFlowJoWorkspace rejects conflicting channel scales across views", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-export-ambig-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["FSC-A", "FITC-A"],
+      rows: [[100, 300]],
+    });
+    const { workspacePath } = await initWorkspace({ rootDir: dir, samplePath, sampleId: "sample" });
+    await upsertGate({
+      workspacePath,
+      expectedRevision: 0,
+      gate: { id: "g1", sample: "sample", parent: "root", type: "range", x: "FITC-A", min: 100, max: 500 },
+    });
+    const ws = await readWorkspace(workspacePath);
+    await fs.writeFile(workspacePath, `${JSON.stringify({
+      ...ws,
+      views: [
+        { id: "v1", sample: "sample", parent: "root", x: "FITC-A", y: "FSC-A", scale: { x: "log", y: "linear" } },
+        { id: "v2", sample: "sample", parent: "root", x: "FITC-A", y: "FSC-A", scale: { x: "arcsinh", y: "linear" } },
+      ],
+    }, null, 2)}\n`, "utf8");
+    await expect(exportFlowJoWorkspace({
+      workspacePath,
+      outputPath: path.join(dir, "out.wsp"),
+    })).rejects.toMatchObject({ code: "ambiguous_flowjo_transform" });
+  });
+
+  it("exportFlowJoWorkspace rejects a gate coordinate that is non-finite under log transform", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-export-nonfinite-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["FSC-A", "FITC-A"],
+      rows: [[100, 300]],
+    });
+    const { workspacePath } = await initWorkspace({ rootDir: dir, samplePath, sampleId: "sample" });
+    await upsertGate({
+      workspacePath,
+      expectedRevision: 0,
+      gate: { id: "g1", sample: "sample", parent: "root", type: "range", x: "FITC-A", min: 0, max: 500 },
+    });
+    const ws = await readWorkspace(workspacePath);
+    await fs.writeFile(workspacePath, `${JSON.stringify({
+      ...ws,
+      views: [{ id: "v1", sample: "sample", parent: "root", x: "FITC-A", y: "FSC-A", scale: { x: "log", y: "linear" } }],
+    }, null, 2)}\n`, "utf8");
+    await expect(exportFlowJoWorkspace({
+      workspacePath,
+      outputPath: path.join(dir, "out.wsp"),
+    })).rejects.toMatchObject({ code: "invalid_flowjo_export_coordinate" });
+  });
+
   it("exportFlowJoWorkspace rejects an unknown compensationId", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-export-comp-"));
     const samplePath = path.join(dir, "sample.fcs");
