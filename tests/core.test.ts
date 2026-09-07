@@ -761,8 +761,8 @@ describe("flowcyto core", () => {
     const samplePath = path.join(dir, "sample.fcs");
     await writeTinyIntegerFcs({
       fcsPath: samplePath,
-      channels: ["FSC-A", "SSC-A", "FITC-A"],
-      rows: [[100, 200, 300], [150, 250, 350]],
+      channels: ["FSC-A", "SSC-A", "FITC-A", "APC-A"],
+      rows: [[100, 200, 300, 400], [150, 250, 350, 450]],
     });
     const { workspacePath } = await initWorkspace({ rootDir: dir, samplePath, sampleId: "sample" });
     await upsertGate({
@@ -810,16 +810,55 @@ describe("flowcyto core", () => {
         max: 900,
       },
     });
+    await upsertGate({
+      workspacePath,
+      expectedRevision: 3,
+      gate: {
+        id: "apc_positive",
+        name: "APC+",
+        sample: "sample",
+        parent: "live",
+        type: "range",
+        x: "APC-A",
+        min: 150,
+        max: 300,
+      },
+    });
+    const workspaceWithViews = await readWorkspace(workspacePath);
+    await fs.writeFile(workspacePath, `${JSON.stringify({
+      ...workspaceWithViews,
+      views: [
+        {
+          id: "fitc_log_view",
+          sample: "sample",
+          parent: "live",
+          x: "FITC-A",
+          y: "SSC-A",
+          scale: { x: "log", y: "linear" },
+        },
+        {
+          id: "apc_arcsinh_view",
+          sample: "sample",
+          parent: "live",
+          x: "APC-A",
+          y: "SSC-A",
+          scale: { x: "arcsinh", y: "linear" },
+        },
+      ],
+    }, null, 2)}\n`, "utf8");
     const outputPath = path.join(dir, "exported.wsp");
     const exported = await exportFlowJoWorkspace({ workspacePath, outputPath });
     expect(exported).toMatchObject({
       ok: true,
       wspPath: outputPath,
       samplesExported: 1,
-      gatesExported: 3,
+      gatesExported: 4,
       compensationExported: false,
     });
     const xml = await fs.readFile(outputPath, "utf8");
+    expect(xml).toContain("<Cytometers>");
+    expect(xml).toContain("<transforms:log");
+    expect(xml).toContain("<transforms:fasinh");
     expect(xml).toContain("<gating:PolygonGate");
     expect(xml).toContain("<gating:RectangleGate");
     expect(xml).toContain("<gating:RangeGate");
@@ -831,7 +870,133 @@ describe("flowcyto core", () => {
       samplePathMap: { "sample.fcs": samplePath },
     });
     const roundTripWorkspace = await readWorkspace(imported.workspacePath);
-    expect(roundTripWorkspace.gates).toEqual((await readWorkspace(workspacePath)).gates);
+    const originalGates = (await readWorkspace(workspacePath)).gates;
+    expect(roundTripWorkspace.gates).toHaveLength(originalGates.length);
+    for (const originalGate of originalGates) {
+      const roundTripGate = roundTripWorkspace.gates.find((gate) => gate.id === originalGate.id);
+      expect(roundTripGate).toBeDefined();
+      expect(roundTripGate).toMatchObject({
+        id: originalGate.id,
+        name: originalGate.name,
+        sample: originalGate.sample,
+        parent: originalGate.parent,
+        type: originalGate.type,
+      });
+      if (originalGate.type === "polygon") {
+        if (roundTripGate?.type !== "polygon") throw new Error("Expected polygon round-trip gate.");
+        expect(roundTripGate.x).toBe(originalGate.x);
+        expect(roundTripGate.y).toBe(originalGate.y);
+        expect(roundTripGate.vertices).toEqual(originalGate.vertices);
+      }
+      if (originalGate.type === "rect") {
+        if (roundTripGate?.type !== "rect") throw new Error("Expected rect round-trip gate.");
+        expect(roundTripGate.xMin).toBeCloseTo(originalGate.xMin, 10);
+        expect(roundTripGate.xMax).toBeCloseTo(originalGate.xMax, 10);
+        expect(roundTripGate.yMin).toBeCloseTo(originalGate.yMin, 10);
+        expect(roundTripGate.yMax).toBeCloseTo(originalGate.yMax, 10);
+      }
+      if (originalGate.type === "range") {
+        if (roundTripGate?.type !== "range") throw new Error("Expected range round-trip gate.");
+        expect(roundTripGate.x).toBe(originalGate.x);
+        expect(roundTripGate.min).toBeCloseTo(originalGate.min, 10);
+        expect(roundTripGate.max).toBeCloseTo(originalGate.max, 10);
+      }
+    }
+  });
+
+  it("exportFlowJoWorkspace rejects gates on biex-scaled channels", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-export-biex-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["FSC-A", "SSC-A", "FITC-A"],
+      rows: [[100, 200, 300]],
+    });
+    const { workspacePath } = await initWorkspace({ rootDir: dir, samplePath, sampleId: "sample" });
+    await upsertGate({
+      workspacePath,
+      expectedRevision: 0,
+      gate: {
+        id: "fitc_positive",
+        name: "FITC+",
+        sample: "sample",
+        parent: "root",
+        type: "range",
+        x: "FITC-A",
+        min: 300,
+        max: 900,
+      },
+    });
+    const workspace = await readWorkspace(workspacePath);
+    await fs.writeFile(workspacePath, `${JSON.stringify({
+      ...workspace,
+      views: [{
+        id: "fitc_biex_view",
+        sample: "sample",
+        parent: "root",
+        x: "FITC-A",
+        y: "SSC-A",
+        scale: { x: "biex", y: "linear" },
+      }],
+    }, null, 2)}\n`, "utf8");
+
+    await expect(exportFlowJoWorkspace({
+      workspacePath,
+      outputPath: path.join(dir, "out.wsp"),
+    })).rejects.toMatchObject({ code: "unsupported_flowjo_biex_export" });
+  });
+
+  it("exportFlowJoWorkspace rejects conflicting channel scales across views", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-export-ambig-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["FSC-A", "FITC-A"],
+      rows: [[100, 300]],
+    });
+    const { workspacePath } = await initWorkspace({ rootDir: dir, samplePath, sampleId: "sample" });
+    await upsertGate({
+      workspacePath,
+      expectedRevision: 0,
+      gate: { id: "g1", sample: "sample", parent: "root", type: "range", x: "FITC-A", min: 100, max: 500 },
+    });
+    const ws = await readWorkspace(workspacePath);
+    await fs.writeFile(workspacePath, `${JSON.stringify({
+      ...ws,
+      views: [
+        { id: "v1", sample: "sample", parent: "root", x: "FITC-A", y: "FSC-A", scale: { x: "log", y: "linear" } },
+        { id: "v2", sample: "sample", parent: "root", x: "FITC-A", y: "FSC-A", scale: { x: "arcsinh", y: "linear" } },
+      ],
+    }, null, 2)}\n`, "utf8");
+    await expect(exportFlowJoWorkspace({
+      workspacePath,
+      outputPath: path.join(dir, "out.wsp"),
+    })).rejects.toMatchObject({ code: "ambiguous_flowjo_transform" });
+  });
+
+  it("exportFlowJoWorkspace rejects a gate coordinate that is non-finite under log transform", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-export-nonfinite-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["FSC-A", "FITC-A"],
+      rows: [[100, 300]],
+    });
+    const { workspacePath } = await initWorkspace({ rootDir: dir, samplePath, sampleId: "sample" });
+    await upsertGate({
+      workspacePath,
+      expectedRevision: 0,
+      gate: { id: "g1", sample: "sample", parent: "root", type: "range", x: "FITC-A", min: 0, max: 500 },
+    });
+    const ws = await readWorkspace(workspacePath);
+    await fs.writeFile(workspacePath, `${JSON.stringify({
+      ...ws,
+      views: [{ id: "v1", sample: "sample", parent: "root", x: "FITC-A", y: "FSC-A", scale: { x: "log", y: "linear" } }],
+    }, null, 2)}\n`, "utf8");
+    await expect(exportFlowJoWorkspace({
+      workspacePath,
+      outputPath: path.join(dir, "out.wsp"),
+    })).rejects.toMatchObject({ code: "invalid_flowjo_export_coordinate" });
   });
 
   it("exportFlowJoWorkspace rejects an unknown compensationId", async () => {

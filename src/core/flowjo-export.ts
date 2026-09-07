@@ -4,7 +4,7 @@ import path from "node:path";
 import { XMLBuilder } from "fast-xml-parser";
 
 import { readWorkspace, resolveSamplePath, validateWorkspace } from "./workspace.js";
-import { FlowcytoError, type FlowcytoSample, type FlowcytoWorkspace, type WorkspaceGate } from "./types.js";
+import { FlowcytoError, type AxisScale, type FlowcytoSample, type FlowcytoWorkspace, type WorkspaceGate } from "./types.js";
 
 export type ExportFlowJoWorkspaceInput = {
   workspacePath: string;
@@ -25,6 +25,21 @@ export type ExportFlowJoWorkspaceResult = {
 
 type XmlElement = Record<string, unknown>;
 
+type ExportTransform =
+  | { kind: "log"; t: number; m: number }
+  | { kind: "fasinh"; t: number; m: number; a: number; length: number };
+
+type ExportTransformContext = {
+  transformsByChannel: Map<string, ExportTransform>;
+};
+
+const FLOWCYTO_LOG_T = 10;
+const FLOWCYTO_LOG_M = 1;
+const FLOWCYTO_ARCSINH_M = 1 / Math.LN10;
+const FLOWCYTO_ARCSINH_A = 0;
+const FLOWCYTO_ARCSINH_LENGTH = 1;
+const FLOWCYTO_ARCSINH_T = 150 * Math.sinh(1);
+
 function sampleName(sample: FlowcytoSample): string {
   return path.basename(sample.path) || sample.id;
 }
@@ -39,26 +54,130 @@ function gateName(gate: WorkspaceGate): string {
   return gate.name || gate.id;
 }
 
-function dimension(parameterName: string, min?: number, max?: number): XmlElement {
+function flowJoTransformForScale(scale: AxisScale): ExportTransform | null {
+  if (scale === "log") return { kind: "log", t: FLOWCYTO_LOG_T, m: FLOWCYTO_LOG_M };
+  if (scale === "arcsinh") {
+    return {
+      kind: "fasinh",
+      t: FLOWCYTO_ARCSINH_T,
+      m: FLOWCYTO_ARCSINH_M,
+      a: FLOWCYTO_ARCSINH_A,
+      length: FLOWCYTO_ARCSINH_LENGTH,
+    };
+  }
+  return null;
+}
+
+function addChannelScale(scales: Map<string, AxisScale>, channel: string, scale: AxisScale): void {
+  if (scale === "linear") return;
+  const existing = scales.get(channel);
+  if (existing && existing !== scale) {
+    throw new FlowcytoError("ambiguous_flowjo_transform", `Channel ${channel} has conflicting view scales: ${existing} and ${scale}.`, "/views");
+  }
+  scales.set(channel, scale);
+}
+
+function gateChannels(gate: WorkspaceGate): string[] {
+  if (gate.type === "range") return [gate.x];
+  return [gate.x, gate.y];
+}
+
+function buildTransformContext(workspace: FlowcytoWorkspace): ExportTransformContext {
+  const channelScales = new Map<string, AxisScale>();
+  for (const view of workspace.views) {
+    addChannelScale(channelScales, view.x, view.scale.x);
+    addChannelScale(channelScales, view.y, view.scale.y);
+  }
+
+  const exportedGateChannels = new Set(workspace.gates.flatMap(gateChannels));
+  const transformsByChannel = new Map<string, ExportTransform>();
+  for (const channel of exportedGateChannels) {
+    const scale = channelScales.get(channel);
+    if (!scale || scale === "linear") continue;
+    if (scale === "biex") {
+      throw new FlowcytoError(
+        "unsupported_flowjo_biex_export",
+        `FlowJo biex export for channel ${channel} is not implemented. Export would misposition gates without the FlowJo spline transform.`,
+        "/views",
+      );
+    }
+    const transform = flowJoTransformForScale(scale);
+    if (transform) transformsByChannel.set(channel, transform);
+  }
+  return { transformsByChannel };
+}
+
+function exportCoordinate(value: number, channel: string, context: ExportTransformContext): number {
+  const transform = context.transformsByChannel.get(channel);
+  if (!transform) return value;
+  if (transform.kind === "log") return (Math.log10(value / transform.t) / transform.m) + 1;
+  return transform.length
+    * (Math.asinh(value * Math.sinh(transform.m * Math.LN10) / transform.t) + (transform.a * Math.LN10))
+    / ((transform.m + transform.a) * Math.LN10);
+}
+
+function formatNumber(value: number): string {
+  if (!Number.isFinite(value)) {
+    throw new FlowcytoError("invalid_flowjo_export_coordinate", "FlowJo export produced a non-finite gate coordinate.", "/gates");
+  }
+  return String(value);
+}
+
+function transformStore(context: ExportTransformContext): XmlElement | null {
+  const transforms: XmlElement = {};
+  for (const [channel, transform] of Array.from(context.transformsByChannel.entries()).sort(([left], [right]) => left.localeCompare(right))) {
+    const key = transform.kind === "log" ? "transforms:log" : "transforms:fasinh";
+    const entry = transform.kind === "log"
+      ? {
+        "@_transforms:T": String(transform.t),
+        "@_transforms:M": String(transform.m),
+        "data-type:parameter": { "@_data-type:name": channel },
+      }
+      : {
+        "@_transforms:T": String(transform.t),
+        "@_transforms:M": String(transform.m),
+        "@_transforms:A": String(transform.a),
+        "@_transforms:length": String(transform.length),
+        "data-type:parameter": { "@_data-type:name": channel },
+      };
+    const current = transforms[key];
+    transforms[key] = current === undefined ? entry : [...(Array.isArray(current) ? current : [current]), entry];
+  }
+  if (Object.keys(transforms).length === 0) return null;
+  return {
+    Cytometer: {
+      "@_name": "Flowcyto",
+      "@_linearRescale": "1",
+      TransformStore: {
+        MatrixID: {
+          "@_matrixId": "uncompensated",
+          Transforms: transforms,
+        },
+      },
+    },
+  };
+}
+
+function dimension(context: ExportTransformContext, parameterName: string, min?: number, max?: number): XmlElement {
   return {
     "@_gating:compensation-ref": "uncompensated",
-    ...(min !== undefined ? { "@_gating:min": String(min) } : {}),
-    ...(max !== undefined ? { "@_gating:max": String(max) } : {}),
+    ...(min !== undefined ? { "@_gating:min": formatNumber(exportCoordinate(min, parameterName, context)) } : {}),
+    ...(max !== undefined ? { "@_gating:max": formatNumber(exportCoordinate(max, parameterName, context)) } : {}),
     "data-type:parameter": { "@_data-type:name": parameterName },
   };
 }
 
-function gateBody(gate: WorkspaceGate): XmlElement {
+function gateBody(gate: WorkspaceGate, context: ExportTransformContext): XmlElement {
   if (gate.type === "polygon") {
     return {
       "gating:PolygonGate": {
         "@_gating:id": gate.id,
         "@_gating:parent_id": gate.parent === "root" ? "" : gate.parent,
-        "gating:dimension": [dimension(gate.x), dimension(gate.y)],
+        "gating:dimension": [dimension(context, gate.x), dimension(context, gate.y)],
         "gating:vertex": gate.vertices.map((vertex) => ({
           "gating:coordinate": [
-            { "@_data-type:value": String(vertex[0]) },
-            { "@_data-type:value": String(vertex[1]) },
+            { "@_data-type:value": formatNumber(exportCoordinate(vertex[0], gate.x, context)) },
+            { "@_data-type:value": formatNumber(exportCoordinate(vertex[1], gate.y, context)) },
           ],
         })),
       },
@@ -70,8 +189,8 @@ function gateBody(gate: WorkspaceGate): XmlElement {
         "@_gating:id": gate.id,
         "@_gating:parent_id": gate.parent === "root" ? "" : gate.parent,
         "gating:dimension": [
-          dimension(gate.x, gate.xMin, gate.xMax),
-          dimension(gate.y, gate.yMin, gate.yMax),
+          dimension(context, gate.x, gate.xMin, gate.xMax),
+          dimension(context, gate.y, gate.yMin, gate.yMax),
         ],
       },
     };
@@ -80,12 +199,12 @@ function gateBody(gate: WorkspaceGate): XmlElement {
     "gating:RangeGate": {
       "@_gating:id": gate.id,
       "@_gating:parent_id": gate.parent === "root" ? "" : gate.parent,
-      "gating:dimension": dimension(gate.x, gate.min, gate.max),
+      "gating:dimension": dimension(context, gate.x, gate.min, gate.max),
     },
   };
 }
 
-function buildGateTree(gates: WorkspaceGate[], parent: string): XmlElement[] {
+function buildGateTree(gates: WorkspaceGate[], parent: string, context: ExportTransformContext): XmlElement[] {
   return gates
     .filter((gate) => gate.parent === parent)
     .sort((left, right) => left.id.localeCompare(right.id))
@@ -94,16 +213,16 @@ function buildGateTree(gates: WorkspaceGate[], parent: string): XmlElement[] {
       "@_owningGroup": "",
       "@_gating:id": gate.id,
       "@_gating:parent_id": gate.parent === "root" ? "" : gate.parent,
-      ...gateBody(gate),
+      ...gateBody(gate, context),
       Subpopulations: {
-        Gate: buildGateTree(gates, gate.id),
+        Gate: buildGateTree(gates, gate.id, context),
       },
     }));
 }
 
-function sampleElement(workspacePath: string, workspace: FlowcytoWorkspace, sample: FlowcytoSample): XmlElement {
+function sampleElement(workspacePath: string, workspace: FlowcytoWorkspace, sample: FlowcytoSample, context: ExportTransformContext): XmlElement {
   const gates = workspace.gates.filter((gate) => gate.sample === sample.id);
-  const rootGates = buildGateTree(gates, "root");
+  const rootGates = buildGateTree(gates, "root", context);
   return {
     DataSet: {
       "@_uri": fileUri(resolveSamplePath(workspacePath, sample.path)),
@@ -120,6 +239,8 @@ function sampleElement(workspacePath: string, workspace: FlowcytoWorkspace, samp
 }
 
 function buildFlowJoXml(workspacePath: string, workspace: FlowcytoWorkspace): string {
+  const context = buildTransformContext(workspace);
+  const cytometers = transformStore(context);
   const builder = new XMLBuilder({
     ignoreAttributes: false,
     attributeNamePrefix: "@_",
@@ -134,8 +255,9 @@ function buildFlowJoXml(workspacePath: string, workspace: FlowcytoWorkspace): st
       "@_xmlns:gating": "http://www.isac-net.org/std/Gating-ML/v2.0/gating",
       "@_xmlns:data-type": "http://www.isac-net.org/std/Gating-ML/v2.0/datatypes",
       "@_xmlns:transforms": "http://www.isac-net.org/std/Gating-ML/v2.0/transformations",
+      ...(cytometers ? { Cytometers: cytometers } : {}),
       SampleList: {
-        Sample: workspace.samples.map((sample) => sampleElement(workspacePath, workspace, sample)),
+        Sample: workspace.samples.map((sample) => sampleElement(workspacePath, workspace, sample, context)),
       },
     },
   };

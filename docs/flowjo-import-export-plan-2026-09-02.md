@@ -263,7 +263,9 @@ as the source of truth, not the old Datalox data model.
 | `range` | `<RangeGate>` |
 
 Vertices must be in FlowJo display space (post-transform). If gates were drawn in data space
-(raw FCS units), apply the transform before writing vertices.
+(raw FCS units), apply the transform before writing vertices. The current TypeScript export
+path derives per-channel transforms from saved workspace views and writes FlowJo-compatible
+`log` and `fasinh` transform metadata for `log` and `arcsinh` Flowcyto view scales.
 
 ### Compensation Export
 
@@ -307,16 +309,19 @@ Output:
 Same coordinate-space issue applies in reverse: vertices in `flowcyto.workspace.json` are in
 raw FCS data space. Before writing to `.wsp`, apply the axis transform so FlowJo reads them
 in display space. For linear axes (FSC/SSC drawn in the compact editor) this is a no-op. For
-fluorescence channels on log/biexp axes, the conversion is required.
+fluorescence channels on log or arcsinh axes, the export path now writes `transforms:log` or
+`transforms:fasinh` metadata and writes gate coordinates in that display space.
 
 **The export path that failed in old Datalox was most likely the coordinate transform step.**
 The old code eventually handled this; the key is to apply it per-axis, not per-gate, since the
-same gate can span a linear X axis and a biexp Y axis.
+same gate can span a linear X axis and a transformed Y axis. FlowJo `biex` remains explicitly
+blocked on export until the FlowJo spline transform is implemented and validated; exporting
+data-space coordinates for `biex` would silently misposition fluorescence gates.
 
-For compensation references on export: write `gating:compensation-ref="uncompensated"` for
-FSC/SSC (linear) gates. For fluorescence gates, reference the compensation matrix by name. If
-the workspace has no applied compensation, emit `gating:compensation-ref="uncompensated"` for
-all dimensions.
+For compensation references on export: the current implementation writes
+`gating:compensation-ref="uncompensated"` for all dimensions and warns when `compensation_id`
+is supplied. A later compensation-export PR should write the matrix and reference it by name
+for compensated fluorescence gates.
 
 ### Reusable Ideas from Old Branch
 
@@ -335,7 +340,9 @@ Do not port:
 ### Scope Limits for PR B
 
 - Export polygon, rect, range gates.
-- Export compensation matrix reference if one was applied.
+- Export log/arcsinh transform metadata for transformed channels represented in workspace views.
+- Block `biex` export until FlowJo spline parameters are implemented.
+- Warn, but do not yet write, compensation matrix references.
 - `reference_only` bundle mode only; portable bundle can follow.
 - Do not import `.wsp`; that is PR A.
 - Do not write compensated FCS files.
