@@ -706,7 +706,7 @@ server.registerTool(
 server.registerTool(
   "export_flowjo_workspace",
   {
-    description: "Export a canonical flowcyto.workspace.json to a FlowJo .wsp file. Initial scope writes reference_only XML for polygon, rectangle, and range gates; compensated FCS export and portable bundles are not implemented.",
+    description: "Export a canonical flowcyto.workspace.json to a FlowJo .wsp file. Writes reference_only XML for polygon, rectangle, and range gates, including log/arcsinh transform metadata derived from saved workspace views. Biex export is blocked until FlowJo spline transforms are implemented. Compensated FCS export and portable bundles are not implemented.",
     inputSchema: {
       workspace_path: z.string(),
       output_path: z.string(),
