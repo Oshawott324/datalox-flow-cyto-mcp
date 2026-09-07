@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Workspace version="20.0" creator="FlowJo-hand-crafted-fixture"
+  xmlns:gating="http://www.isac-net.org/std/Gating-ML/v2.0/gating"
+  xmlns:transforms="http://www.isac-net.org/std/Gating-ML/v2.0/transformations"
+  xmlns:data-type="http://www.isac-net.org/std/Gating-ML/v2.0/datatypes">
+  <Cytometers>
+    <Cytometer name="Transform Test" linearRescale="10000">
+      <TransformStore>
+        <MatrixID matrixId="uncompensated">
+          <Transforms>
+            <transforms:log transforms:T="1000" transforms:M="4">
+              <data-type:parameter data-type:name="LOG-A"/>
+            </transforms:log>
+            <transforms:flog decade="3" offset="10" scale="2">
+              <data-type:parameter data-type:name="FLOG-A"/>
+            </transforms:flog>
+            <transforms:fasinh transforms:T="12000" transforms:M="4" transforms:A="0.7" transforms:length="256">
+              <data-type:parameter data-type:name="FASINH-A"/>
+            </transforms:fasinh>
+            <transforms:biex transforms:length="256" transforms:maxRange="214748" transforms:neg="0" transforms:width="-10" transforms:pos="4.3319291278">
+              <data-type:parameter data-type:name="BIEX-A"/>
+            </transforms:biex>
+          </Transforms>
+        </MatrixID>
+      </TransformStore>
+    </Cytometer>
+  </Cytometers>
+  <SampleList>
+    <Sample>
+      <DataSet uri="file:///testdata/fixtures/flowjo/transform-sample.fcs"/>
+      <SampleNode name="transform-sample.fcs" owningGroup="" count="10000">
+        <Subpopulations>
+          <Gate name="Log Rect" gating:id="gate-log-rect">
+            <gating:RectangleGate gating:id="gate-log-rect">
+              <gating:dimension gating:min="0.5" gating:max="1.5">
+                <data-type:parameter data-type:name="LOG-A"/>
+              </gating:dimension>
+              <gating:dimension gating:min="1" gating:max="2">
+                <data-type:parameter data-type:name="FLOG-A"/>
+              </gating:dimension>
+            </gating:RectangleGate>
+          </Gate>
+          <Gate name="Fasinh Range" gating:id="gate-fasinh-range">
+            <gating:RangeGate gating:id="gate-fasinh-range">
+              <gating:dimension gating:min="100" gating:max="140">
+                <data-type:parameter data-type:name="FASINH-A"/>
+              </gating:dimension>
+            </gating:RangeGate>
+          </Gate>
+          <Gate name="Biex Range" gating:id="gate-biex-range">
+            <gating:RangeGate gating:id="gate-biex-range">
+              <gating:dimension gating:min="10" gating:max="100">
+                <data-type:parameter data-type:name="BIEX-A"/>
+              </gating:dimension>
+            </gating:RangeGate>
+          </Gate>
+        </Subpopulations>
+      </SampleNode>
+    </Sample>
+  </SampleList>
+</Workspace>

@@ -17,8 +17,19 @@ type ImportedGateBase = {
 type ChannelResolver = (channel: string) => string;
 type CoordinateConverter = (channel: string, value: number, gateName: string) => number;
 type FlowJoTransform = {
-  kind: "linear" | "log" | "biex";
+  kind: "linear" | "log" | "flog" | "fasinh" | "biex";
   gain?: number;
+  t?: number;
+  m?: number;
+  a?: number;
+  length?: number;
+  decade?: number;
+  offset?: number;
+  scale?: number;
+  maxRange?: number;
+  pos?: number;
+  neg?: number;
+  width?: number;
 };
 type FlowJoTransformContext = {
   linearRescale: number;
@@ -274,7 +285,21 @@ function addTransforms(nodes: unknown, kind: FlowJoTransform["kind"], context: F
   for (const node of arrayOf(nodes).map(asRecord).filter((entry): entry is XmlNode => entry !== null)) {
     const name = transformParameterName(node, resolveChannel);
     if (!name || context.transformsByChannel.has(name)) continue;
-    context.transformsByChannel.set(name, { kind, gain: numberAttr(node, "gain") });
+    context.transformsByChannel.set(name, {
+      kind,
+      gain: numberAttr(node, "gain"),
+      t: numberAttr(node, "T") ?? numberAttr(node, "t"),
+      m: numberAttr(node, "M") ?? numberAttr(node, "m"),
+      a: numberAttr(node, "A") ?? numberAttr(node, "a"),
+      length: numberAttr(node, "length"),
+      decade: numberAttr(node, "decade"),
+      offset: numberAttr(node, "offset"),
+      scale: numberAttr(node, "scale"),
+      maxRange: numberAttr(node, "maxRange"),
+      pos: numberAttr(node, "pos"),
+      neg: numberAttr(node, "neg"),
+      width: numberAttr(node, "width"),
+    });
   }
 }
 
@@ -292,9 +317,33 @@ function flowJoTransformContext(workspace: XmlNode, resolveChannel: ChannelResol
     if (!transforms) continue;
     addTransforms(transforms.linear, "linear", context, resolveChannel);
     addTransforms(transforms.log, "log", context, resolveChannel);
+    addTransforms(transforms.flog, "flog", context, resolveChannel);
+    addTransforms(transforms.fasinh, "fasinh", context, resolveChannel);
     addTransforms(transforms.biex, "biex", context, resolveChannel);
   }
   return context;
+}
+
+function invertFlowJoLog(value: number, transform: FlowJoTransform): number {
+  const t = transform.t ?? transform.maxRange ?? 1;
+  const m = transform.m ?? transform.decade ?? 4.5;
+  return t * 10 ** (m * (value - 1));
+}
+
+function invertFlowJoFlog(value: number, transform: FlowJoTransform): number {
+  const decade = transform.decade ?? transform.m ?? 4.5;
+  const offset = transform.offset ?? 1;
+  const scale = transform.scale ?? 1;
+  return 10 ** ((value * decade / scale) + Math.log10(offset));
+}
+
+function invertFlowJoFasinh(value: number, transform: FlowJoTransform): number {
+  const t = transform.t ?? transform.maxRange ?? 262144;
+  const m = transform.m ?? transform.pos ?? 4.5;
+  const a = transform.a ?? transform.neg ?? 0;
+  const length = transform.length ?? 1;
+  const ln10 = Math.LN10;
+  return Math.sinh(((m + a) * ln10 * value / length) - (a * ln10)) * t / Math.sinh(m * ln10);
 }
 
 function coordinateConverter(context: FlowJoTransformContext, warnings: string[]): CoordinateConverter {
@@ -302,6 +351,9 @@ function coordinateConverter(context: FlowJoTransformContext, warnings: string[]
     const transform = context.transformsByChannel.get(channel);
     if (!transform) return value;
     if (transform.kind === "linear") return value * context.linearRescale / (transform.gain ?? 1);
+    if (transform.kind === "log") return invertFlowJoLog(value, transform);
+    if (transform.kind === "flog") return invertFlowJoFlog(value, transform);
+    if (transform.kind === "fasinh") return invertFlowJoFasinh(value, transform);
     const warning = `FlowJo ${transform.kind} transform is not converted for gate ${gateName} channel ${channel}; coordinates imported as stored.`;
     if (!context.unsupportedWarnings.has(warning)) {
       context.unsupportedWarnings.add(warning);
