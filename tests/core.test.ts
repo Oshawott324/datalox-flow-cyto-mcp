@@ -471,6 +471,128 @@ describe("flowcyto core", () => {
     }]);
   });
 
+  it("imports real FlowJo Population wrappers around gate geometry", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-population-wrapper-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["FS00-A", "SS02-A", "FL19-A"],
+      markers: ["FSC-A", "SSC-A", "APC-A"],
+      rows: [[100, 200, 300], [150, 250, 350]],
+    });
+    const result = await importFlowJoWorkspace({
+      wspPath: path.join(flowJoFixtureDir, "population-wrapper.wsp"),
+      workspaceDir: dir,
+      samplePathMap: { "sample.fcs": samplePath },
+    });
+    expect(result).toMatchObject({ ok: true, samplesImported: 1, gatesImported: 3, warnings: [] });
+    const workspace = await readWorkspace(result.workspacePath);
+    expect(workspace.gates).toEqual([
+      {
+        id: "ID1783181596",
+        name: "Lymphocytes",
+        sample: "sample",
+        parent: "root",
+        type: "polygon",
+        x: "FSC-A",
+        y: "SSC-A",
+        vertices: [[50000, 20000], [200000, 20000], [200000, 100000]],
+      },
+      {
+        id: "ID1054706104",
+        name: "Single Cells",
+        sample: "sample",
+        parent: "ID1783181596",
+        type: "rect",
+        x: "FSC-A",
+        y: "SSC-A",
+        xMin: 21592.577696526507,
+        xMax: 166066.5521023766,
+        yMin: 59077.2610441767,
+        yMax: 88831.50200803213,
+      },
+      {
+        id: "IDCOMPALIAS",
+        name: "Compensated Alias",
+        sample: "sample",
+        parent: "ID1783181596",
+        type: "range",
+        x: "APC-A",
+        min: 10,
+        max: 100,
+      },
+    ]);
+  });
+
+  it("filters multi-sample FlowJo imports and preserves already-opened sample paths", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-sample-filter-"));
+    const openedSamplePath = path.join(dir, "opened-b1.fcs");
+    const wspB1Path = path.join(dir, "wsp-b1.fcs");
+    const wspB2Path = path.join(dir, "wsp-b2.fcs");
+    for (const fcsPath of [openedSamplePath, wspB1Path, wspB2Path]) {
+      await writeTinyIntegerFcs({
+        fcsPath,
+        channels: ["FSC-A", "SSC-A"],
+        rows: [[100, 200], [150, 250]],
+      });
+    }
+    const workspacePath = path.join(dir, "flowcyto.workspace.json");
+    const existing: FlowcytoWorkspace = {
+      version: 1,
+      revision: 0,
+      samples: [{ id: "B1_44_1-1", path: "opened-b1.fcs" }],
+      views: [],
+      gates: [],
+    };
+    await fs.writeFile(workspacePath, `${JSON.stringify(existing, null, 2)}\n`, "utf8");
+
+    const result = await importFlowJoWorkspace({
+      wspPath: path.join(flowJoFixtureDir, "two-sample-linear.wsp"),
+      workspaceDir: dir,
+      sampleNames: ["B1 44 1-1.fcs"],
+      sampleIdMap: { "B1 44 1-1.fcs": "B1_44_1-1" },
+      samplePathMap: {
+        "B1 44 1-1.fcs": wspB1Path,
+        "B2 44 1-1.fcs": wspB2Path,
+      },
+    });
+
+    expect(result).toMatchObject({ ok: true, samplesImported: 1, gatesImported: 1, warnings: [] });
+    const workspace = await readWorkspace(result.workspacePath);
+    expect(workspace.samples).toEqual([{ id: "B1_44_1-1", path: "opened-b1.fcs" }]);
+    expect(workspace.gates).toEqual([expect.objectContaining({
+      id: "gate-b1-lymph",
+      name: "B1 Lymphocytes",
+      sample: "B1_44_1-1",
+      parent: "root",
+      x: "FSC-A",
+      y: "SSC-A",
+    })]);
+    const gate = workspace.gates[0];
+    expect(gate?.type === "polygon" ? gate.vertices : []).toEqual([
+      [500_000_000, 200_000_000],
+      [2_000_000_000, 200_000_000],
+      [2_000_000_000, 1_000_000_000],
+    ]);
+  });
+
+  it("fails when a FlowJo sample filter matches no samples", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-sample-filter-miss-"));
+    const samplePath = path.join(dir, "b1.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["FSC-A", "SSC-A"],
+      rows: [[100, 200], [150, 250]],
+    });
+
+    await expect(importFlowJoWorkspace({
+      wspPath: path.join(flowJoFixtureDir, "two-sample-linear.wsp"),
+      workspaceDir: dir,
+      sampleNames: ["Missing sample.fcs"],
+      samplePathMap: { "B1 44 1-1.fcs": samplePath },
+    })).rejects.toMatchObject({ code: "flowjo_sample_filter_no_match" });
+  });
+
   it("skips unsupported FlowJo gate types with warnings, promotes orphaned children to parent", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-unsupported-"));
     const samplePath = path.join(dir, "sample.fcs");

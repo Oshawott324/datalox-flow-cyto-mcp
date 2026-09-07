@@ -109,7 +109,11 @@ Input:
 {
   "wsp_path": "/path/to/workspace.wsp",
   "workspace_dir": "/path/to/output-workspace",
+  "sample_names": ["sample.fcs"],
+  "sample_ids": ["sample_001"],
   "sample_id_map": { "sample.fcs": "sample_001" },
+  "sample_path_map": { "sample.fcs": "/path/to/sample.fcs" },
+  "overwrite_samples": false,
   "overwrite_gates": false
 }
 ```
