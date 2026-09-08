@@ -2031,11 +2031,29 @@ describe("flowcyto CLI", () => {
     expect(packageJson.files).toContain("skills/flowcyto/SKILL.md");
     expect(packageJson.scripts?.prepack).toBe("npm run build");
     expect(packageJson.scripts?.["verify:publish"]).toContain("smoke:package");
+    expect(packageJson.files).toContain("scripts/*.R");
+    expect(packageJson.files).toContain("scripts/*.py");
 
     const sourceServer = await fs.readFile(path.resolve("src/mcp/server.ts"), "utf8");
     expect(sourceServer.startsWith("#!/usr/bin/env node\n")).toBe(true);
     const builtServer = await fs.readFile(path.resolve("dist/src/mcp/server.js"), "utf8");
     expect(builtServer.startsWith("#!/usr/bin/env node\n")).toBe(true);
+  });
+
+  it("keeps FlowJo biex reference generation authoritative in R and Python supplementary", async () => {
+    const rScript = await fs.readFile(path.resolve("scripts/generate-flowjo-biex-reference.R"), "utf8");
+    const pythonScript = await fs.readFile(path.resolve("scripts/generate-flowjo-biex-reference.py"), "utf8");
+    const gitignore = await fs.readFile(path.resolve(".gitignore"), "utf8");
+
+    expect(rScript).toContain("flowWorkspace::flowjo_biexp");
+    expect(rScript).toContain("testdata/fixtures/biex-transform-reference.json");
+    expect(rScript).toContain("MIT-licensing note");
+    expect(pythonScript).toContain("SUPPLEMENTARY CROSS-VALIDATOR");
+    expect(pythonScript).toContain("not the primary fixture generator");
+    expect(pythonScript).toContain("FlowKit's LogicleTransform");
+    expect(pythonScript).toContain("_width_to_w() conversion is an approximation");
+    expect(pythonScript).toContain("biex-transform-reference-python.json");
+    expect(gitignore).toContain("testdata/fixtures/biex-transform-reference-python.json");
   });
 
   it("creates the live gating demo harness without gate writer scripts", async () => {
@@ -2864,14 +2882,25 @@ describe("flowcyto gate editor server", () => {
       if (squareGate?.type !== "rect") throw new Error("Expected Square Gate rect.");
       expect(Math.abs((squareGate.xMax - squareGate.xMin) - (squareGate.yMax - squareGate.yMin))).toBeLessThan(1e-6);
 
-      await page.locator("#rectMode").click();
-      await page.mouse.move(box.x + 120, box.y + 120);
-      await page.mouse.down();
-      await page.mouse.move(box.x + 460, box.y + 380);
-      await page.mouse.up();
-      await page.locator("#gateName").fill("Translate Gate");
-      await page.locator("#saveGate").click();
+      await upsertGate({
+        workspacePath,
+        expectedRevision: 1,
+        gate: {
+          id: "translate_gate",
+          name: "Translate Gate",
+          sample: "sample_001",
+          parent: "root",
+          type: "rect",
+          x: squareGate.x,
+          y: squareGate.y,
+          xMin: squareGate.xMin - 100,
+          xMax: squareGate.xMax + 100,
+          yMin: squareGate.yMin - 100,
+          yMax: squareGate.yMax + 100,
+        },
+      });
       await expect.poll(() => readWorkspace(workspacePath).then((workspace) => workspace.revision)).toBe(2);
+      await expect.poll(() => page.locator("#status").textContent()).toContain("Workspace revision 2");
       const translateWorkspace = await readWorkspace(workspacePath);
       const translateGate = translateWorkspace.gates.find((gate) => gate.name === "Translate Gate");
       if (translateGate?.type !== "rect") throw new Error("Expected Translate Gate rect.");

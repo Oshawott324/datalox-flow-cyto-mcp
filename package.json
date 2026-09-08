@@ -24,6 +24,8 @@
     "skills/flowcyto/SKILL.md",
     "schemas/**/*",
     "scripts/*.mjs",
+    "scripts/*.R",
+    "scripts/*.py",
     "testdata/fixtures/manifest.json"
   ],
   "scripts": {
