@@ -350,6 +350,75 @@ Do not port:
 
 ---
 
+---
+
+## FlowJo Biex Transform — Three-Phase Implementation Plan
+
+Date added: 2026-09-07
+
+### Why biex matters
+
+FlowJo's default axis scale for fluorescence channels is biexponential (biex). Gates drawn on
+biex axes are stored in biex display space. Without the correct inverse, imported gate coordinates
+are wrong for any channel set to biex in FlowJo. Export has the same problem in reverse.
+
+### Licensing constraint
+
+This repo is **MIT-licensed**. cytolib (which backs `flowWorkspace::flowjo_biexp`) is AGPL-3.
+Porting or closely translating cytolib source into this repo would create a licensing conflict.
+
+The clean path: implement from the mathematical papers (Bagwell 2005, Parks/Roederer/Moore 2006)
+and validate against numeric output from `flowWorkspace::flowjo_biexp()`. The output of that
+function is measurement data, not a derived work, and is safe to commit here. This approach also
+keeps a future license change unencumbered.
+
+### Phase 1 — Reference fixtures (prerequisite for all other phases)
+
+**Script:** `scripts/generate-flowjo-biex-reference.R`
+
+Run this in an R environment with `flowWorkspace` and `jsonlite` installed:
+
+```bash
+Rscript scripts/generate-flowjo-biex-reference.R
+```
+
+Output: `testdata/fixtures/biex-transform-reference.json`
+
+The JSON records forward (data → display) and inverse (display → data) values for five parameter
+sets, including FlowJo factory defaults and the parameters in our existing fixture wsp. Until this
+file is committed, biex import is warning-only and biex export is explicitly blocked — both are
+correct holding positions.
+
+**Do not implement Phase 2 without this file in the repo.**
+
+### Phase 2 — Clean-room TypeScript (src/core/biex-transform.ts)
+
+Implement the biex forward and inverse transforms in TypeScript using only:
+- The mathematical formulation from the papers (biexponential transcendental equation,
+  Newton's method root finder for the forward direction)
+- `testdata/fixtures/biex-transform-reference.json` as the acceptance target
+
+Acceptance criterion: every case in the fixture matches within `toleranceAbsolute`.
+
+Do not read, reference, or translate cytolib or flowWorkspace source code during this phase.
+
+### Phase 3 — Wire into import/export
+
+Only after Phase 2 passes fixture tests:
+- Replace warning-only biex path in `flowjo-import.ts` with the inverse from Phase 2
+- Replace `unsupported_flowjo_biex_export` throw in `flowjo-export.ts` with the forward
+  transform and correct `<transforms:biex>` XML attributes
+- Add a real-wsp live-validation step: open the exported .wsp in FlowJo 10 and confirm
+  biex-axis gate positions match the original
+
+### Current status
+
+- Import: biex coordinates imported as-is, warning emitted (acceptable holding position)
+- Export: throws `unsupported_flowjo_biex_export` (correct; better than silent misplacement)
+- Phase 1 script: written, needs to be run by a contributor with R/flowWorkspace
+
+---
+
 ## FCSExpress
 
 Defer until there are urgent real files that require it. FCSExpress has no open XML spec; reverse
