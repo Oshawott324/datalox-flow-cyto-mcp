@@ -374,7 +374,7 @@ keeps a future license change unencumbered.
 
 ### Phase 1 — Reference fixtures (prerequisite for all other phases)
 
-**Script:** `scripts/generate-flowjo-biex-reference.R`
+**Primary script:** `scripts/generate-flowjo-biex-reference.R`
 
 Run this in an R environment with `flowWorkspace` and `jsonlite` installed:
 
@@ -390,6 +390,20 @@ file is committed, biex import is warning-only and biex export is explicitly blo
 correct holding positions.
 
 **Do not implement Phase 2 without this file in the repo.**
+
+**Why R for this script (not Python)?**
+The concern about R using too much memory is valid for FCS analysis (millions of events), but this
+script processes 27 numbers. The reason to use R here is simpler:
+`flowWorkspace::flowjo_biexp()` takes FlowJo's .wsp attribute names directly — `maxRange`,
+`pos`, `neg`, `widthBasis`, `length` — with no parameter mapping. It is the closest publicly
+available re-implementation of FlowJo's biex algorithm, validated against real .wsp files.
+
+A supplementary Python cross-validator is at `scripts/generate-flowjo-biex-reference.py`.
+It uses FlowKit's `LogicleTransform`, which takes Parks-2006 logicle parameters (T, W, M, A),
+not FlowJo's biex parameters. This requires a `widthBasis → W` conversion that is approximate
+and has not been independently verified. Run the Python script AFTER the R fixture is generated to
+check that the two implementations agree within 1 channel unit. If they disagree, investigate
+the `_width_to_w()` function in the Python script before trusting either as the fixture.
 
 ### Phase 2 — Clean-room TypeScript (src/core/biex-transform.ts)
 
