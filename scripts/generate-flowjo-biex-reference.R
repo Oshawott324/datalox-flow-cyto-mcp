@@ -107,16 +107,24 @@ cases <- list()
 
 for (params in parameter_sets) {
   # flowWorkspace uses "widthBasis" for what the .wsp calls "width"
-  xform <- flowjo_biexp(
+  forward <- flowjo_biexp(
+    channelRange = params$length,
+    maxValue   = params$maxRange,
+    pos        = params$pos,
+    neg        = params$neg,
+    widthBasis = params$width
+  )
+  inverse <- flowjo_biexp(
+    channelRange = params$length,
     maxValue   = params$maxRange,
     pos        = params$pos,
     neg        = params$neg,
     widthBasis = params$width,
-    length     = params$length
+    inverse    = TRUE
   )
 
-  display   <- xform$transform(inputs)
-  roundTrip <- xform$inverse(display)
+  display   <- forward(inputs)
+  roundTrip <- inverse(display)
 
   maxErr <- max(abs(roundTrip - inputs), na.rm = TRUE)
   # Tight tolerance: the TypeScript implementation must meet the same bar
