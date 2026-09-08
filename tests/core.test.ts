@@ -45,6 +45,7 @@ import {
   transformValue,
   upsertCompensationMatrix,
   upsertGate,
+  upsertGates,
   validateWorkspace,
   watchWorkspaceFile,
   writeWorkspace,
@@ -1929,6 +1930,50 @@ describe("flowcyto core", () => {
     expect(deleteResult.gateCount).toBe(0);
     expect(deleteResult.workspacePath).toBe(workspacePath);
     expect((await readWorkspace(workspacePath)).gates).toEqual([]);
+  });
+
+  it("upsertGates creates multiple gates in one revision increment", async () => {
+    const { workspacePath } = await makeWorkspace();
+    const gates: WorkspaceGate[] = [
+      { id: "q1", name: "Q1", sample: "sample_001", parent: "root", type: "rect", x: "FSC-A", y: "SSC-A", xMin: 0, xMax: 50, yMin: 50, yMax: 100 },
+      { id: "q2", name: "Q2", sample: "sample_001", parent: "root", type: "rect", x: "FSC-A", y: "SSC-A", xMin: 50, xMax: 100, yMin: 50, yMax: 100 },
+      { id: "q3", name: "Q3", sample: "sample_001", parent: "root", type: "rect", x: "FSC-A", y: "SSC-A", xMin: 0, xMax: 50, yMin: 0, yMax: 50 },
+      { id: "q4", name: "Q4", sample: "sample_001", parent: "root", type: "rect", x: "FSC-A", y: "SSC-A", xMin: 50, xMax: 100, yMin: 0, yMax: 50 },
+    ];
+    const result = await upsertGates({ workspacePath, gates, expectedRevision: 0 });
+    expect(result.ok).toBe(true);
+    expect(result.revision).toBe(1);
+    expect(result.gateCount).toBe(4);
+    const workspace = await readWorkspace(workspacePath);
+    expect(workspace.gates).toHaveLength(4);
+    expect(workspace.revision).toBe(1);
+  });
+
+  it("upsertGates updates existing gates by ID and appends new ones in one write", async () => {
+    const { workspacePath } = await makeWorkspace();
+    await upsertGate({ workspacePath, gate: testGate(), expectedRevision: 0 });
+    const updated: WorkspaceGate = { ...testGate(), name: "Renamed" };
+    const newGate: WorkspaceGate = { id: "gate_2", name: "New", sample: "sample_001", parent: "root", type: "rect", x: "FSC-A", y: "SSC-A", xMin: 10, xMax: 90, yMin: 10, yMax: 90 };
+    const result = await upsertGates({ workspacePath, gates: [updated, newGate], expectedRevision: 1 });
+    expect(result.ok).toBe(true);
+    expect(result.revision).toBe(2);
+    expect(result.gateCount).toBe(2);
+    const workspace = await readWorkspace(workspacePath);
+    expect(workspace.gates.find((g) => g.id === "gate_1")?.name).toBe("Renamed");
+    expect(workspace.gates.find((g) => g.id === "gate_2")?.name).toBe("New");
+  });
+
+  it("upsertGates rejects stale revision", async () => {
+    const { workspacePath } = await makeWorkspace();
+    await upsertGate({ workspacePath, gate: testGate(), expectedRevision: 0 });
+    const result = await upsertGates({
+      workspacePath,
+      gates: [{ id: "q1", name: "Q1", sample: "sample_001", parent: "root", type: "rect", x: "FSC-A", y: "SSC-A", xMin: 0, xMax: 50, yMin: 0, yMax: 50 }],
+      expectedRevision: 0,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors?.[0]?.code).toBe("stale_revision");
+    expect((await readWorkspace(workspacePath)).gates).toHaveLength(1);
   });
 
   it("emits workspace file changes when revisions change", async () => {
