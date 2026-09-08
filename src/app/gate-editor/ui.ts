@@ -237,7 +237,7 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
     .gate-row {
       width: 100%;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-columns: auto minmax(0, 1fr) auto;
       align-items: center;
       gap: 4px;
       margin-bottom: 4px;
@@ -245,6 +245,20 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       border-radius: 2px;
       background: #fff;
       overflow: hidden;
+    }
+    .gate-toggle {
+      width: 20px;
+      height: 24px;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 0;
+      font-size: 12px;
+    }
+    .gate-toggle.placeholder {
+      cursor: default;
+      visibility: hidden;
     }
     .gate-row.context {
       border-color: var(--accent);
@@ -393,6 +407,7 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       viewKey: null,
       renderMode: "pseudocolor",
       scale: { x: "linear", y: "linear" },
+      collapsedGates: new Set(),
       localDirty: false,
       savePending: false,
       gateTrayUserClosed: false
@@ -1194,13 +1209,29 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
           row.className = "gate-row"
             + (gate.id === state.parent ? " context" : "")
             + (gate.id === state.selectedGateId ? " selected" : "");
+          const hasChildren = (childrenByParent.get(gate.id) || []).length > 0;
+          const collapsed = state.collapsedGates.has(gate.id);
+          const toggle = document.createElement(hasChildren ? "button" : "span");
+          if (hasChildren) toggle.type = "button";
+          toggle.className = "gate-toggle" + (hasChildren ? "" : " placeholder");
+          toggle.style.marginLeft = (depth * 14) + "px";
+          if (hasChildren) {
+            toggle.textContent = collapsed ? "+" : "-";
+            toggle.title = collapsed ? "Expand gate" : "Collapse gate";
+            toggle.setAttribute("aria-label", (collapsed ? "Expand " : "Collapse ") + gateLabel(gate));
+            toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+            toggle.addEventListener("click", (event) => {
+              event.stopPropagation();
+              if (collapsed) state.collapsedGates.delete(gate.id);
+              else state.collapsedGates.add(gate.id);
+              renderGateList();
+            });
+          }
           const button = document.createElement("button");
           button.type = "button";
           button.className = "gate-nav";
-          button.style.paddingLeft = (6 + depth * 14) + "px";
           const name = document.createElement("span");
-          const hasChildren = (childrenByParent.get(gate.id) || []).length > 0;
-          name.textContent = (hasChildren ? "> " : "") + gateLabel(gate);
+          name.textContent = gateLabel(gate);
           const type = document.createElement("small");
           type.textContent = gate.type;
           button.appendChild(name);
@@ -1220,10 +1251,11 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
             renderGateList();
             draw();
           });
+          row.appendChild(toggle);
           row.appendChild(button);
           row.appendChild(edit);
           gateList.appendChild(row);
-          renderChildren(gate.id, depth + 1);
+          if (!collapsed) renderChildren(gate.id, depth + 1);
         });
       }
 
