@@ -2792,6 +2792,123 @@ describe("flowcyto gate editor server", () => {
     }
   }, 15000);
 
+  it("supports square gates, drag-translate, and quadrant batch creation", async () => {
+    const { workspacePath } = await makeWorkspace();
+    const server = await startGateEditorServer({ workspacePath, port: 0, maxEvents: 128 });
+    const browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 900, height: 680 } });
+    try {
+      await page.goto(server.url);
+      await page.locator("#plot").waitFor();
+      await expect.poll(() => page.locator("#status").textContent()).toContain("Ready revision 0");
+      const box = await page.locator("#plot").boundingBox();
+      if (!box) throw new Error("Plot canvas has no bounding box.");
+
+      await page.locator("#rectMode").click();
+      await page.keyboard.down("Shift");
+      await page.mouse.move(box.x + 150, box.y + 150);
+      await page.mouse.down();
+      await page.mouse.move(box.x + 350, box.y + 350);
+      await page.mouse.up();
+      await page.keyboard.up("Shift");
+      await page.locator("#gateName").fill("Square Gate");
+      await page.locator("#saveGate").click();
+      await expect.poll(() => readWorkspace(workspacePath).then((workspace) => workspace.revision)).toBe(1);
+      const squareWorkspace = await readWorkspace(workspacePath);
+      const squareGate = squareWorkspace.gates.find((gate) => gate.name === "Square Gate");
+      if (squareGate?.type !== "rect") throw new Error("Expected Square Gate rect.");
+      expect(Math.abs((squareGate.xMax - squareGate.xMin) - (squareGate.yMax - squareGate.yMin))).toBeLessThan(1e-6);
+
+      await page.locator("#rectMode").click();
+      await page.mouse.move(box.x + 120, box.y + 120);
+      await page.mouse.down();
+      await page.mouse.move(box.x + 460, box.y + 380);
+      await page.mouse.up();
+      await page.locator("#gateName").fill("Translate Gate");
+      await page.locator("#saveGate").click();
+      await expect.poll(() => readWorkspace(workspacePath).then((workspace) => workspace.revision)).toBe(2);
+      const translateWorkspace = await readWorkspace(workspacePath);
+      const translateGate = translateWorkspace.gates.find((gate) => gate.name === "Translate Gate");
+      if (translateGate?.type !== "rect") throw new Error("Expected Translate Gate rect.");
+      const translatePreview = await getEventPreview({
+        workspacePath,
+        sampleId: "sample_001",
+        parent: "root",
+        x: translateGate.x,
+        y: translateGate.y,
+        maxEvents: 128,
+      });
+      const translateBounds = {
+        xMin: Number.POSITIVE_INFINITY,
+        xMax: Number.NEGATIVE_INFINITY,
+        yMin: Number.POSITIVE_INFINITY,
+        yMax: Number.NEGATIVE_INFINITY,
+      };
+      translatePreview.points?.forEach((point) => {
+        translateBounds.xMin = Math.min(translateBounds.xMin, point[0]);
+        translateBounds.xMax = Math.max(translateBounds.xMax, point[0]);
+        translateBounds.yMin = Math.min(translateBounds.yMin, point[1]);
+        translateBounds.yMax = Math.max(translateBounds.yMax, point[1]);
+      });
+      [squareGate, translateGate].forEach((gate) => {
+        translateBounds.xMin = Math.min(translateBounds.xMin, gate.xMin, gate.xMax);
+        translateBounds.xMax = Math.max(translateBounds.xMax, gate.xMin, gate.xMax);
+        translateBounds.yMin = Math.min(translateBounds.yMin, gate.yMin, gate.yMax);
+        translateBounds.yMax = Math.max(translateBounds.yMax, gate.yMin, gate.yMax);
+      });
+      const xPad = (translateBounds.xMax - translateBounds.xMin) * 0.06;
+      const yPad = (translateBounds.yMax - translateBounds.yMin) * 0.06;
+      translateBounds.xMin -= xPad;
+      translateBounds.xMax += xPad;
+      translateBounds.yMin -= yPad;
+      translateBounds.yMax += yPad;
+      const plotArea = {
+        left: 58,
+        top: 18,
+        width: box.width - 58 - 16,
+        height: box.height - 18 - 44,
+      };
+      const gateCenter = [
+        (translateGate.xMin + translateGate.xMax) / 2,
+        (translateGate.yMin + translateGate.yMax) / 2,
+      ];
+      const gateCenterScreen = [
+        box.x + plotArea.left + ((gateCenter[0] - translateBounds.xMin) / (translateBounds.xMax - translateBounds.xMin)) * plotArea.width,
+        box.y + plotArea.top + plotArea.height - ((gateCenter[1] - translateBounds.yMin) / (translateBounds.yMax - translateBounds.yMin)) * plotArea.height,
+      ];
+
+      await page.locator("#selectMode").click();
+      await page.mouse.move(gateCenterScreen[0], gateCenterScreen[1]);
+      await page.mouse.down();
+      await page.mouse.move(gateCenterScreen[0] + 40, gateCenterScreen[1] + 35);
+      await page.mouse.up();
+      await page.locator("#saveGate").click();
+      await expect.poll(() => readWorkspace(workspacePath).then((workspace) => workspace.revision)).toBe(3);
+      await expect.poll(() => page.locator("#status").textContent()).toContain("revision 3");
+      const translatedWorkspace = await readWorkspace(workspacePath);
+      const translatedGate = translatedWorkspace.gates.find((gate) => gate.id === translateGate.id);
+      if (translatedGate?.type !== "rect") throw new Error("Expected translated rect.");
+      expect(translatedGate.xMin).not.toBe(translateGate.xMin);
+      expect(translatedGate.xMax).not.toBe(translateGate.xMax);
+      expect(translatedGate.yMin).not.toBe(translateGate.yMin);
+      expect(translatedGate.yMax).not.toBe(translateGate.yMax);
+
+      await page.locator("#quadrantMode").click();
+      await page.locator("#gateName").fill("Apoptosis");
+      await page.mouse.click(box.x + 320, box.y + 260);
+      await expect.poll(() => readWorkspace(workspacePath).then((workspace) => workspace.revision)).toBe(4);
+      const quadrantWorkspace = await readWorkspace(workspacePath);
+      const quadrants = quadrantWorkspace.gates.filter((gate) => gate.name?.startsWith("Apoptosis Q"));
+      expect(quadrants.map((gate) => gate.name).sort()).toEqual(["Apoptosis Q1", "Apoptosis Q2", "Apoptosis Q3", "Apoptosis Q4"]);
+      expect(quadrants.every((gate) => gate.type === "rect" && gate.parent === "root")).toBe(true);
+      expect((await validateWorkspace(workspacePath)).ok).toBe(true);
+    } finally {
+      await page.close();
+      await browser.close();
+      await server.close();
+    }
+  }, 15000);
+
   it("streams workspace change and error events over SSE", async () => {
     const { workspacePath } = await makeWorkspace();
     const server = await startGateEditorServer({ workspacePath, port: 0, maxEvents: 64 });

@@ -11,6 +11,7 @@ import {
   readWorkspace,
   transformPoint,
   upsertGate,
+  upsertGates,
   validateWorkspace,
   watchWorkspaceFile,
   type AxisScale,
@@ -202,6 +203,13 @@ function mcpAppPreviewHtml(options: GateEditorServerOptions): string {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ gate: args.gate, expectedRevision: args.expected_revision })
+          });
+        }
+        if (name === "upsert_gates") {
+          return jsonFetch("/api/gates/upsert-many", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ gates: args.gates, expectedRevision: args.expected_revision })
           });
         }
         if (name === "delete_gate") {
@@ -621,6 +629,16 @@ async function handleJsonRoute(
     const result = await upsertGate({
       workspacePath: options.workspacePath,
       gate: body.gate as WorkspaceGate,
+      expectedRevision: requiredRevision(body.expectedRevision),
+    });
+    jsonResponse(response, result.ok ? 200 : 409, result);
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/gates/upsert-many") {
+    const body = await readJsonBody(request);
+    const result = await upsertGates({
+      workspacePath: options.workspacePath,
+      gates: Array.isArray(body.gates) ? body.gates as WorkspaceGate[] : [],
       expectedRevision: requiredRevision(body.expectedRevision),
     });
     jsonResponse(response, result.ok ? 200 : 409, result);

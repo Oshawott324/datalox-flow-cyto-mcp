@@ -40,6 +40,29 @@ export async function upsertGate(params: {
   return result.ok ? { ...result, gate: params.gate, gateCount: next.gates.length, workspacePath: params.workspacePath } : result;
 }
 
+export async function upsertGates(params: {
+  workspacePath: string;
+  gates: WorkspaceGate[];
+  expectedRevision: number;
+}): Promise<ValidationResult & { revision?: number; gates?: WorkspaceGate[]; gateCount?: number; workspacePath?: string }> {
+  const expectedRevision = requireExpectedRevision(params.expectedRevision);
+  const workspace = await readWorkspace(params.workspacePath);
+  const next: FlowcytoWorkspace = {
+    ...workspace,
+    gates: [...workspace.gates],
+  };
+  for (const gate of params.gates) {
+    const existingIndex = next.gates.findIndex((entry) => entry.id === gate.id);
+    if (existingIndex === -1) {
+      next.gates.push(gate);
+    } else {
+      next.gates[existingIndex] = gate;
+    }
+  }
+  const result = await writeWorkspace({ workspacePath: params.workspacePath, workspace: next, expectedRevision });
+  return result.ok ? { ...result, gates: params.gates, gateCount: next.gates.length, workspacePath: params.workspacePath } : result;
+}
+
 export async function deleteGate(params: {
   workspacePath: string;
   gateId: string;

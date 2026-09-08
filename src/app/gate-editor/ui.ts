@@ -334,7 +334,8 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       <select id="sampleSelect" class="wide-select" aria-label="Sample"></select>
       <select id="parentSelect" class="wide-select" aria-label="Parent population"></select>
       <button id="selectMode" data-mode="select" class="active" title="Select, drag handles, or drag empty plot space to pan" aria-label="Select">↖</button>
-      <button id="rectMode" data-mode="rect" title="Drag a rectangle, then Save" aria-label="Rectangle gate">▭</button>
+      <button id="rectMode" data-mode="rect" title="Drag a rectangle; hold Shift for a square, then Save" aria-label="Rectangle gate">▭</button>
+      <button id="quadrantMode" data-mode="quadrant" title="Click to create four quadrant gates" aria-label="Quadrant gate">⊞</button>
       <button id="polygonMode" data-mode="polygon" title="Click at least three vertices, then Save" aria-label="Polygon gate">△</button>
       <button id="resetView" title="Reset plot pan and zoom" aria-label="Reset view">↺</button>
       <button id="gateTrayToggle" title="Show gates" aria-label="Show gates" aria-expanded="false">☰</button>
@@ -1305,6 +1306,108 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       return "gate_" + Date.now().toString(36);
     }
 
+    function applySquareConstraint(origin, current) {
+      const dx = current[0] - origin[0];
+      const dy = current[1] - origin[1];
+      const size = Math.min(Math.abs(dx), Math.abs(dy));
+      return [
+        origin[0] + Math.sign(dx || 1) * size,
+        origin[1] + Math.sign(dy || 1) * size
+      ];
+    }
+
+    function quadrantBounds(pivot) {
+      const bounds = state.viewport || state.bounds || computeVisualBounds();
+      const lowerLeft = inverseTransformPoint([bounds.xMin, bounds.yMin]);
+      const upperRight = inverseTransformPoint([bounds.xMax, bounds.yMax]);
+      return {
+        xMin: Math.min(lowerLeft[0], upperRight[0], pivot[0]),
+        xMax: Math.max(lowerLeft[0], upperRight[0], pivot[0]),
+        yMin: Math.min(lowerLeft[1], upperRight[1], pivot[1]),
+        yMax: Math.max(lowerLeft[1], upperRight[1], pivot[1])
+      };
+    }
+
+    function quadrantGates(pivot) {
+      const baseName = gateName.value || "Quadrant";
+      const baseId = makeGateId();
+      const bounds = quadrantBounds(pivot);
+      return [
+        {
+          id: baseId + "_q1",
+          name: baseName + " Q1",
+          sample: state.sampleId,
+          parent: state.parent,
+          type: "rect",
+          x: state.x,
+          y: state.y,
+          xMin: Math.min(bounds.xMin, pivot[0]),
+          xMax: pivot[0],
+          yMin: pivot[1],
+          yMax: Math.max(bounds.yMax, pivot[1])
+        },
+        {
+          id: baseId + "_q2",
+          name: baseName + " Q2",
+          sample: state.sampleId,
+          parent: state.parent,
+          type: "rect",
+          x: state.x,
+          y: state.y,
+          xMin: pivot[0],
+          xMax: Math.max(bounds.xMax, pivot[0]),
+          yMin: pivot[1],
+          yMax: Math.max(bounds.yMax, pivot[1])
+        },
+        {
+          id: baseId + "_q3",
+          name: baseName + " Q3",
+          sample: state.sampleId,
+          parent: state.parent,
+          type: "rect",
+          x: state.x,
+          y: state.y,
+          xMin: Math.min(bounds.xMin, pivot[0]),
+          xMax: pivot[0],
+          yMin: Math.min(bounds.yMin, pivot[1]),
+          yMax: pivot[1]
+        },
+        {
+          id: baseId + "_q4",
+          name: baseName + " Q4",
+          sample: state.sampleId,
+          parent: state.parent,
+          type: "rect",
+          x: state.x,
+          y: state.y,
+          xMin: pivot[0],
+          xMax: Math.max(bounds.xMax, pivot[0]),
+          yMin: Math.min(bounds.yMin, pivot[1]),
+          yMax: pivot[1]
+        }
+      ];
+    }
+
+    async function saveQuadrants(pivot) {
+      if (!state.workspace) return;
+      state.savePending = true;
+      const result = await api("/api/gates/upsert-many", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ gates: quadrantGates(pivot), expectedRevision: state.workspace.revision })
+      });
+      state.savePending = false;
+      if (result.ok) {
+        state.draft = null;
+        state.localDirty = false;
+        state.gateTrayUserClosed = false;
+        await loadState("save");
+      } else {
+        setErrors(result.errors);
+        setStatus("Write rejected", true);
+      }
+    }
+
     async function saveGate() {
       if (!state.workspace) return;
       let gate = null;
@@ -1389,6 +1492,51 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       return Math.hypot(a[0] - b[0], a[1] - b[1]);
     }
 
+    function pointInRectGate(data, gate) {
+      return data[0] >= Math.min(gate.xMin, gate.xMax)
+        && data[0] <= Math.max(gate.xMin, gate.xMax)
+        && data[1] >= Math.min(gate.yMin, gate.yMax)
+        && data[1] <= Math.max(gate.yMin, gate.yMax);
+    }
+
+    function pointInPolygonGate(data, gate) {
+      let inside = false;
+      const vertices = gate.vertices;
+      for (let index = 0, previous = vertices.length - 1; index < vertices.length; previous = index, index += 1) {
+        const currentPoint = vertices[index];
+        const previousPoint = vertices[previous];
+        const intersects = ((currentPoint[1] > data[1]) !== (previousPoint[1] > data[1]))
+          && (data[0] < (previousPoint[0] - currentPoint[0]) * (data[1] - currentPoint[1]) / (previousPoint[1] - currentPoint[1]) + currentPoint[0]);
+        if (intersects) inside = !inside;
+      }
+      return inside;
+    }
+
+    function cloneGate(gate) {
+      return JSON.parse(JSON.stringify(gate));
+    }
+
+    function hitGateBody(data) {
+      const gates = activeGates().slice().reverse();
+      for (const gate of gates) {
+        if (gate.type === "polygon" && pointInPolygonGate(data, gate)) return gate;
+        if (gate.type === "rect" && pointInRectGate(data, gate)) return gate;
+      }
+      return null;
+    }
+
+    function translateGateFromOriginal(gate, original, dx, dy) {
+      if (gate.type === "polygon" && original.type === "polygon") {
+        gate.vertices = original.vertices.map((vertex) => [vertex[0] + dx, vertex[1] + dy]);
+      }
+      if (gate.type === "rect" && original.type === "rect") {
+        gate.xMin = original.xMin + dx;
+        gate.xMax = original.xMax + dx;
+        gate.yMin = original.yMin + dy;
+        gate.yMax = original.yMax + dy;
+      }
+    }
+
     function hitVertex(screenPoint) {
       if (!pointInPlot(screenPoint)) return null;
       for (const gate of activeGates()) {
@@ -1418,9 +1566,13 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
         draw();
         return;
       }
+      if (state.mode === "quadrant") {
+        saveQuadrants(data);
+        return;
+      }
       if (state.mode === "rect") {
         state.draft = { type: "rect", xMin: data[0], xMax: data[0], yMin: data[1], yMax: data[1] };
-        state.drag = { type: "draftRect" };
+        state.drag = { type: "draftRect", origin: data };
         state.localDirty = true;
         draw();
         return;
@@ -1431,6 +1583,15 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
         state.drag = hit;
         const gate = selectedGate();
         if (gate) gateName.value = gate.name || gate.id;
+        renderGateList();
+        draw();
+        return;
+      }
+      const bodyHit = hitGateBody(data);
+      if (bodyHit) {
+        state.selectedGateId = bodyHit.id;
+        state.drag = { type: "translate", start: data, original: cloneGate(bodyHit) };
+        gateName.value = bodyHit.name || bodyHit.id;
         renderGateList();
         draw();
         return;
@@ -1449,14 +1610,21 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
         return;
       }
       if (state.drag.type === "draftRect" && state.draft && state.draft.type === "rect") {
-        state.draft.xMax = data[0];
-        state.draft.yMax = data[1];
+        const target = event.shiftKey ? applySquareConstraint(state.drag.origin, data) : data;
+        state.draft.xMax = target[0];
+        state.draft.yMax = target[1];
         state.localDirty = true;
         draw();
         return;
       }
       const gate = selectedGate();
       if (!gate) return;
+      if (state.drag.type === "translate") {
+        translateGateFromOriginal(gate, state.drag.original, data[0] - state.drag.start[0], data[1] - state.drag.start[1]);
+        state.localDirty = true;
+        draw();
+        return;
+      }
       if (state.drag.type === "polygon" && gate.type === "polygon") {
         gate.vertices[state.drag.index] = data;
       }
