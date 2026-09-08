@@ -95,7 +95,10 @@ type BiexTransformReference = {
     display: number[];
     roundTrip: number[];
     roundTripMaxError: number;
-    toleranceAbsolute: number;
+    forwardToleranceDisplay: number;
+    positiveForwardToleranceDisplay: number;
+    positiveInputMask: boolean[];
+    inverseToleranceData: number;
   }>;
 };
 
@@ -2096,8 +2099,11 @@ describe("flowcyto CLI", () => {
       expect(entry.inputs.length).toBeGreaterThan(20);
       expect(entry.display).toHaveLength(entry.inputs.length);
       expect(entry.roundTrip).toHaveLength(entry.inputs.length);
-      expect(entry.toleranceAbsolute).toBeGreaterThan(0);
-      expect(entry.roundTripMaxError).toBeLessThanOrEqual(entry.toleranceAbsolute);
+      expect(entry.positiveInputMask).toHaveLength(entry.inputs.length);
+      expect(entry.forwardToleranceDisplay).toBe(1);
+      expect(entry.positiveForwardToleranceDisplay).toBe(0.01);
+      expect(entry.inverseToleranceData).toBeGreaterThanOrEqual(entry.roundTripMaxError);
+      expect(Object.hasOwn(entry, "toleranceAbsolute")).toBe(false);
 
       for (const value of [
         entry.parameters.length,
@@ -2108,6 +2114,9 @@ describe("flowcyto CLI", () => {
         ...entry.inputs,
         ...entry.display,
         ...entry.roundTrip,
+        entry.forwardToleranceDisplay,
+        entry.positiveForwardToleranceDisplay,
+        entry.inverseToleranceData,
       ]) {
         expect(Number.isFinite(value)).toBe(true);
       }

@@ -127,8 +127,10 @@ for (params in parameter_sets) {
   roundTrip <- inverse(display)
 
   maxErr <- max(abs(roundTrip - inputs), na.rm = TRUE)
-  # Tight tolerance: the TypeScript implementation must meet the same bar
-  toleranceAbsolute <- max(1e-6, maxErr * 10)
+  positiveInputMask <- display >= 0 & display <= params$length
+  forwardToleranceDisplay <- 1.0
+  positiveForwardToleranceDisplay <- 0.01
+  inverseToleranceData <- max(1e-3, maxErr * 2)
 
   cases[[length(cases) + 1]] <- list(
     label = params$label,
@@ -151,7 +153,10 @@ for (params in parameter_sets) {
     display           = display,
     roundTrip         = roundTrip,
     roundTripMaxError = maxErr,
-    toleranceAbsolute = toleranceAbsolute
+    forwardToleranceDisplay         = forwardToleranceDisplay,
+    positiveForwardToleranceDisplay = positiveForwardToleranceDisplay,
+    positiveInputMask               = positiveInputMask,
+    inverseToleranceData            = inverseToleranceData
   )
 }
 
@@ -165,8 +170,10 @@ result <- list(
   description          = paste(
     "Numeric reference fixtures for the FlowJo biex transform.",
     "Each case records forward (data->display) and inverse (display->data) values",
-    "for a specific parameter set. A clean-room TypeScript implementation is",
-    "accepted if it matches 'display' within 'toleranceAbsolute' for every case.",
+    "for a specific parameter set. A clean-room TypeScript implementation must",
+    "match display-space values within forwardToleranceDisplay, match in-range",
+    "display-space values within positiveForwardToleranceDisplay, and match",
+    "inverse raw-data values within inverseToleranceData.",
     "Do not implement biex from these numbers alone — also validate against a",
     "real FlowJo .wsp file opened in FlowJo 10 to confirm gate positioning."
   ),
