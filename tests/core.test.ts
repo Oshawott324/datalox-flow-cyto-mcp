@@ -2717,6 +2717,16 @@ describe("flowcyto gate editor server", () => {
       );
       expect(parentOptions.find((option) => option.value === rootGate.id)?.label).toBe("\u00a0\u00a0\u00a0Root Gate");
       expect(parentOptions.find((option) => option.value === childGate?.id)?.label).toContain("\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0Child Gate");
+      await expect.poll(() => page.getByRole("button", { name: "Collapse Root Gate" }).count()).toBe(1);
+      await expect.poll(() => page.getByRole("button", { name: /^Child Gate rect$/ }).count()).toBe(1);
+      await page.getByRole("button", { name: "Collapse Root Gate" }).click();
+      await expect.poll(() => page.getByRole("button", { name: /^Child Gate rect$/ }).count()).toBe(0);
+      const collapsedParentValues = await page.locator("#parentSelect option").evaluateAll((options) =>
+        options.map((option) => (option as HTMLOptionElement).value),
+      );
+      expect(collapsedParentValues).toContain(childGate.id);
+      await page.getByRole("button", { name: "Expand Root Gate" }).click();
+      await expect.poll(() => page.getByRole("button", { name: /^Child Gate rect$/ }).count()).toBe(1);
       await expect.poll(() => page.locator("#populationStats").textContent()).toContain("events");
       await expect.poll(() => page.locator("#gateTray").evaluate((element) => element.hasAttribute("hidden"))).toBe(false);
 
@@ -2741,7 +2751,7 @@ describe("flowcyto gate editor server", () => {
       await page.locator("#parentSelect").selectOption("root");
       await expect.poll(() => page.locator("#xSelect").inputValue()).toBe("FSC-A");
       expect(await page.locator("#ySelect").inputValue()).toBe("SSC-A");
-      await page.getByRole("button", { name: /^> Root Gate rect$/ }).click();
+      await page.getByRole("button", { name: /^Root Gate rect$/ }).click();
       await expect.poll(() => page.locator("#parentSelect").inputValue()).toBe(rootGate.id);
       await expect.poll(() => page.locator("#xSelect").inputValue()).toBe(childGate.x);
       await expect.poll(() => page.locator("#ySelect").inputValue()).toBe(childGate.y);
