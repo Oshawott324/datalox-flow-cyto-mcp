@@ -107,6 +107,22 @@ cases <- list()
 
 for (params in parameter_sets) {
   # flowWorkspace uses "widthBasis" for what the .wsp calls "width"
+  forwardCoefs <- flowWorkspace:::getSplineCoefs(
+    channelRange = params$length,
+    maxValue   = params$maxRange,
+    pos        = params$pos,
+    neg        = params$neg,
+    widthBasis = params$width,
+    inverse    = FALSE
+  )
+  inverseCoefs <- flowWorkspace:::getSplineCoefs(
+    channelRange = params$length,
+    maxValue   = params$maxRange,
+    pos        = params$pos,
+    neg        = params$neg,
+    widthBasis = params$width,
+    inverse    = TRUE
+  )
   forward <- flowjo_biexp(
     channelRange = params$length,
     maxValue   = params$maxRange,
@@ -156,7 +172,9 @@ for (params in parameter_sets) {
     forwardToleranceDisplay         = forwardToleranceDisplay,
     positiveForwardToleranceDisplay = positiveForwardToleranceDisplay,
     positiveInputMask               = positiveInputMask,
-    inverseToleranceData            = inverseToleranceData
+    inverseToleranceData            = inverseToleranceData,
+    forwardSpline                   = forwardCoefs$z[c("x", "y", "b", "c", "d")],
+    inverseSpline                   = inverseCoefs$z[c("x", "y", "b", "c", "d")]
   )
 }
 

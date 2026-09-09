@@ -27,6 +27,7 @@ import { recommendedAxes, startGateEditorServer } from "../src/app/gate-editor/s
 import {
   alignCompensationMatrix,
   applyCompensationColumns,
+  buildBiexTransform,
   deleteGate,
   detectCompensationStatus,
   estimateCompensationFromControls,
@@ -99,6 +100,20 @@ type BiexTransformReference = {
     positiveForwardToleranceDisplay: number;
     positiveInputMask: boolean[];
     inverseToleranceData: number;
+    forwardSpline: {
+      x: number[];
+      y: number[];
+      b: number[];
+      c: number[];
+      d: number[];
+    };
+    inverseSpline: {
+      x: number[];
+      y: number[];
+      b: number[];
+      c: number[];
+      d: number[];
+    };
   }>;
 };
 
@@ -666,9 +681,7 @@ describe("flowcyto core", () => {
     const fasinhRange = workspace.gates.find((gate) => gate.id === "gate-fasinh-range");
     const biexRange = workspace.gates.find((gate) => gate.id === "gate-biex-range");
 
-    expect(result.warnings).toEqual([
-      "FlowJo biex transform is not converted for gate Biex Range channel BIEX-A; coordinates imported as stored.",
-    ]);
+    expect(result.warnings).toEqual([]);
     expect(logRect).toMatchObject({
       type: "rect",
       x: "LOG-A",
@@ -692,7 +705,16 @@ describe("flowcyto core", () => {
     };
     expect(fasinhRange.min).toBeCloseTo(invertFasinh(100), 10);
     expect(fasinhRange.max).toBeCloseTo(invertFasinh(140), 10);
-    expect(biexRange).toMatchObject({ type: "range", x: "BIEX-A", min: 10, max: 100 });
+    const biexTransform = buildBiexTransform({
+      length: 256,
+      maxRange: 214748,
+      pos: 4.3319291278,
+      neg: 0,
+      width: -10,
+    });
+    expect(biexRange).toMatchObject({ type: "range", x: "BIEX-A" });
+    expect(biexRange?.type === "range" ? biexRange.min : Number.NaN).toBeCloseTo(biexTransform.inverse(10), 10);
+    expect(biexRange?.type === "range" ? biexRange.max : Number.NaN).toBeCloseTo(biexTransform.inverse(100), 10);
   });
 
   it("skips unsupported FlowJo gate types with warnings, promotes orphaned children to parent", async () => {
@@ -929,7 +951,7 @@ describe("flowcyto core", () => {
     }
   });
 
-  it("exportFlowJoWorkspace rejects gates on biex-scaled channels", async () => {
+  it("exportFlowJoWorkspace writes FlowJo biex transform metadata and display-space coordinates", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-export-biex-"));
     const samplePath = path.join(dir, "sample.fcs");
     await writeTinyIntegerFcs({
@@ -965,10 +987,27 @@ describe("flowcyto core", () => {
       }],
     }, null, 2)}\n`, "utf8");
 
-    await expect(exportFlowJoWorkspace({
+    const outputPath = path.join(dir, "out.wsp");
+    const result = await exportFlowJoWorkspace({
       workspacePath,
-      outputPath: path.join(dir, "out.wsp"),
-    })).rejects.toMatchObject({ code: "unsupported_flowjo_biex_export" });
+      outputPath,
+    });
+    expect(result.gatesExported).toBe(1);
+    const xml = await fs.readFile(outputPath, "utf8");
+    expect(xml).toContain("<transforms:biex");
+    expect(xml).toContain('transforms:width="-10"');
+
+    const importedDir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-export-biex-roundtrip-"));
+    const imported = await importFlowJoWorkspace({
+      wspPath: outputPath,
+      workspaceDir: importedDir,
+      samplePathMap: { "sample.fcs": samplePath },
+    });
+    expect(imported.warnings).toEqual([]);
+    const roundTrip = await readWorkspace(imported.workspacePath);
+    const gate = roundTrip.gates.find((entry) => entry.id === "fitc_positive");
+    expect(Math.abs((gate?.type === "range" ? gate.min : Number.NaN) - 300)).toBeLessThan(1e-3);
+    expect(Math.abs((gate?.type === "range" ? gate.max : Number.NaN) - 900)).toBeLessThan(1e-3);
   });
 
   it("exportFlowJoWorkspace rejects conflicting channel scales across views", async () => {
@@ -2104,6 +2143,12 @@ describe("flowcyto CLI", () => {
       expect(entry.positiveForwardToleranceDisplay).toBe(0.01);
       expect(entry.inverseToleranceData).toBeGreaterThanOrEqual(entry.roundTripMaxError);
       expect(Object.hasOwn(entry, "toleranceAbsolute")).toBe(false);
+      for (const spline of [entry.forwardSpline, entry.inverseSpline]) {
+        expect(spline.x).toHaveLength(spline.y.length);
+        expect(spline.b).toHaveLength(spline.x.length);
+        expect(spline.c).toHaveLength(spline.x.length);
+        expect(spline.d).toHaveLength(spline.x.length);
+      }
 
       for (const value of [
         entry.parameters.length,
@@ -2117,8 +2162,39 @@ describe("flowcyto CLI", () => {
         entry.forwardToleranceDisplay,
         entry.positiveForwardToleranceDisplay,
         entry.inverseToleranceData,
+        ...entry.forwardSpline.x,
+        ...entry.forwardSpline.y,
+        ...entry.forwardSpline.b,
+        ...entry.forwardSpline.c,
+        ...entry.forwardSpline.d,
+        ...entry.inverseSpline.x,
+        ...entry.inverseSpline.y,
+        ...entry.inverseSpline.b,
+        ...entry.inverseSpline.c,
+        ...entry.inverseSpline.d,
       ]) {
         expect(Number.isFinite(value)).toBe(true);
+      }
+    }
+  });
+
+  it("evaluates FlowJo biex forward and inverse transforms against the reference fixture", async () => {
+    const reference = JSON.parse(
+      await fs.readFile(biexTransformReferencePath, "utf8"),
+    ) as BiexTransformReference;
+
+    for (const entry of reference.cases) {
+      const xform = buildBiexTransform(entry.parameters);
+      for (let index = 0; index < entry.inputs.length; index += 1) {
+        const got = xform.forward(entry.inputs[index]);
+        expect(Math.abs(got - entry.display[index]), `${entry.label} forward[${index}]`).toBeLessThan(entry.forwardToleranceDisplay);
+        if (entry.positiveInputMask[index]) {
+          expect(Math.abs(got - entry.display[index]), `${entry.label} positive forward[${index}]`).toBeLessThan(entry.positiveForwardToleranceDisplay);
+        }
+      }
+      for (let index = 0; index < entry.display.length; index += 1) {
+        const got = xform.inverse(entry.display[index]);
+        expect(Math.abs(got - entry.inputs[index]), `${entry.label} inverse[${index}]`).toBeLessThan(entry.inverseToleranceData);
       }
     }
   });
