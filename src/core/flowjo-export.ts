@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { XMLBuilder } from "fast-xml-parser";
 
+import { buildBiexTransform, type BiexParams } from "./biex-transform.js";
 import { readWorkspace, resolveSamplePath, validateWorkspace } from "./workspace.js";
 import { FlowcytoError, type AxisScale, type FlowcytoSample, type FlowcytoWorkspace, type WorkspaceGate } from "./types.js";
 
@@ -27,7 +28,8 @@ type XmlElement = Record<string, unknown>;
 
 type ExportTransform =
   | { kind: "log"; t: number; m: number }
-  | { kind: "fasinh"; t: number; m: number; a: number; length: number };
+  | { kind: "fasinh"; t: number; m: number; a: number; length: number }
+  | ({ kind: "biex" } & BiexParams);
 
 type ExportTransformContext = {
   transformsByChannel: Map<string, ExportTransform>;
@@ -39,6 +41,13 @@ const FLOWCYTO_ARCSINH_M = 1 / Math.LN10;
 const FLOWCYTO_ARCSINH_A = 0;
 const FLOWCYTO_ARCSINH_LENGTH = 1;
 const FLOWCYTO_ARCSINH_T = 150 * Math.sinh(1);
+const FLOWJO_BIEX_DEFAULT: BiexParams = {
+  length: 256,
+  maxRange: 262144,
+  pos: 4.5,
+  neg: 0,
+  width: -10,
+};
 
 function sampleName(sample: FlowcytoSample): string {
   return path.basename(sample.path) || sample.id;
@@ -65,6 +74,7 @@ function flowJoTransformForScale(scale: AxisScale): ExportTransform | null {
       length: FLOWCYTO_ARCSINH_LENGTH,
     };
   }
+  if (scale === "biex") return { kind: "biex", ...FLOWJO_BIEX_DEFAULT };
   return null;
 }
 
@@ -94,13 +104,6 @@ function buildTransformContext(workspace: FlowcytoWorkspace): ExportTransformCon
   for (const channel of exportedGateChannels) {
     const scale = channelScales.get(channel);
     if (!scale || scale === "linear") continue;
-    if (scale === "biex") {
-      throw new FlowcytoError(
-        "unsupported_flowjo_biex_export",
-        `FlowJo biex export for channel ${channel} is not implemented. Export would misposition gates without the FlowJo spline transform.`,
-        "/views",
-      );
-    }
     const transform = flowJoTransformForScale(scale);
     if (transform) transformsByChannel.set(channel, transform);
   }
@@ -111,9 +114,10 @@ function exportCoordinate(value: number, channel: string, context: ExportTransfo
   const transform = context.transformsByChannel.get(channel);
   if (!transform) return value;
   if (transform.kind === "log") return (Math.log10(value / transform.t) / transform.m) + 1;
-  return transform.length
+  if (transform.kind === "fasinh") return transform.length
     * (Math.asinh(value * Math.sinh(transform.m * Math.LN10) / transform.t) + (transform.a * Math.LN10))
     / ((transform.m + transform.a) * Math.LN10);
+  return buildBiexTransform(transform).forward(value);
 }
 
 function formatNumber(value: number): string {
@@ -126,20 +130,31 @@ function formatNumber(value: number): string {
 function transformStore(context: ExportTransformContext): XmlElement | null {
   const transforms: XmlElement = {};
   for (const [channel, transform] of Array.from(context.transformsByChannel.entries()).sort(([left], [right]) => left.localeCompare(right))) {
-    const key = transform.kind === "log" ? "transforms:log" : "transforms:fasinh";
-    const entry = transform.kind === "log"
-      ? {
+    const key = transform.kind === "log"
+      ? "transforms:log"
+      : transform.kind === "fasinh" ? "transforms:fasinh" : "transforms:biex";
+    const entry = (() => {
+      if (transform.kind === "log") return {
         "@_transforms:T": String(transform.t),
         "@_transforms:M": String(transform.m),
         "data-type:parameter": { "@_data-type:name": channel },
-      }
-      : {
+      };
+      if (transform.kind === "fasinh") return {
         "@_transforms:T": String(transform.t),
         "@_transforms:M": String(transform.m),
         "@_transforms:A": String(transform.a),
         "@_transforms:length": String(transform.length),
         "data-type:parameter": { "@_data-type:name": channel },
       };
+      return {
+        "@_transforms:length": String(transform.length),
+        "@_transforms:maxRange": String(transform.maxRange),
+        "@_transforms:neg": String(transform.neg),
+        "@_transforms:width": String(transform.width),
+        "@_transforms:pos": String(transform.pos),
+        "data-type:parameter": { "@_data-type:name": channel },
+      };
+    })();
     const current = transforms[key];
     transforms[key] = current === undefined ? entry : [...(Array.isArray(current) ? current : [current]), entry];
   }

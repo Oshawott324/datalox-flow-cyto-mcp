@@ -1,6 +1,7 @@
 export * from "./types.js";
 export * from "./compensation.js";
 export * from "./compensation-controls.js";
+export * from "./biex-transform.js";
 export * from "./fcs.js";
 export * from "./flowjo-export.js";
 export * from "./flowjo-import.js";

@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { XMLParser } from "fast-xml-parser";
 
+import { buildBiexTransform } from "./biex-transform.js";
 import { readFcsMetadata } from "./fcs.js";
 import { validateWorkspaceObject, writeWorkspace } from "./workspace.js";
 import { FlowcytoError, type FlowcytoSample, type FlowcytoWorkspace, type SampleMetadata, type WorkspaceGate } from "./types.js";
@@ -346,6 +347,17 @@ function invertFlowJoFasinh(value: number, transform: FlowJoTransform): number {
   return Math.sinh(((m + a) * ln10 * value / length) - (a * ln10)) * t / Math.sinh(m * ln10);
 }
 
+function invertFlowJoBiex(value: number, transform: FlowJoTransform): number {
+  const xform = buildBiexTransform({
+    length: transform.length ?? 256,
+    maxRange: transform.maxRange ?? 262144,
+    pos: transform.pos ?? 4.5,
+    neg: transform.neg ?? 0,
+    width: transform.width ?? -10,
+  });
+  return xform.inverse(value);
+}
+
 function coordinateConverter(context: FlowJoTransformContext, warnings: string[]): CoordinateConverter {
   return (channel, value, gateName) => {
     const transform = context.transformsByChannel.get(channel);
@@ -354,6 +366,7 @@ function coordinateConverter(context: FlowJoTransformContext, warnings: string[]
     if (transform.kind === "log") return invertFlowJoLog(value, transform);
     if (transform.kind === "flog") return invertFlowJoFlog(value, transform);
     if (transform.kind === "fasinh") return invertFlowJoFasinh(value, transform);
+    if (transform.kind === "biex") return invertFlowJoBiex(value, transform);
     const warning = `FlowJo ${transform.kind} transform is not converted for gate ${gateName} channel ${channel}; coordinates imported as stored.`;
     if (!context.unsupportedWarnings.has(warning)) {
       context.unsupportedWarnings.add(warning);
