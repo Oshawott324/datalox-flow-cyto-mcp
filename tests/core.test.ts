@@ -37,12 +37,14 @@ import {
   FlowcytoError,
   generateTicks,
   getEventPreview,
+  getPopulationGraph,
   getSampleMetadata,
   importFlowJoWorkspace,
   initWorkspace,
   openFcsArtifact,
   readPreviewColumns,
   readWorkspace,
+  suggestSingletGate,
   transformValue,
   upsertCompensationMatrix,
   upsertGate,
@@ -399,6 +401,14 @@ describe("flowcyto core", () => {
     });
     expect(csv.compensations[0]?.id).toBe("fcs_spill_sample_001");
     expect(csv.compensations[0]?.matrix).toEqual([[1, 0.2], [0.1, 1]]);
+
+    const semicolon = extractSpilloverMatrices({
+      keywords: { COMP: "2;FITC-A;PE-A;1;0.2;0.1;1" },
+      sampleId: "sample_001",
+      availableChannels: ["FITC-A", "PE-A"],
+    });
+    expect(semicolon.compensations[0]?.keyword).toBe("COMP");
+    expect(semicolon.compensations[0]?.matrix).toEqual([[1, 0.2], [0.1, 1]]);
 
     const indexed = extractSpilloverMatrices({
       keywords: { $SPILLOVER: "2,3,4,1,0.2,0.1,1" },
@@ -1995,6 +2005,112 @@ describe("flowcyto core", () => {
     expect((await readWorkspace(workspacePath)).gates).toEqual([]);
   });
 
+  it("suggests a singlet gate without writing the workspace", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-singlet-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["FSC-A", "FSC-H", "SSC-A"],
+      rows: [
+        [100, 52, 10],
+        [200, 101, 12],
+        [300, 151, 14],
+        [400, 199, 16],
+        [500, 251, 18],
+      ],
+    });
+    const { workspacePath } = await initWorkspace({ rootDir: dir, samplePath, sampleId: "sample" });
+
+    const result = await suggestSingletGate({ workspacePath, sampleId: "sample" });
+    expect(result.ok).toBe(true);
+    expect(result.gate).toMatchObject({
+      sample: "sample",
+      parent: "root",
+      type: "polygon",
+      x: "FSC-A",
+      y: "FSC-H",
+    });
+    expect(result.gate.type).toBe("polygon");
+    if (result.gate.type !== "polygon") throw new Error("Expected polygon singlet gate.");
+    expect(result.gate.vertices).toHaveLength(4);
+    expect(result.metrics.eventsUsed).toBe(5);
+    expect(result.nextAction).toMatchObject({
+      tool: "upsert_gate",
+      arguments: { expected_revision: 0 },
+    });
+    expect((await readWorkspace(workspacePath)).gates).toEqual([]);
+  });
+
+  it("returns exact population graph counts and percentages", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-popgraph-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["FSC-A", "SSC-A", "FITC-A"],
+      rows: [
+        [10, 10, 1],
+        [20, 20, 2],
+        [30, 30, 10],
+        [80, 80, 20],
+      ],
+    });
+    const { workspacePath } = await initWorkspace({ rootDir: dir, samplePath, sampleId: "sample" });
+    await upsertGates({
+      workspacePath,
+      expectedRevision: 0,
+      gates: [
+        {
+          id: "main",
+          name: "Main",
+          sample: "sample",
+          parent: "root",
+          type: "rect",
+          x: "FSC-A",
+          y: "SSC-A",
+          xMin: 0,
+          xMax: 50,
+          yMin: 0,
+          yMax: 50,
+        },
+        {
+          id: "fitc_positive",
+          name: "FITC+",
+          sample: "sample",
+          parent: "main",
+          type: "range",
+          x: "FITC-A",
+          min: 5,
+          max: 30,
+        },
+      ],
+    });
+
+    const graph = await getPopulationGraph({ workspacePath, sampleId: "sample" });
+    expect(graph).toMatchObject({
+      ok: true,
+      sampleId: "sample",
+      revision: 1,
+    });
+    expect(graph.root).toMatchObject({
+      gateId: "root",
+      count: 4,
+      percentOfRoot: 100,
+    });
+    const main = graph.root.children[0];
+    expect(main).toMatchObject({
+      gateId: "main",
+      count: 3,
+      percentOfParent: 75,
+      percentOfRoot: 75,
+    });
+    expect(main?.children[0]).toMatchObject({
+      gateId: "fitc_positive",
+      count: 1,
+      percentOfRoot: 25,
+    });
+    expect(main?.children[0]?.percentOfParent).toBeCloseTo(100 / 3);
+  });
+
   it("upsertGates creates multiple gates in one revision increment", async () => {
     const { workspacePath } = await makeWorkspace();
     const gates: WorkspaceGate[] = [
@@ -3386,6 +3502,8 @@ describe("flowcyto MCP", () => {
       const openTool = tools.tools.find((tool) => tool.name === "open_gate_editor");
       const contextTool = tools.tools.find((tool) => tool.name === "get_plot_context");
       const upsertTool = tools.tools.find((tool) => tool.name === "upsert_gate");
+      expect(tools.tools.some((tool) => tool.name === "suggest_singlet_gate")).toBe(true);
+      expect(tools.tools.some((tool) => tool.name === "get_population_graph")).toBe(true);
       expect(openTool?.description).toContain("get_plot_context");
       expect(openTool?.description).toContain("surface=\"native_window\"");
       expect(contextTool?.description).toContain("upsert_gate");
@@ -3874,6 +3992,7 @@ describe("flowcyto MCP", () => {
         "get_event_preview",
         "get_gate_editor_state",
         "get_plot_context",
+        "get_population_graph",
         "get_sample_metadata",
         "get_workspace_revision",
         "import_flowjo_workspace",
@@ -3887,6 +4006,7 @@ describe("flowcyto MCP", () => {
         "render_gate_editor",
         "render_plot",
         "render_plot_image",
+        "suggest_singlet_gate",
         "upsert_compensation_matrix",
         "upsert_gate",
         "validate_workspace",

@@ -24,12 +24,14 @@ import {
   estimateCompensationFromControls,
   exportFlowJoWorkspace,
   getEventPreview,
+  getPopulationGraph,
   importFlowJoWorkspace,
   getSampleMetadata,
   listSamples,
   openFcsArtifact,
   openWorkspace,
   readWorkspace,
+  suggestSingletGate,
   upsertCompensationMatrix,
   upsertGate,
   validateWorkspace,
@@ -85,7 +87,7 @@ const FlowcytoCapabilities = {
   canWriteStructuredGates: true,
   liveRefreshAfterUpsertGate: true,
   canonicalArtifact: "flowcyto.workspace.json",
-  primaryTools: ["open_fcs", "import_flowjo_workspace", "export_flowjo_workspace", "list_compensations", "get_compensation_matrix", "estimate_compensation_from_controls", "upsert_compensation_matrix", "render_plot", "render_plot_image", "open_gate_editor", "get_plot_context", "upsert_gate"],
+  primaryTools: ["open_fcs", "import_flowjo_workspace", "export_flowjo_workspace", "list_compensations", "get_compensation_matrix", "estimate_compensation_from_controls", "upsert_compensation_matrix", "suggest_singlet_gate", "get_population_graph", "render_plot", "render_plot_image", "open_gate_editor", "get_plot_context", "upsert_gate"],
   preferredWorkflowResource: OPEN_FCS_WORKFLOW_RESOURCE_URI,
   compactGateEditor: {
     entryTool: "open_gate_editor",
@@ -1214,6 +1216,52 @@ server.registerTool(
       nextAction: null,
     };
   }),
+);
+
+server.registerTool(
+  "suggest_singlet_gate",
+  {
+    description: "Return a robust suggested singlet polygon gate from area-vs-height channels. This tool does not write the workspace; pass result.nextAction.arguments to upsert_gate only after user confirmation.",
+    inputSchema: {
+      workspace_path: z.string(),
+      sample_id: z.string(),
+      parent_gate_id: z.string().optional(),
+      x: z.string().optional(),
+      y: z.string().optional(),
+      k: z.number().positive().optional(),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, sample_id, parent_gate_id, x, y, k }) => toolContent(() =>
+    suggestSingletGate({
+      workspacePath: workspace_path,
+      sampleId: sample_id,
+      parent: parent_gate_id,
+      x,
+      y,
+      k,
+    }),
+  ),
+);
+
+server.registerTool(
+  "get_population_graph",
+  {
+    description: "Return exact event counts and percentages for the gate hierarchy in a sample. Counts are computed from FCS events and workspace gates, not from preview sampling.",
+    inputSchema: {
+      workspace_path: z.string(),
+      sample_id: z.string(),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, sample_id }) => toolContent(() =>
+    getPopulationGraph({
+      workspacePath: workspace_path,
+      sampleId: sample_id,
+    }),
+  ),
 );
 
 server.registerTool(

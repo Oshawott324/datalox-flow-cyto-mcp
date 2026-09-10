@@ -61,6 +61,15 @@ Use Flowcyto preview/render outputs for gate geometry. Do not create local
 Python plots, inspect local preview URLs, or infer gates from screenshots when
 `render_plot` or `get_plot_context` is available.
 
+Use `suggest_singlet_gate` when the user asks for an initial singlet gate or a
+FSC-A/FSC-H style suggestion. It returns a proposed polygon only; do not write
+it with `upsert_gate` unless the user asks you to apply it.
+
+Use `get_population_graph` when the user asks for population counts,
+percentages, or a hierarchy summary. It evaluates the workspace gates against
+the FCS events and returns exact count, percent-of-parent, and percent-of-root
+values for each node.
+
 ## Compensation
 
 Compensation is agent-explicit. Never silently apply compensation just because

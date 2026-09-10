@@ -265,6 +265,8 @@ get_sample_metadata
 get_event_preview
 upsert_gate
 delete_gate
+suggest_singlet_gate
+get_population_graph
 list_compensations
 get_compensation_matrix
 estimate_compensation_from_controls
