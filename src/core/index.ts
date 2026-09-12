@@ -1,4 +1,5 @@
 export * from "./types.js";
+export * from "./apoptosis.js";
 export * from "./compensation.js";
 export * from "./compensation-controls.js";
 export * from "./biex-transform.js";

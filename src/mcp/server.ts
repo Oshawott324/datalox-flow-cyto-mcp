@@ -31,9 +31,11 @@ import {
   openFcsArtifact,
   openWorkspace,
   readWorkspace,
+  suggestApoptosisQuadrants,
   suggestSingletGate,
   upsertCompensationMatrix,
   upsertGate,
+  upsertGates,
   validateWorkspace,
   writeWorkspace,
   type FlowcytoWorkspace,
@@ -49,6 +51,11 @@ const JsonObject = z.record(z.string(), z.unknown());
 const JsonResultSchema = {
   result: z.unknown(),
 };
+const ApoptosisControlSchema = z.object({
+  sample_id: z.string().optional(),
+  fcs_path: z.string().optional(),
+  parent_gate_id: z.string().optional(),
+}).optional();
 const GateEditorSurfaceSchema = z.enum(["auto", "mcp_app", "native_window"]);
 const OpenFcsSurfaceSchema = z.enum(["auto", "mcp_app", "native_window", "none"]);
 const GateEditorMcpAppMeta = {
@@ -87,7 +94,7 @@ const FlowcytoCapabilities = {
   canWriteStructuredGates: true,
   liveRefreshAfterUpsertGate: true,
   canonicalArtifact: "flowcyto.workspace.json",
-  primaryTools: ["open_fcs", "import_flowjo_workspace", "export_flowjo_workspace", "list_compensations", "get_compensation_matrix", "estimate_compensation_from_controls", "upsert_compensation_matrix", "suggest_singlet_gate", "get_population_graph", "render_plot", "render_plot_image", "open_gate_editor", "get_plot_context", "upsert_gate"],
+  primaryTools: ["open_fcs", "import_flowjo_workspace", "export_flowjo_workspace", "list_compensations", "get_compensation_matrix", "estimate_compensation_from_controls", "upsert_compensation_matrix", "suggest_singlet_gate", "suggest_apoptosis_quadrants", "get_population_graph", "render_plot", "render_plot_image", "open_gate_editor", "get_plot_context", "upsert_gate", "upsert_gates"],
   preferredWorkflowResource: OPEN_FCS_WORKFLOW_RESOURCE_URI,
   compactGateEditor: {
     entryTool: "open_gate_editor",
@@ -1246,6 +1253,80 @@ server.registerTool(
 );
 
 server.registerTool(
+  "suggest_apoptosis_quadrants",
+  {
+    description: "Return four proposed Annexin/death-dye apoptosis quadrant gates and population percentages. This read-only tool does not write the workspace; pass result.nextAction.arguments to upsert_gates only after user confirmation.",
+    inputSchema: {
+      workspace_path: z.string(),
+      sample_id: z.string(),
+      parent_gate_id: z.string().optional(),
+      annexin_channel: z.string(),
+      death_channel: z.string(),
+      negative_control: ApoptosisControlSchema,
+      positive_control: ApoptosisControlSchema,
+      annexin_single_positive_control: ApoptosisControlSchema,
+      death_single_positive_control: ApoptosisControlSchema,
+      compensation_id: z.string().optional(),
+      threshold_method: z.enum(["negative_control_percentile", "manual"]).optional(),
+      negative_percentile: z.number().positive().optional(),
+      manual_annexin_threshold: z.number().optional(),
+      manual_death_threshold: z.number().optional(),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({
+    workspace_path,
+    sample_id,
+    parent_gate_id,
+    annexin_channel,
+    death_channel,
+    negative_control,
+    positive_control,
+    annexin_single_positive_control,
+    death_single_positive_control,
+    compensation_id,
+    threshold_method,
+    negative_percentile,
+    manual_annexin_threshold,
+    manual_death_threshold,
+  }) => toolContent(() =>
+    suggestApoptosisQuadrants({
+      workspacePath: workspace_path,
+      sampleId: sample_id,
+      parentGateId: parent_gate_id,
+      annexinChannel: annexin_channel,
+      deathChannel: death_channel,
+      negativeControl: negative_control ? {
+        sampleId: negative_control.sample_id,
+        fcsPath: negative_control.fcs_path,
+        parentGateId: negative_control.parent_gate_id,
+      } : undefined,
+      positiveControl: positive_control ? {
+        sampleId: positive_control.sample_id,
+        fcsPath: positive_control.fcs_path,
+        parentGateId: positive_control.parent_gate_id,
+      } : undefined,
+      annexinSinglePositiveControl: annexin_single_positive_control ? {
+        sampleId: annexin_single_positive_control.sample_id,
+        fcsPath: annexin_single_positive_control.fcs_path,
+        parentGateId: annexin_single_positive_control.parent_gate_id,
+      } : undefined,
+      deathSinglePositiveControl: death_single_positive_control ? {
+        sampleId: death_single_positive_control.sample_id,
+        fcsPath: death_single_positive_control.fcs_path,
+        parentGateId: death_single_positive_control.parent_gate_id,
+      } : undefined,
+      compensationId: compensation_id,
+      thresholdMethod: threshold_method,
+      negativePercentile: negative_percentile,
+      manualAnnexinThreshold: manual_annexin_threshold,
+      manualDeathThreshold: manual_death_threshold,
+    }),
+  ),
+);
+
+server.registerTool(
   "get_population_graph",
   {
     description: "Return exact event counts and percentages for the gate hierarchy in a sample. Counts are computed from FCS events and workspace gates, not from preview sampling.",
@@ -1261,6 +1342,33 @@ server.registerTool(
       workspacePath: workspace_path,
       sampleId: sample_id,
     }),
+  ),
+);
+
+server.registerTool(
+  "upsert_gates",
+  {
+    description: "Create or update multiple gates in one canonical workspace revision-safe write. Use expected_revision from the tool that proposed the gates. Do not patch workspace JSON directly. After this, call get_workspace_revision.",
+    inputSchema: {
+      workspace_path: z.string(),
+      gates: z.array(JsonObject),
+      expected_revision: z.number().int(),
+    },
+    outputSchema: JsonResultSchema,
+    _meta: WidgetAccessibleToolMeta,
+  },
+  async ({ workspace_path, gates, expected_revision }) => toolContent(() =>
+    upsertGates({
+      workspacePath: workspace_path,
+      gates: gates as WorkspaceGate[],
+      expectedRevision: expected_revision,
+    }).then((result) => ({
+      ...result,
+      agentContract: flowcytoAgentContract({
+        refresh: "already_open_app_refreshes_from_revision_poll",
+      }),
+      nextAction: result.ok ? workspaceRevisionNextAction(workspace_path) : null,
+    })),
   ),
 );
 

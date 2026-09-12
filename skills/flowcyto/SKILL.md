@@ -65,6 +65,14 @@ Use `suggest_singlet_gate` when the user asks for an initial singlet gate or a
 FSC-A/FSC-H style suggestion. It returns a proposed polygon only; do not write
 it with `upsert_gate` unless the user asks you to apply it.
 
+Use `suggest_apoptosis_quadrants` when the user asks for Annexin V / PI,
+Annexin V / 7-AAD, or similar apoptosis quadrant analysis. Pass explicit
+`annexin_channel` and `death_channel`; do not infer the assay from filenames
+alone. Prefer a non-debris singlet parent population, not a live-cell parent
+gate, because apoptotic/dead events are the measured biology. The tool returns
+four proposed quadrant gates and an `upsert_gates` next action; do not write
+those gates unless the user asks you to apply them.
+
 Use `get_population_graph` when the user asks for population counts,
 percentages, or a hierarchy summary. It evaluates the workspace gates against
 the FCS events and returns exact count, percent-of-parent, and percent-of-root

@@ -264,8 +264,10 @@ validate_workspace
 get_sample_metadata
 get_event_preview
 upsert_gate
+upsert_gates
 delete_gate
 suggest_singlet_gate
+suggest_apoptosis_quadrants
 get_population_graph
 list_compensations
 get_compensation_matrix

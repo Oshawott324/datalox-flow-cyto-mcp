@@ -44,6 +44,7 @@ import {
   openFcsArtifact,
   readPreviewColumns,
   readWorkspace,
+  suggestApoptosisQuadrants,
   suggestSingletGate,
   transformValue,
   upsertCompensationMatrix,
@@ -2111,6 +2112,175 @@ describe("flowcyto core", () => {
     expect(main?.children[0]?.percentOfParent).toBeCloseTo(100 / 3);
   });
 
+  it("suggests apoptosis quadrants from manual thresholds without writing the workspace", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-apoptosis-manual-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["Annexin-A", "PI-A"],
+      rows: [
+        [10, 10],
+        [80, 10],
+        [80, 90],
+        [10, 90],
+      ],
+    });
+    const { workspacePath } = await initWorkspace({ rootDir: dir, samplePath, sampleId: "sample" });
+
+    const result = await suggestApoptosisQuadrants({
+      workspacePath,
+      sampleId: "sample",
+      annexinChannel: "Annexin-A",
+      deathChannel: "PI-A",
+      thresholdMethod: "manual",
+      manualAnnexinThreshold: 50,
+      manualDeathThreshold: 50,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.thresholds).toMatchObject({ annexin: 50, death: 50, source: "manual" });
+    expect(result.diagnostics.confidence).toBe("manual_thresholds");
+    expect(result.diagnostics.compensation.applied).toBe(false);
+    expect(result.gates).toHaveLength(4);
+    expect(result.gates.every((gate) => gate.type === "rect" && gate.parent === "root")).toBe(true);
+    expect(result.summary).toMatchObject({
+      viable: { count: 1, percentOfParent: 25 },
+      earlyApoptotic: { count: 1, percentOfParent: 25 },
+      lateApoptoticDead: { count: 1, percentOfParent: 25 },
+      necroticOrMembraneDamaged: { count: 1, percentOfParent: 25 },
+    });
+    expect(result.nextAction).toMatchObject({
+      tool: "upsert_gates",
+      arguments: { expected_revision: 0 },
+    });
+    expect((await readWorkspace(workspacePath)).gates).toEqual([]);
+  });
+
+  it("anchors apoptosis thresholds to a negative control percentile", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-apoptosis-negative-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    const negativePath = path.join(dir, "negative.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["Annexin-A", "PI-A"],
+      rows: [
+        [1, 1],
+        [10, 2],
+        [20, 20],
+        [2, 30],
+      ],
+    });
+    await writeTinyIntegerFcs({
+      fcsPath: negativePath,
+      channels: ["Annexin-A", "PI-A"],
+      rows: [
+        [1, 2],
+        [3, 4],
+        [5, 6],
+      ],
+    });
+    const { workspacePath } = await initWorkspace({ rootDir: dir, samplePath, sampleId: "sample" });
+
+    const result = await suggestApoptosisQuadrants({
+      workspacePath,
+      sampleId: "sample",
+      annexinChannel: "Annexin-A",
+      deathChannel: "PI-A",
+      negativeControl: { fcsPath: negativePath },
+      negativePercentile: 50,
+    });
+    expect(result.thresholds).toMatchObject({
+      annexin: 3,
+      death: 4,
+      source: "negative_control",
+      negativePercentile: 50,
+    });
+    expect(result.diagnostics.confidence).toBe("control_anchored");
+    expect(result.diagnostics.controls.negative).toEqual({ events: 3 });
+    expect(result.summary.viable.count).toBe(1);
+    expect(result.summary.earlyApoptotic.count).toBe(1);
+    expect(result.summary.lateApoptoticDead.count).toBe(1);
+    expect(result.summary.necroticOrMembraneDamaged.count).toBe(1);
+  });
+
+  it("applies apoptosis compensation through detector-to-parameter channel alignment", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-apoptosis-comp-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["BL1-A", "BL3-A"],
+      markers: ["Annexin-A", "PI-A"],
+      rows: [
+        [10, 10],
+        [80, 10],
+      ],
+      extraKeywords: {
+        $SPILLOVER: "2,BL1-A,BL3-A,1,0.1,0.2,1",
+      },
+    });
+    const opened = await openFcsArtifact({ path: samplePath, workspaceDir: dir, sampleId: "sample" });
+    const workspace = await readWorkspace(opened.workspacePath);
+    const compensation = workspace.compensations?.[0];
+    expect(compensation?.channels).toEqual(["BL1-A", "BL3-A"]);
+
+    const result = await suggestApoptosisQuadrants({
+      workspacePath: opened.workspacePath,
+      sampleId: "sample",
+      annexinChannel: "Annexin-A",
+      deathChannel: "PI-A",
+      thresholdMethod: "manual",
+      manualAnnexinThreshold: 50,
+      manualDeathThreshold: 50,
+      compensationId: compensation?.id,
+    });
+    expect(result.diagnostics.compensation).toMatchObject({
+      applied: true,
+      id: compensation?.id,
+      channels: ["Annexin-A", "PI-A"],
+    });
+  });
+
+  it("marks apoptosis quadrant suggestions exploratory when controls are missing", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-apoptosis-exploratory-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["Annexin-A", "PI-A"],
+      rows: [[1, 1], [2, 2], [100, 100]],
+    });
+    const { workspacePath } = await initWorkspace({ rootDir: dir, samplePath, sampleId: "sample" });
+
+    const result = await suggestApoptosisQuadrants({
+      workspacePath,
+      sampleId: "sample",
+      annexinChannel: "Annexin-A",
+      deathChannel: "PI-A",
+    });
+    expect(result.thresholds.source).toBe("exploratory");
+    expect(result.diagnostics.confidence).toBe("exploratory");
+    expect(result.diagnostics.warnings.join(" ")).toContain("No negative control or manual thresholds");
+  });
+
+  it("rejects apoptosis suggestion when a requested channel is not present in the FCS file", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-apoptosis-missing-ch-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["Annexin-A", "PI-A"],
+      rows: [[10, 10]],
+    });
+    const { workspacePath } = await initWorkspace({ rootDir: dir, samplePath, sampleId: "sample" });
+
+    await expect(suggestApoptosisQuadrants({
+      workspacePath,
+      sampleId: "sample",
+      annexinChannel: "Annexin-A",
+      deathChannel: "NotAChannel",
+      thresholdMethod: "manual",
+      manualAnnexinThreshold: 50,
+      manualDeathThreshold: 50,
+    })).rejects.toMatchObject({ code: "unknown_parameter" });
+  });
+
   it("upsertGates creates multiple gates in one revision increment", async () => {
     const { workspacePath } = await makeWorkspace();
     const gates: WorkspaceGate[] = [
@@ -3503,7 +3673,9 @@ describe("flowcyto MCP", () => {
       const contextTool = tools.tools.find((tool) => tool.name === "get_plot_context");
       const upsertTool = tools.tools.find((tool) => tool.name === "upsert_gate");
       expect(tools.tools.some((tool) => tool.name === "suggest_singlet_gate")).toBe(true);
+      expect(tools.tools.some((tool) => tool.name === "suggest_apoptosis_quadrants")).toBe(true);
       expect(tools.tools.some((tool) => tool.name === "get_population_graph")).toBe(true);
+      expect(tools.tools.some((tool) => tool.name === "upsert_gates")).toBe(true);
       expect(openTool?.description).toContain("get_plot_context");
       expect(openTool?.description).toContain("surface=\"native_window\"");
       expect(contextTool?.description).toContain("upsert_gate");
@@ -4006,9 +4178,11 @@ describe("flowcyto MCP", () => {
         "render_gate_editor",
         "render_plot",
         "render_plot_image",
+        "suggest_apoptosis_quadrants",
         "suggest_singlet_gate",
         "upsert_compensation_matrix",
         "upsert_gate",
+        "upsert_gates",
         "validate_workspace",
         "write_workspace",
       ]);
@@ -4017,7 +4191,7 @@ describe("flowcyto MCP", () => {
       } | undefined;
       expect(openTool?._meta?.["openai/outputTemplate"]).toBe("ui://flowcyto/gate-editor-v1.html");
       expect((openTool?._meta?.ui as { resourceUri?: string } | undefined)?.resourceUri).toBe("ui://flowcyto/gate-editor-v1.html");
-      for (const name of ["get_plot_context", "get_workspace_revision", "upsert_gate", "delete_gate"]) {
+      for (const name of ["get_plot_context", "get_workspace_revision", "upsert_gate", "upsert_gates", "delete_gate"]) {
         const tool = tools.tools.find((entry) => entry.name === name) as { _meta?: Record<string, unknown> } | undefined;
         expect(tool?._meta?.["openai/widgetAccessible"], name).toBe(true);
       }
