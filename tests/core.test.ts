@@ -2260,6 +2260,27 @@ describe("flowcyto core", () => {
     expect(result.diagnostics.warnings.join(" ")).toContain("No negative control or manual thresholds");
   });
 
+  it("rejects apoptosis suggestion when a requested channel is not present in the FCS file", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-apoptosis-missing-ch-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["Annexin-A", "PI-A"],
+      rows: [[10, 10]],
+    });
+    const { workspacePath } = await initWorkspace({ rootDir: dir, samplePath, sampleId: "sample" });
+
+    await expect(suggestApoptosisQuadrants({
+      workspacePath,
+      sampleId: "sample",
+      annexinChannel: "Annexin-A",
+      deathChannel: "NotAChannel",
+      thresholdMethod: "manual",
+      manualAnnexinThreshold: 50,
+      manualDeathThreshold: 50,
+    })).rejects.toMatchObject({ code: "unknown_parameter" });
+  });
+
   it("upsertGates creates multiple gates in one revision increment", async () => {
     const { workspacePath } = await makeWorkspace();
     const gates: WorkspaceGate[] = [
