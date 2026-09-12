@@ -56,6 +56,26 @@ The inspected files include embedded `$SPILLOVER` metadata. This makes the
 folder useful for validating both the explicit compensation workflow and the
 apoptosis gating workflow.
 
+Important live-validation detail: the `$SPILLOVER` matrix in these files uses
+detector-code channel names:
+
+```text
+BL1-A, BL3-A, BL1-H, BL3-H, BL1-W, BL3-W
+```
+
+The user-facing FCS parameter names are:
+
+```text
+Annexin X-FITC-A, PI-PerCP-Cy5.5-A, ...
+```
+
+The FCS metadata does expose the detector mapping (`Annexin X-FITC-A` ->
+`BL1-A`, `PI-PerCP-Cy5.5-A` -> `BL3-A`). Live validation must verify that
+compensation alignment uses this detector-to-parameter mapping before applying
+`compensation_id` to the apoptosis plot. The apoptosis tool itself should pass
+only the channels it analyzes to the compensation application path; it should
+not require applying all six area/height/width spillover channels.
+
 ## Biological Workflow
 
 The recommended apoptosis gating sequence is:
@@ -193,6 +213,23 @@ Design notes:
 `WorkspaceGate[]` should contain four rectangle gates or quadrant-equivalent
 rect gates on the selected parent population.
 
+The rectangle bounds must be finite. The current workspace validator rejects
+`Infinity` and `-Infinity` for `xMin`, `xMax`, `yMin`, and `yMax`. For open-ended
+quadrants, use finite analysis bounds derived from the parent-filtered plot or
+control data, then split those bounds at the Annexin and death-dye thresholds.
+For example:
+
+```text
+viable:
+  xMin = finiteXMin
+  xMax = annexinThreshold
+  yMin = finiteYMin
+  yMax = deathThreshold
+```
+
+The result should report the finite bounds used so agents can audit and reuse
+the exact quadrant geometry.
+
 ## Threshold Strategy
 
 ### Primary Method: Negative-Control Percentile
@@ -317,6 +354,8 @@ Apoptosis-DC2.4_Group_unstain.fcs
 - threshold values
 - quadrant percentages
 - compensation state
+- detector-code compensation alignment (`BL1-A` -> `Annexin X-FITC-A`,
+  `BL3-A` -> `PI-PerCP-Cy5.5-A`)
 - warnings
 - whether the gates look biologically plausible
 
