@@ -1727,6 +1727,70 @@ describe("flowcyto core", () => {
     })).rejects.toMatchObject({ code: "unknown_compensation_control_channel" });
   });
 
+  it("recovers correct spillover from mixed bead controls using primary_channel_top_percentile selection", async () => {
+    // Validates the key failure mode from bead compensation live validation (2026-09-12):
+    // when a single-stain bead file contains mixed negative/positive populations, the
+    // all-event median can be dominated by background-level beads and give wrong spillover.
+    // Bright-event selection isolates the positive population and recovers the correct value.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-bright-comp-"));
+    const channels = ["FL1-A", "FL2-A"];
+    const unstainedPath = path.join(dir, "unstained.fcs");
+    const fl1Path = path.join(dir, "fl1.fcs");
+    const fl2Path = path.join(dir, "fl2.fcs");
+
+    // Unstained background: FL1=100, FL2=100
+    await writeTinyIntegerFcs({ fcsPath: unstainedPath, channels, rows: Array(5).fill([100, 100]) });
+    // FL1 control: 5 negative beads (FL1≈background, FL2=500 artifact) +
+    //             5 positive beads (FL1=5000, FL2=590 = 0.1*(5000-100)+100, exact 10% spillover)
+    await writeTinyIntegerFcs({
+      fcsPath: fl1Path,
+      channels,
+      rows: [...Array(5).fill([150, 500]), ...Array(5).fill([5000, 590])],
+    });
+    // FL2 control: uniform positive (no mixed population needed here)
+    await writeTinyIntegerFcs({ fcsPath: fl2Path, channels, rows: Array(5).fill([100, 10000]) });
+
+    const controls = [
+      { path: fl1Path, channel: "FL1-A" },
+      { path: fl2Path, channel: "FL2-A" },
+    ];
+
+    // All-event median: negative bead artifact (FL2=500) contaminates the secondary median.
+    // FL1 median of [150×5, 5000×5] = 2575; FL2 median of [500×5, 590×5] = 545.
+    // Estimated FL1→FL2 spillover = (545-100)/(2575-100) ≈ 0.18, not 0.1.
+    const allEvent = await estimateCompensationFromControls({ channels, unstainedPath, controls });
+    expect(allEvent.compensation.matrix[0]![1]).not.toBeCloseTo(0.1, 1);
+
+    // Bright-event selection (top 50%): selects the 5 positive bead events.
+    // FL1 median = 5000; FL2 median = 590.
+    // Estimated FL1→FL2 spillover = (590-100)/(5000-100) = 490/4900 = 0.1 exactly.
+    const bright = await estimateCompensationFromControls({
+      channels, unstainedPath, controls,
+      eventSelection: { type: "primary_channel_top_percentile", percentile: 50 },
+    });
+    expect(bright.compensation.matrix[0]![1]).toBeCloseTo(0.1, 10);
+    expect(bright.diagnostics.eventSelection).toMatchObject({ type: "primary_channel_top_percentile", percentile: 50 });
+    expect(bright.diagnostics.controls[0]!.selectedEvents).toBe(5);
+    expect(bright.diagnostics.controls[1]!.selectedEvents).toBeDefined();
+  });
+
+  it("rejects event_selection with out-of-range percentile", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-bright-comp-invalid-"));
+    const controlPath = path.join(dir, "control.fcs");
+    await writeTinyIntegerFcs({ fcsPath: controlPath, channels: ["FL1-A"], rows: [[100], [200]] });
+    const controls = [{ path: controlPath, channel: "FL1-A" }];
+    await expect(estimateCompensationFromControls({
+      channels: ["FL1-A"],
+      controls,
+      eventSelection: { type: "primary_channel_top_percentile", percentile: 0 },
+    })).rejects.toMatchObject({ code: "invalid_event_selection" });
+    await expect(estimateCompensationFromControls({
+      channels: ["FL1-A"],
+      controls,
+      eventSelection: { type: "primary_channel_top_percentile", percentile: 100 },
+    })).rejects.toMatchObject({ code: "invalid_event_selection" });
+  });
+
   it("returns a capped deterministic event preview", async () => {
     const { workspacePath } = await makeWorkspace();
     const metadata = await getSampleMetadata(workspacePath, "sample_001");

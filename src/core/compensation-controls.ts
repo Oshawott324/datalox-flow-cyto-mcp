@@ -6,6 +6,11 @@ export type CompensationControlMapping = {
   channel: string;
 };
 
+export type EventSelection = {
+  type: "primary_channel_top_percentile";
+  percentile: number;
+};
+
 export type EstimateCompensationFromControlsInput = {
   id?: string;
   name?: string;
@@ -14,6 +19,7 @@ export type EstimateCompensationFromControlsInput = {
   controls: CompensationControlMapping[];
   unstainedPath?: string;
   maxEvents?: number;
+  eventSelection?: EventSelection;
 };
 
 export type EstimateCompensationFromControlsResult = {
@@ -22,8 +28,9 @@ export type EstimateCompensationFromControlsResult = {
   diagnostics: {
     method: "median_ratio";
     channels: string[];
-    controls: Array<{ path: string; channel: string; totalEvents: number; sampledEvents: number }>;
+    controls: Array<{ path: string; channel: string; totalEvents: number; sampledEvents: number; selectedEvents?: number }>;
     unstained?: { path: string; totalEvents: number; sampledEvents: number };
+    eventSelection?: EventSelection;
   };
 };
 
@@ -41,9 +48,24 @@ function defaultCompensationId(channels: string[]): string {
   return `controls_median_${slug || "matrix"}`;
 }
 
+function selectTopRows(rows: number[][], primaryIndex: number, unstainedPrimary: number, percentile: number): { selected: number[][]; count: number } {
+  const n = Math.max(1, Math.ceil(rows.length * (1 - percentile / 100)));
+  const ranked = rows
+    .map((row, i) => ({ i, corrected: (row[primaryIndex] ?? 0) - unstainedPrimary }))
+    .sort((a, b) => b.corrected - a.corrected);
+  const selected = ranked.slice(0, n).map(({ i }) => rows[i] as number[]);
+  return { selected, count: n };
+}
+
 function assertControlMappings(input: EstimateCompensationFromControlsInput, channels: string[]): void {
   if (input.controls.length === 0) {
     throw new FlowcytoError("missing_compensation_controls", "At least one single-stain control is required.", "/controls");
+  }
+  if (input.eventSelection) {
+    const p = input.eventSelection.percentile;
+    if (!Number.isFinite(p) || p <= 0 || p >= 100) {
+      throw new FlowcytoError("invalid_event_selection", "event_selection.percentile must be greater than 0 and less than 100.", "/event_selection");
+    }
   }
   const channelSet = new Set(channels);
   if (channelSet.size !== channels.length) {
@@ -91,13 +113,27 @@ export async function estimateCompensationFromControls(input: EstimateCompensati
       throw new FlowcytoError("missing_compensation_control", `Missing single-stain control for channel ${fluorochromeChannel}.`, "/controls");
     }
     const controlColumns = await readFcsColumns({ path: control.path, channels, maxEvents: input.maxEvents });
+    let eventRows = controlColumns.values;
+    let selectedEvents: number | undefined;
+    if (input.eventSelection) {
+      const primaryIndex = channels.indexOf(fluorochromeChannel);
+      const { selected, count } = selectTopRows(
+        controlColumns.values,
+        primaryIndex,
+        unstainedMedians[primaryIndex] ?? 0,
+        input.eventSelection.percentile,
+      );
+      eventRows = selected;
+      selectedEvents = count;
+    }
     controlDiagnostics.push({
       path: control.path,
       channel: control.channel,
       totalEvents: controlColumns.totalEvents,
       sampledEvents: controlColumns.sampledEvents,
+      ...(selectedEvents !== undefined ? { selectedEvents } : {}),
     });
-    const medians = channels.map((_, index) => median(controlColumns.values.map((row) => row[index] ?? Number.NaN)));
+    const medians = channels.map((_, index) => median(eventRows.map((row) => row[index] ?? Number.NaN)));
     const primaryIndex = channels.indexOf(fluorochromeChannel);
     const denominator = medians[primaryIndex] - unstainedMedians[primaryIndex];
     if (!Number.isFinite(denominator) || denominator <= 0) {
@@ -125,6 +161,7 @@ export async function estimateCompensationFromControls(input: EstimateCompensati
       channels,
       controls: controlDiagnostics,
       ...(unstained ? { unstained: { path: input.unstainedPath ?? "", totalEvents: unstained.totalEvents, sampledEvents: unstained.sampledEvents } } : {}),
+      ...(input.eventSelection ? { eventSelection: input.eventSelection } : {}),
     },
   };
 }
