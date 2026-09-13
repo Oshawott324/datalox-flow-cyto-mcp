@@ -885,11 +885,15 @@ server.registerTool(
       })),
       unstained_path: z.string().optional(),
       max_events: z.number().int().positive().optional(),
+      event_selection: z.object({
+        type: z.literal("primary_channel_top_percentile"),
+        percentile: z.number(),
+      }).optional().describe("Restrict spillover estimation to bright positive events. Use primary_channel_top_percentile with percentile=90 for mixed negative/positive bead controls to exclude background-level events from the median computation."),
     },
     outputSchema: JsonResultSchema,
     annotations: { readOnlyHint: true },
   },
-  async ({ id, name, sample, channels, controls, unstained_path, max_events }) => toolContent(() =>
+  async ({ id, name, sample, channels, controls, unstained_path, max_events, event_selection }) => toolContent(() =>
     estimateCompensationFromControls({
       id,
       name,
@@ -898,6 +902,7 @@ server.registerTool(
       controls,
       unstainedPath: unstained_path,
       maxEvents: max_events,
+      eventSelection: event_selection,
     })),
 );
 
