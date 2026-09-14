@@ -207,6 +207,31 @@ function availableChannelMap(availableChannels: AvailableCompensationChannel[]):
   return map;
 }
 
+function resolveChannelFromMap(channel: string, channelMap: Map<string, string[]>): string | undefined {
+  const exactKey = normalizeDetectorToken(channel);
+  const coreKey = normalizeDetectorToken(detectorCore(channel));
+  const exactCandidates = [...new Set(channelMap.get(exactKey) ?? [])];
+  const candidates = exactCandidates.length > 0
+    ? exactCandidates
+    : [...new Set(channelMap.get(coreKey) ?? [])];
+  if (candidates.length === 0) return undefined;
+  if (candidates.length > 1) {
+    throw new FlowcytoError(
+      "ambiguous_compensation_channel_alignment",
+      `Matrix channel ${channel} matched multiple sample channels: ${candidates.join(", ")}.`,
+      "/compensation_id",
+    );
+  }
+  return candidates[0];
+}
+
+export function resolveAvailableCompensationChannel(
+  channel: string,
+  availableChannels: AvailableCompensationChannel[],
+): string | undefined {
+  return resolveChannelFromMap(channel, availableChannelMap(availableChannels));
+}
+
 export function alignCompensationMatrix(
   compensation: CompensationMatrix,
   availableChannels: AvailableCompensationChannel[],
@@ -217,24 +242,12 @@ export function alignCompensationMatrix(
   const warnings: string[] = [];
 
   compensation.channels.forEach((channel, originalIndex) => {
-    const exactKey = normalizeDetectorToken(channel);
-    const coreKey = normalizeDetectorToken(detectorCore(channel));
-    const exactCandidates = [...new Set(channelMap.get(exactKey) ?? [])];
-    const candidates = exactCandidates.length > 0
-      ? exactCandidates
-      : [...new Set(channelMap.get(coreKey) ?? [])];
-    if (candidates.length === 0) {
+    const availableChannel = resolveChannelFromMap(channel, channelMap);
+    if (!availableChannel) {
       warnings.push(`Matrix channel ${channel} did not match any available sample channel.`);
       return;
     }
-    if (candidates.length > 1) {
-      throw new FlowcytoError(
-        "ambiguous_compensation_channel_alignment",
-        `Matrix channel ${channel} matched multiple sample channels: ${candidates.join(", ")}.`,
-        "/compensation_id",
-      );
-    }
-    matched.push({ originalIndex, availableChannel: candidates[0] });
+    matched.push({ originalIndex, availableChannel });
   });
 
   if (matched.length === 0) {

@@ -151,11 +151,11 @@ The FCS parameter names are marker-style names with detector aliases:
 | `eFluor 450 Fixable Viability-A` | `FL19-A` |
 | `APC (Allophycocyanin)-A` | `FL26-A` |
 
-Important finding:
+Original finding:
 
-`estimate_compensation_from_controls` currently reads control columns by exact parameter name. Passing detector names such as `FL03-A` returns `unknown_parameter`. Agents should pass the FCS parameter names for now. A future improvement should reuse the detector/marker alias resolver used by FlowJo import and embedded compensation alignment.
+Before detector-alias resolution was added to control-derived compensation, passing detector names such as `FL03-A` returned `unknown_parameter`. The estimator now resolves detector/marker aliases before reading control columns, so agents can pass matrix-style detector names and receive a matrix keyed to the canonical FCS parameter names.
 
-Control-estimation result using parameter names:
+Control-estimation result using detector-code inputs:
 
 | Estimator | Result |
 |---|---|
@@ -181,6 +181,5 @@ This tetramer dataset is a strong FlowJo import validation fixture, but it is no
 ## Follow-Ups
 
 1. Keep this dataset as a local-only real FlowJo import validation target.
-2. Add detector/marker alias resolution to `estimate_compensation_from_controls`, so agents can use matrix-style detector names where the FCS has marker-style parameter names.
-3. Do not use this tetramer control set as the primary numeric acceptance fixture for control-derived compensation.
-4. If redistribution is cleared, add a derived expected-gates JSON fixture rather than committing the real `.wsp` or `.fcs`.
+2. Do not use this tetramer control set as the primary numeric acceptance fixture for control-derived compensation.
+3. If redistribution is cleared, add a derived expected-gates JSON fixture rather than committing the real `.wsp` or `.fcs`.

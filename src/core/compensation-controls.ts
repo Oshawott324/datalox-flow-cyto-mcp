@@ -1,4 +1,5 @@
-import { readFcsColumns } from "./fcs.js";
+import { resolveAvailableCompensationChannel, type AvailableCompensationChannel } from "./compensation.js";
+import { readFcsColumns, readFcsMetadata } from "./fcs.js";
 import { FlowcytoError, type CompensationMatrix } from "./types.js";
 
 export type CompensationControlMapping = {
@@ -28,10 +29,17 @@ export type EstimateCompensationFromControlsResult = {
   diagnostics: {
     method: "median_ratio";
     channels: string[];
+    requestedChannels?: string[];
     controls: Array<{ path: string; channel: string; totalEvents: number; sampledEvents: number; selectedEvents?: number }>;
     unstained?: { path: string; totalEvents: number; sampledEvents: number };
     eventSelection?: EventSelection;
   };
+};
+
+type ResolvedControlInput = {
+  channels: string[];
+  requestedChannels: string[];
+  controls: CompensationControlMapping[];
 };
 
 function median(values: number[]): number {
@@ -90,9 +98,49 @@ function assertControlMappings(input: EstimateCompensationFromControlsInput, cha
   }
 }
 
+function availableCompensationChannelsFromMetadata(parameters: Awaited<ReturnType<typeof readFcsMetadata>>["parameters"]): AvailableCompensationChannel[] {
+  return parameters.map((parameter) => ({
+    name: parameter.name,
+    ...(parameter.detector ? { detector: parameter.detector } : {}),
+    ...(parameter.marker ? { marker: parameter.marker } : {}),
+  }));
+}
+
+async function resolveControlInput(input: EstimateCompensationFromControlsInput): Promise<ResolvedControlInput> {
+  if (input.controls.length === 0) {
+    throw new FlowcytoError("missing_compensation_controls", "At least one single-stain control is required.", "/controls");
+  }
+  const referencePath = input.unstainedPath ?? input.controls[0]?.path;
+  if (!referencePath) {
+    throw new FlowcytoError("missing_compensation_controls", "At least one single-stain control is required.", "/controls");
+  }
+  const metadata = await readFcsMetadata(referencePath);
+  const availableChannels = availableCompensationChannelsFromMetadata(metadata.parameters);
+  const requestedChannels = input.channels ?? input.controls.map((control) => control.channel);
+  const resolve = (channel: string, pathValue: string): string => {
+    const resolved = resolveAvailableCompensationChannel(channel, availableChannels);
+    if (!resolved) {
+      if (pathValue.startsWith("/controls/")) {
+        throw new FlowcytoError("unknown_compensation_control_channel", `Control channel ${channel} is not present.`, pathValue);
+      }
+      throw new FlowcytoError("unknown_parameter", `Parameter ${channel} is not present.`, pathValue);
+    }
+    return resolved;
+  };
+  return {
+    requestedChannels,
+    channels: requestedChannels.map((channel) => resolve(channel, "/channels")),
+    controls: input.controls.map((control, index) => ({
+      ...control,
+      channel: resolve(control.channel, `/controls/${index}/channel`),
+    })),
+  };
+}
+
 export async function estimateCompensationFromControls(input: EstimateCompensationFromControlsInput): Promise<EstimateCompensationFromControlsResult> {
-  const channels = input.channels ?? input.controls.map((control) => control.channel);
-  assertControlMappings(input, channels);
+  const resolvedInput = await resolveControlInput(input);
+  const channels = resolvedInput.channels;
+  assertControlMappings({ ...input, controls: resolvedInput.controls }, channels);
 
   const unstained = input.unstainedPath
     ? await readFcsColumns({ path: input.unstainedPath, channels, maxEvents: input.maxEvents })
@@ -101,7 +149,7 @@ export async function estimateCompensationFromControls(input: EstimateCompensati
     ? channels.map((_, index) => median(unstained.values.map((row) => row[index] ?? Number.NaN)))
     : channels.map(() => 0);
 
-  const controlsByChannel = new Map(input.controls.map((control) => [control.channel, control]));
+  const controlsByChannel = new Map(resolvedInput.controls.map((control) => [control.channel, control]));
   const controlDiagnostics: EstimateCompensationFromControlsResult["diagnostics"]["controls"] = [];
   // One row per single-stain control: row = source fluorochrome, column = destination
   // detector, matching CompensationMatrix.matrix and the FCS $SPILLOVER convention.
@@ -159,6 +207,9 @@ export async function estimateCompensationFromControls(input: EstimateCompensati
     diagnostics: {
       method: "median_ratio",
       channels,
+      ...(resolvedInput.requestedChannels.some((channel, index) => channel !== channels[index])
+        ? { requestedChannels: resolvedInput.requestedChannels }
+        : {}),
       controls: controlDiagnostics,
       ...(unstained ? { unstained: { path: input.unstainedPath ?? "", totalEvents: unstained.totalEvents, sampledEvents: unstained.sampledEvents } } : {}),
       ...(input.eventSelection ? { eventSelection: input.eventSelection } : {}),
