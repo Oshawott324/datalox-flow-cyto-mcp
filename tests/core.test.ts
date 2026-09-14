@@ -551,6 +551,33 @@ describe("flowcyto core", () => {
     }]);
   });
 
+  it("imports one-dimensional FlowJo rectangle gates as range gates", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-rect-range-import-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["FITC-A"],
+      rows: [[100], [150], [200]],
+    });
+    const result = await importFlowJoWorkspace({
+      wspPath: path.join(flowJoFixtureDir, "minimal-linear-rect-range.wsp"),
+      workspaceDir: dir,
+      samplePathMap: { "sample.fcs": samplePath },
+    });
+    const workspace = await readWorkspace(result.workspacePath);
+    expect(result).toMatchObject({ ok: true, samplesImported: 1, gatesImported: 1, warnings: [] });
+    expect(workspace.gates).toEqual([{
+      id: "gate-rect-range-001",
+      name: "FITC Positive",
+      sample: "sample",
+      parent: "root",
+      type: "range",
+      x: "FITC-A",
+      min: 1332.275866631284,
+      max: 5720.832738323096,
+    }]);
+  });
+
   it("imports real FlowJo Population wrappers around gate geometry", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-population-wrapper-"));
     const samplePath = path.join(dir, "sample.fcs");
@@ -691,6 +718,7 @@ describe("flowcyto core", () => {
     const logRect = workspace.gates.find((gate) => gate.id === "gate-log-rect");
     const fasinhRange = workspace.gates.find((gate) => gate.id === "gate-fasinh-range");
     const biexRange = workspace.gates.find((gate) => gate.id === "gate-biex-range");
+    const biexRectRange = workspace.gates.find((gate) => gate.id === "gate-biex-rect-range");
 
     expect(result.warnings).toEqual([]);
     expect(logRect).toMatchObject({
@@ -726,6 +754,11 @@ describe("flowcyto core", () => {
     expect(biexRange).toMatchObject({ type: "range", x: "BIEX-A" });
     expect(biexRange?.type === "range" ? biexRange.min : Number.NaN).toBeCloseTo(biexTransform.inverse(10), 10);
     expect(biexRange?.type === "range" ? biexRange.max : Number.NaN).toBeCloseTo(biexTransform.inverse(100), 10);
+    // One-dimensional RectangleGate with biex transform must apply the same coordinate
+    // inversion as a RangeGate on the same channel and display-space values.
+    expect(biexRectRange).toMatchObject({ type: "range", x: "BIEX-A" });
+    expect(biexRectRange?.type === "range" ? biexRectRange.min : Number.NaN).toBeCloseTo(biexTransform.inverse(10), 10);
+    expect(biexRectRange?.type === "range" ? biexRectRange.max : Number.NaN).toBeCloseTo(biexTransform.inverse(100), 10);
   });
 
   it("skips unsupported FlowJo gate types with warnings, promotes orphaned children to parent", async () => {

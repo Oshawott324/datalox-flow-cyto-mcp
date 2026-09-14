@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hand-crafted FlowJo 10 .wsp fixture for import parser unit tests.
+  Gate: one one-dimensional RectangleGate. Real FlowJo workspaces use this
+  shape for positive/negative control intervals.
+
+  NOT validated by opening in FlowJo. Validates XML structure and parser only.
+-->
+<Workspace version="20.0" creator="FlowJo-hand-crafted-fixture"
+  xmlns:gating="http://www.isac-net.org/std/Gating-ML/v2.0/gating"
+  xmlns:data-type="http://www.isac-net.org/std/Gating-ML/v2.0/datatypes"
+  xmlns:transforms="http://www.isac-net.org/std/Gating-ML/v2.0/transformations">
+  <SampleList>
+    <Sample>
+      <DataSet uri="file:///testdata/fixtures/flowjo/sample.fcs" keyword="$CYT"/>
+      <SampleNode name="sample.fcs" owningGroup="" count="10000">
+        <Subpopulations>
+          <Gate name="FITC Positive" owningGroup="" count="5000" eventsInside="5000"
+            gating:id="gate-rect-range-001" gating:parent_id="">
+            <gating:RectangleGate gating:id="gate-rect-range-001" gating:parent_id="">
+              <gating:dimension gating:compensation-ref="uncompensated"
+                gating:min="1332.275866631284" gating:max="5720.832738323096">
+                <data-type:parameter data-type:name="FITC-A"/>
+              </gating:dimension>
+            </gating:RectangleGate>
+          </Gate>
+        </Subpopulations>
+      </SampleNode>
+    </Sample>
+  </SampleList>
+</Workspace>
