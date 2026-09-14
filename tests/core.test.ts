@@ -1742,6 +1742,50 @@ describe("flowcyto core", () => {
     })).rejects.toMatchObject({ code: "stale_revision" });
   });
 
+  it("resolves detector aliases for control-derived compensation inputs", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-control-comp-alias-"));
+    const unstainedPath = path.join(dir, "unstained.fcs");
+    const fitcPath = path.join(dir, "fitc.fcs");
+    const pePath = path.join(dir, "pe.fcs");
+    const detectorChannels = ["FL03-A", "FL13-A"];
+    const parameterNames = ["FITC-A", "PE-A"];
+    await writeTinyIntegerFcs({
+      fcsPath: unstainedPath,
+      channels: detectorChannels,
+      markers: parameterNames,
+      rows: [[10, 20], [10, 20], [10, 20]],
+    });
+    await writeTinyIntegerFcs({
+      fcsPath: fitcPath,
+      channels: detectorChannels,
+      markers: parameterNames,
+      rows: [[110, 40], [110, 40], [110, 40]],
+    });
+    await writeTinyIntegerFcs({
+      fcsPath: pePath,
+      channels: detectorChannels,
+      markers: parameterNames,
+      rows: [[15, 220], [15, 220], [15, 220]],
+    });
+
+    const estimated = await estimateCompensationFromControls({
+      channels: detectorChannels,
+      unstainedPath,
+      controls: [
+        { path: fitcPath, channel: "FL03-A" },
+        { path: pePath, channel: "FL13-A" },
+      ],
+    });
+
+    expect(estimated.compensation.channels).toEqual(parameterNames);
+    expect(estimated.compensation.matrix).toEqual([[1, 0.2], [0.025, 1]]);
+    expect(estimated.diagnostics).toMatchObject({
+      channels: parameterNames,
+      requestedChannels: detectorChannels,
+    });
+    expect(estimated.diagnostics.controls.map((control) => control.channel)).toEqual(parameterNames);
+  });
+
   it("rejects missing or filename-only control-derived compensation mappings", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-control-comp-invalid-"));
     const controlPath = path.join(dir, "FITC_control.fcs");
