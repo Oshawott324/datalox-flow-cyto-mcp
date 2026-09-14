@@ -109,6 +109,45 @@ Do not infer single-stain control mappings from filenames alone. Ask the user
 for the detector/channel controlled by each file when the mapping is not already
 explicit.
 
+### Bead controls with mixed negative/positive populations
+
+Some bead-based single-stain control preparations contain a mixed population:
+roughly 10% bright positive beads and 90% negative beads. The default all-event
+median estimator fails on these because the negative bead population dominates
+the median and contaminates off-diagonal spillover values.
+
+When the user provides bead controls of this type, use `event_selection`:
+
+```text
+estimate_compensation_from_controls({
+  ...,
+  event_selection: {
+    type: "primary_channel_top_percentile",
+    percentile: 90
+  }
+})
+```
+
+`percentile: 90` keeps the top 10% of events by background-corrected primary
+channel signal — the bright positive bead fraction.
+
+Use `event_selection` when:
+- Controls are bead-based with a declared or expected mixed negative/positive
+  population.
+- The estimated matrix disagrees strongly with the file-embedded `$SPILLOVER`
+  matrix (check with `list_compensations`).
+- The user or protocol specifies that controls contain both positive and negative
+  beads (e.g., BD CompBeads, UltraComp eBeads).
+
+Do NOT use `event_selection` when:
+- Controls are single-stain cell samples where all cells stain uniformly.
+- Controls match the flowCore reference format where all-event median was already
+  validated.
+- You are unsure of the bead population structure — ask the user first.
+
+The default (`event_selection` omitted) remains all-event median ratio and is
+unchanged for existing callers.
+
 ## CLI Fallback
 
 Use the CLI for setup, validation, fixture checks, or hosts without MCP.
