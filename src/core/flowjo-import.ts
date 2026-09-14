@@ -141,6 +141,21 @@ function parsePolygonGate(node: XmlNode, base: ImportedGateBase, resolveChannel:
 
 function parseRectangleGate(node: XmlNode, base: ImportedGateBase, resolveChannel: ChannelResolver, convertCoordinate: CoordinateConverter): WorkspaceGate | null {
   const dimensions = arrayOf(node.dimension).map(asRecord).filter((entry): entry is XmlNode => entry !== null);
+  if (dimensions.length === 1) {
+    const dimension = dimensions[0] ?? null;
+    const x = parameterName(dimension, resolveChannel);
+    const min = numberAttr(dimension, "min");
+    const max = numberAttr(dimension, "max");
+    if (!x || min === undefined || max === undefined) return null;
+    const gateName = base.name ?? base.id;
+    return {
+      ...base,
+      type: "range",
+      x,
+      min: convertCoordinate(x, min, gateName),
+      max: convertCoordinate(x, max, gateName),
+    };
+  }
   const xDimension = dimensions[0] ?? null;
   const yDimension = dimensions[1] ?? null;
   const x = parameterName(xDimension, resolveChannel);

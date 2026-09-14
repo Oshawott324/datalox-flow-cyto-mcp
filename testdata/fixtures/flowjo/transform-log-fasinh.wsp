@@ -54,6 +54,13 @@
               </gating:dimension>
             </gating:RangeGate>
           </Gate>
+          <Gate name="Biex Rect Range" gating:id="gate-biex-rect-range">
+            <gating:RectangleGate gating:id="gate-biex-rect-range" gating:parent_id="">
+              <gating:dimension gating:compensation-ref="uncompensated" gating:min="10" gating:max="100">
+                <data-type:parameter data-type:name="BIEX-A"/>
+              </gating:dimension>
+            </gating:RectangleGate>
+          </Gate>
         </Subpopulations>
       </SampleNode>
     </Sample>
