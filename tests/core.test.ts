@@ -38,6 +38,7 @@ import {
   generateTicks,
   getEventPreview,
   getPopulationGraph,
+  getPopulationTable,
   getSampleMetadata,
   importFlowJoWorkspace,
   initWorkspace,
@@ -2292,6 +2293,169 @@ describe("flowcyto core", () => {
     expect(main?.children[0]?.percentOfParent).toBeCloseTo(100 / 3);
   });
 
+  it("returns population table across multiple samples", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-poptable-multi-"));
+    // Two samples with identical channel layout but different event distributions
+    const sampleAPath = path.join(dir, "sampleA.fcs");
+    const sampleBPath = path.join(dir, "sampleB.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: sampleAPath,
+      channels: ["FITC-A", "PE-A"],
+      rows: [[5, 5], [50, 5], [50, 5], [5, 80]],  // 2 FITC+, 1 PE+, 1 double-neg
+    });
+    await writeTinyIntegerFcs({
+      fcsPath: sampleBPath,
+      channels: ["FITC-A", "PE-A"],
+      rows: [[5, 5], [5, 5], [50, 5], [50, 80]],  // 1 FITC+, 0 PE-only, 1 double-pos
+    });
+    const { workspacePath, workspace } = await initWorkspace({ rootDir: dir, samplePath: sampleAPath, sampleId: "A" });
+    // Add sample B to the workspace
+    await writeWorkspace({
+      workspacePath,
+      workspace: { ...workspace, samples: [...workspace.samples, { id: "B", path: path.relative(path.dirname(workspacePath), sampleBPath) }] },
+      expectedRevision: workspace.revision,
+    });
+    // Add range gates for both samples with shared IDs
+    const ws = await readWorkspace(workspacePath);
+    await upsertGates({
+      workspacePath,
+      expectedRevision: ws.revision,
+      gates: [
+        { id: "fitc_pos", name: "FITC+", sample: "A", parent: "root", type: "range", x: "FITC-A", min: 20, max: 200 },
+        { id: "pe_pos",   name: "PE+",   sample: "A", parent: "root", type: "range", x: "PE-A",   min: 20, max: 200 },
+        { id: "fitc_pos_b", name: "FITC+", sample: "B", parent: "root", type: "range", x: "FITC-A", min: 20, max: 200 },
+        { id: "pe_pos_b",   name: "PE+",   sample: "B", parent: "root", type: "range", x: "PE-A",   min: 20, max: 200 },
+      ],
+    });
+
+    const table = await getPopulationTable({ workspacePath });
+    expect(table.ok).toBe(true);
+    expect(table.columnKey).toBe("gate_id");
+    expect(table.rows).toHaveLength(2);
+    expect(table.rows.map((r) => r.sampleId)).toEqual(["A", "B"]);
+    // Sample A: 2/4 FITC+, 1/4 PE+; cell carries gateId for provenance
+    const rowA = table.rows[0]!;
+    expect(rowA.gates["fitc_pos"]).toMatchObject({ gateId: "fitc_pos", count: 2, percentOfRoot: 50 });
+    expect(rowA.gates["pe_pos"]).toMatchObject({ gateId: "pe_pos", count: 1, percentOfRoot: 25 });
+    // Sample B: 2/4 FITC+, 1/4 PE+; gate_id mode — separate columns per sample
+    const rowB = table.rows[1]!;
+    expect(rowB.gates["fitc_pos_b"]).toMatchObject({ gateId: "fitc_pos_b", count: 2, percentOfRoot: 50 });
+    expect(rowB.gates["pe_pos_b"]).toMatchObject({ gateId: "pe_pos_b", count: 1, percentOfRoot: 25 });
+    // In gate_id mode, same-named gates on different samples are separate columns
+    expect(table.columns).toHaveLength(4);
+  });
+
+  it("aligns same-named gates across samples using name_path column key", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-poptable-namepath-"));
+    const sampleAPath = path.join(dir, "sampleA.fcs");
+    const sampleBPath = path.join(dir, "sampleB.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: sampleAPath,
+      channels: ["Annexin-A", "PI-A"],
+      rows: [[5, 5], [80, 5], [80, 90], [5, 90]],  // 1 Q1, 1 Q2, 1 Q3, 1 Q4
+    });
+    await writeTinyIntegerFcs({
+      fcsPath: sampleBPath,
+      channels: ["Annexin-A", "PI-A"],
+      rows: [[5, 5], [5, 5], [80, 5], [80, 5]],  // 2 Q1, 2 Q2, 0 Q3, 0 Q4
+    });
+    const { workspacePath, workspace } = await initWorkspace({ rootDir: dir, samplePath: sampleAPath, sampleId: "A" });
+    await writeWorkspace({
+      workspacePath,
+      workspace: { ...workspace, samples: [...workspace.samples, { id: "B", path: path.relative(path.dirname(workspacePath), sampleBPath) }] },
+      expectedRevision: workspace.revision,
+    });
+    const ws = await readWorkspace(workspacePath);
+    // Each sample has its own gate IDs, but gates share the same name at the same hierarchy level
+    await upsertGates({
+      workspacePath,
+      expectedRevision: ws.revision,
+      gates: [
+        { id: "q1_a", name: "Q1 Annexin-/PI-", sample: "A", parent: "root", type: "rect", x: "Annexin-A", y: "PI-A", xMin: 0, xMax: 50, yMin: 0,  yMax: 50 },
+        { id: "q2_a", name: "Q2 Annexin+/PI-", sample: "A", parent: "root", type: "rect", x: "Annexin-A", y: "PI-A", xMin: 50, xMax: 200, yMin: 0,  yMax: 50 },
+        { id: "q3_a", name: "Q3 Annexin+/PI+", sample: "A", parent: "root", type: "rect", x: "Annexin-A", y: "PI-A", xMin: 50, xMax: 200, yMin: 50, yMax: 200 },
+        { id: "q4_a", name: "Q4 Annexin-/PI+", sample: "A", parent: "root", type: "rect", x: "Annexin-A", y: "PI-A", xMin: 0,  xMax: 50, yMin: 50, yMax: 200 },
+        { id: "q1_b", name: "Q1 Annexin-/PI-", sample: "B", parent: "root", type: "rect", x: "Annexin-A", y: "PI-A", xMin: 0, xMax: 50, yMin: 0,  yMax: 50 },
+        { id: "q2_b", name: "Q2 Annexin+/PI-", sample: "B", parent: "root", type: "rect", x: "Annexin-A", y: "PI-A", xMin: 50, xMax: 200, yMin: 0,  yMax: 50 },
+        { id: "q3_b", name: "Q3 Annexin+/PI+", sample: "B", parent: "root", type: "rect", x: "Annexin-A", y: "PI-A", xMin: 50, xMax: 200, yMin: 50, yMax: 200 },
+        { id: "q4_b", name: "Q4 Annexin-/PI+", sample: "B", parent: "root", type: "rect", x: "Annexin-A", y: "PI-A", xMin: 0,  xMax: 50, yMin: 50, yMax: 200 },
+      ],
+    });
+
+    const table = await getPopulationTable({ workspacePath, columnKey: "name_path" });
+    expect(table.columnKey).toBe("name_path");
+    // name_path merges same-named root-level gates → 4 logical columns, not 8
+    expect(table.columns).toHaveLength(4);
+    expect(table.columns.map((c) => c.key)).toEqual([
+      "Q1 Annexin-/PI-", "Q2 Annexin+/PI-", "Q3 Annexin+/PI+", "Q4 Annexin-/PI+",
+    ]);
+    // Each cell carries the sample-specific gateId for provenance
+    expect(table.rows[0]!.gates["Q1 Annexin-/PI-"]).toMatchObject({ gateId: "q1_a", count: 1 });
+    expect(table.rows[1]!.gates["Q1 Annexin-/PI-"]).toMatchObject({ gateId: "q1_b", count: 2 });
+    expect(table.rows[0]!.gates["Q3 Annexin+/PI+"]).toMatchObject({ gateId: "q3_a", count: 1 });
+    expect(table.rows[1]!.gates["Q3 Annexin+/PI+"]).toMatchObject({ gateId: "q3_b", count: 0 });
+  });
+
+  it("filters population table by sample_ids and gate_ids", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-poptable-filter-"));
+    const sampleAPath = path.join(dir, "sampleA.fcs");
+    const sampleBPath = path.join(dir, "sampleB.fcs");
+    await writeTinyIntegerFcs({ fcsPath: sampleAPath, channels: ["FITC-A"], rows: [[5], [50], [50]] });
+    await writeTinyIntegerFcs({ fcsPath: sampleBPath, channels: ["FITC-A"], rows: [[5], [5], [50]] });
+    const { workspacePath, workspace } = await initWorkspace({ rootDir: dir, samplePath: sampleAPath, sampleId: "A" });
+    await writeWorkspace({
+      workspacePath,
+      workspace: { ...workspace, samples: [...workspace.samples, { id: "B", path: path.relative(path.dirname(workspacePath), sampleBPath) }] },
+      expectedRevision: workspace.revision,
+    });
+    const ws = await readWorkspace(workspacePath);
+    await upsertGates({
+      workspacePath,
+      expectedRevision: ws.revision,
+      gates: [
+        { id: "fitc_a", name: "FITC+", sample: "A", parent: "root", type: "range", x: "FITC-A", min: 20, max: 200 },
+        { id: "fitc_b", name: "FITC+", sample: "B", parent: "root", type: "range", x: "FITC-A", min: 20, max: 200 },
+      ],
+    });
+
+    // Filter to sample A only, gate fitc_a only
+    const filtered = await getPopulationTable({ workspacePath, sampleIds: ["A"], gateIds: ["fitc_a"] });
+    expect(filtered.rows).toHaveLength(1);
+    expect(filtered.rows[0]!.sampleId).toBe("A");
+    expect(filtered.rows[0]!.gates["fitc_a"]).toMatchObject({ gateId: "fitc_a", count: 2 });
+    expect(Object.keys(filtered.rows[0]!.gates)).toEqual(["fitc_a"]);
+    expect(filtered.columns).toHaveLength(1);
+    expect(filtered.columns[0]!.key).toBe("fitc_a");
+
+    // Gate from another sample returns null for sample A's row (gate_id mode)
+    const crossSample = await getPopulationTable({ workspacePath, gateIds: ["fitc_a", "fitc_b"] });
+    expect(crossSample.rows).toHaveLength(2);
+    expect(crossSample.rows[0]!.gates["fitc_b"]).toBeNull();  // fitc_b not in sample A
+    expect(crossSample.rows[1]!.gates["fitc_a"]).toBeNull();  // fitc_a not in sample B
+
+    // gate_ids filter works in name_path mode too: filters to those gate IDs then groups by path
+    const namePathFiltered = await getPopulationTable({
+      workspacePath,
+      gateIds: ["fitc_a", "fitc_b"],
+      columnKey: "name_path",
+    });
+    // Both gates have name "FITC+" at root level → one logical column
+    expect(namePathFiltered.columns).toHaveLength(1);
+    expect(namePathFiltered.columns[0]!.key).toBe("FITC+");
+    expect(namePathFiltered.rows[0]!.gates["FITC+"]).toMatchObject({ gateId: "fitc_a", count: 2 });
+    expect(namePathFiltered.rows[1]!.gates["FITC+"]).toMatchObject({ gateId: "fitc_b", count: 1 });
+  });
+
+  it("rejects population table request with unknown sample_id", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-poptable-err-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({ fcsPath: samplePath, channels: ["FITC-A"], rows: [[5], [50]] });
+    const { workspacePath } = await initWorkspace({ rootDir: dir, samplePath, sampleId: "A" });
+    await expect(
+      getPopulationTable({ workspacePath, sampleIds: ["NONEXISTENT"] }),
+    ).rejects.toMatchObject({ code: "unknown_sample" });
+  });
+
   it("suggests apoptosis quadrants from manual thresholds without writing the workspace", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-apoptosis-manual-"));
     const samplePath = path.join(dir, "sample.fcs");
@@ -4345,6 +4509,7 @@ describe("flowcyto MCP", () => {
         "get_gate_editor_state",
         "get_plot_context",
         "get_population_graph",
+        "get_population_table",
         "get_sample_metadata",
         "get_workspace_revision",
         "import_flowjo_workspace",
