@@ -2761,6 +2761,105 @@ describe("flowcyto core", () => {
     expect(result.errors[0]?.code).toBe("missing_source_parent_gate");
   });
 
+  it("rejects propagation when a target sample is the source sample", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-propagate-self-"));
+    const sampleAPath = path.join(dir, "sampleA.fcs");
+    const sampleBPath = path.join(dir, "sampleB.fcs");
+    for (const fcsPath of [sampleAPath, sampleBPath]) {
+      await writeTinyIntegerFcs({ fcsPath, channels: ["FSC-A"], rows: [[50], [100]] });
+    }
+    const { workspacePath, workspace } = await initWorkspace({ rootDir: dir, samplePath: sampleAPath, sampleId: "A" });
+    await writeWorkspace({
+      workspacePath,
+      workspace: { ...workspace, samples: [...workspace.samples, { id: "B", path: path.relative(path.dirname(workspacePath), sampleBPath) }] },
+      expectedRevision: workspace.revision,
+    });
+    const ws = await readWorkspace(workspacePath);
+    await upsertGates({
+      workspacePath,
+      expectedRevision: ws.revision,
+      gates: [{ id: "gate_a", name: "Gate A", sample: "A", parent: "root", type: "range", x: "FSC-A", min: 30, max: 200 }],
+    });
+    const current = await readWorkspace(workspacePath);
+    // Including the source sample (A) in targetSampleIds is an error
+    const result = await propagateGates({
+      workspacePath,
+      sourceGateIds: ["gate_a"],
+      targetSampleIds: ["A", "B"],
+      expectedRevision: current.revision,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors[0]?.code).toBe("source_sample_target");
+  });
+
+  it("rejects propagation for unknown gate ids", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-propagate-unknown-gate-"));
+    const sampleAPath = path.join(dir, "sampleA.fcs");
+    const sampleBPath = path.join(dir, "sampleB.fcs");
+    for (const fcsPath of [sampleAPath, sampleBPath]) {
+      await writeTinyIntegerFcs({ fcsPath, channels: ["FSC-A"], rows: [[50], [100]] });
+    }
+    const { workspacePath, workspace } = await initWorkspace({ rootDir: dir, samplePath: sampleAPath, sampleId: "A" });
+    await writeWorkspace({
+      workspacePath,
+      workspace: { ...workspace, samples: [...workspace.samples, { id: "B", path: path.relative(path.dirname(workspacePath), sampleBPath) }] },
+      expectedRevision: workspace.revision,
+    });
+    const ws = await readWorkspace(workspacePath);
+    const result = await propagateGates({
+      workspacePath,
+      sourceGateIds: ["nonexistent_gate"],
+      targetSampleIds: ["B"],
+      expectedRevision: ws.revision,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors[0]?.code).toBe("unknown_gate");
+  });
+
+  it("overwrites existing propagated gates on re-propagation", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-propagate-overwrite-"));
+    const sampleAPath = path.join(dir, "sampleA.fcs");
+    const sampleBPath = path.join(dir, "sampleB.fcs");
+    for (const fcsPath of [sampleAPath, sampleBPath]) {
+      await writeTinyIntegerFcs({ fcsPath, channels: ["FITC-A"], rows: [[5], [50], [200]] });
+    }
+    const { workspacePath, workspace } = await initWorkspace({ rootDir: dir, samplePath: sampleAPath, sampleId: "A" });
+    await writeWorkspace({
+      workspacePath,
+      workspace: { ...workspace, samples: [...workspace.samples, { id: "B", path: path.relative(path.dirname(workspacePath), sampleBPath) }] },
+      expectedRevision: workspace.revision,
+    });
+    const ws = await readWorkspace(workspacePath);
+    await upsertGates({
+      workspacePath,
+      expectedRevision: ws.revision,
+      gates: [{ id: "fitc_gate", name: "FITC+", sample: "A", parent: "root", type: "range", x: "FITC-A", min: 30, max: 250 }],
+    });
+    const v1 = await readWorkspace(workspacePath);
+    // First propagation
+    const r1 = await propagateGates({ workspacePath, sourceGateIds: ["fitc_gate"], targetSampleIds: ["B"], expectedRevision: v1.revision });
+    expect(r1.ok).toBe(true);
+    const afterFirst = await getPopulationTable({ workspacePath, sampleIds: ["B"], columnKey: "name_path" });
+    expect(afterFirst.rows[0]!.gates["FITC+"]?.count).toBe(2);  // events ≥ 30: [50, 200]
+
+    // Update source gate threshold on sample A, then re-propagate
+    const v2 = await readWorkspace(workspacePath);
+    await upsertGates({
+      workspacePath,
+      expectedRevision: v2.revision,
+      gates: [{ id: "fitc_gate", name: "FITC+", sample: "A", parent: "root", type: "range", x: "FITC-A", min: 100, max: 250 }],
+    });
+    const v3 = await readWorkspace(workspacePath);
+    const r2 = await propagateGates({ workspacePath, sourceGateIds: ["fitc_gate"], targetSampleIds: ["B"], expectedRevision: v3.revision });
+    expect(r2.ok).toBe(true);
+    // No duplicate gates — re-propagation overwrites, not appends
+    const afterSecond = await readWorkspace(workspacePath);
+    expect(afterSecond.gates.filter((g) => g.id === "fitc_gate__B")).toHaveLength(1);
+    const afterSecondTable = await getPopulationTable({ workspacePath, sampleIds: ["B"], columnKey: "name_path" });
+    // Updated threshold: only event [200] qualifies now
+    expect(afterSecondTable.rows[0]!.gates["FITC+"]?.count).toBe(1);
+  });
+
   it("emits workspace file changes when revisions change", async () => {
     const { workspacePath } = await makeWorkspace();
     const revisions: number[] = [];
