@@ -1,7 +1,8 @@
 import path from "node:path";
 
+import { alignCompensationMatrix, applyCompensationColumns } from "./compensation.js";
 import { pointInPolygon, pointInRect, readFcsColumns, readFcsMetadata } from "./fcs.js";
-import { FlowcytoError, type WorkspaceGate } from "./types.js";
+import { FlowcytoError, type AppliedCompensation, type CompensationMatrix, type FlowcytoWorkspace, type WorkspaceGate } from "./types.js";
 import { readWorkspace, resolveSamplePath } from "./workspace.js";
 
 export type PopulationGraphNode = {
@@ -20,6 +21,7 @@ export type PopulationGraphResult = {
   workspacePath: string;
   revision: number;
   sampleId: string;
+  compensation?: AppliedCompensation;
   root: PopulationGraphNode;
 };
 
@@ -44,22 +46,60 @@ function pct(count: number, denominator: number): number {
   return denominator > 0 ? count / denominator * 100 : 0;
 }
 
+function resolveCompensation(workspace: FlowcytoWorkspace, compensationId?: string): CompensationMatrix | undefined {
+  if (!compensationId) return undefined;
+  const compensation = (workspace.compensations ?? []).find((entry) => entry.id === compensationId);
+  if (!compensation) {
+    throw new FlowcytoError("unknown_compensation", `Compensation ${compensationId} is not present.`, "/compensation_id");
+  }
+  return compensation;
+}
+
 export async function getPopulationGraph(input: {
   workspacePath: string;
   sampleId: string;
+  compensationId?: string;
 }): Promise<PopulationGraphResult> {
   const workspace = await readWorkspace(input.workspacePath);
   const sample = workspace.samples.find((entry) => entry.id === input.sampleId);
   if (!sample) throw new FlowcytoError("unknown_sample", `Sample ${input.sampleId} is not present.`, "/sample_id");
+  const samplePath = resolveSamplePath(input.workspacePath, sample.path);
   const sampleGates = workspace.gates.filter((gate) => gate.sample === input.sampleId && gate.enabled !== false);
-  const channels = [...new Set(sampleGates.flatMap(gateChannels))];
+  const gateChannelList = [...new Set(sampleGates.flatMap(gateChannels))];
+  const metadata = await readFcsMetadata(samplePath, input.sampleId);
+  const compensation = resolveCompensation(workspace, input.compensationId);
+  let channels = gateChannelList;
+  let alignedCompensation: CompensationMatrix | undefined;
+  let compensationWarnings: string[] = [];
+  if (compensation) {
+    const aligned = alignCompensationMatrix(compensation, metadata.parameters.map((parameter) => ({
+      name: parameter.name,
+      detector: parameter.detector,
+      marker: parameter.marker,
+    })));
+    alignedCompensation = aligned.compensation;
+    compensationWarnings = aligned.warnings;
+    channels = [...new Set([...gateChannelList, ...alignedCompensation.channels])];
+  }
   const columns = channels.length > 0
-    ? await readFcsColumns({ path: resolveSamplePath(input.workspacePath, sample.path), channels })
-    : { channels: [], values: [], totalEvents: 0 };
-  const totalEvents = channels.length > 0
-    ? columns.totalEvents
-    : (await readFcsMetadata(resolveSamplePath(input.workspacePath, sample.path), input.sampleId)).eventCount ?? 0;
-  const events = columns.values.map((row) => new Map(channels.map((channel, index) => [channel, row[index]])));
+    ? await readFcsColumns({ path: samplePath, channels })
+    : { channels: [], values: [], totalEvents: metadata.eventCount ?? 0 };
+  let values = columns.values;
+  let appliedCompensation: AppliedCompensation | undefined;
+  if (alignedCompensation && channels.length > 0) {
+    const applied = applyCompensationColumns({
+      values,
+      channels,
+      compensation: alignedCompensation,
+    });
+    values = applied.values;
+    appliedCompensation = {
+      ...applied.compensation,
+      ...(compensationWarnings.length > 0 ? { warnings: compensationWarnings } : {}),
+    };
+  }
+  const totalEvents = columns.totalEvents;
+  const events = values.map((row) => new Map(channels.map((channel, index) => [channel, row[index]])));
   const rootEventIndexes = Array.from({ length: totalEvents }, (_, index) => index);
   const childrenByParent = new Map<string, WorkspaceGate[]>();
   for (const gate of sampleGates) {
@@ -101,6 +141,7 @@ export async function getPopulationGraph(input: {
     workspacePath: path.resolve(input.workspacePath),
     revision: workspace.revision,
     sampleId: input.sampleId,
+    ...(appliedCompensation ? { compensation: appliedCompensation } : {}),
     root,
   };
 }
