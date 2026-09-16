@@ -2294,6 +2294,67 @@ describe("flowcyto core", () => {
     expect(main?.children[0]?.percentOfParent).toBeCloseTo(100 / 3);
   });
 
+  it("applies explicit compensation before population graph and table counts", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-pop-comp-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["FITC-A", "PE-A"],
+      rows: [
+        [100, 20],  // compensated PE-A = 0 after FITC spillover removal
+        [40, 8],    // compensated PE-A = 0 after FITC spillover removal
+        [10, 90],
+      ],
+    });
+    const { workspacePath, workspace } = await initWorkspace({ rootDir: dir, samplePath, sampleId: "sample" });
+    await writeWorkspace({
+      workspacePath,
+      expectedRevision: workspace.revision,
+      workspace: {
+        ...workspace,
+        compensations: [{
+          id: "manual_comp",
+          source: "manual",
+          channels: ["FITC-A", "PE-A"],
+          matrix: [
+            [1, 0.2],
+            [0, 1],
+          ],
+        }],
+        gates: [{
+          id: "pe_low",
+          name: "PE low",
+          sample: "sample",
+          parent: "root",
+          type: "range",
+          x: "PE-A",
+          min: -1,
+          max: 5,
+        }],
+      },
+    });
+
+    const rawGraph = await getPopulationGraph({ workspacePath, sampleId: "sample" });
+    expect(rawGraph.root.children[0]).toMatchObject({ gateId: "pe_low", count: 0 });
+
+    const compensatedGraph = await getPopulationGraph({ workspacePath, sampleId: "sample", compensationId: "manual_comp" });
+    expect(compensatedGraph.compensation).toMatchObject({
+      applied: true,
+      id: "manual_comp",
+      channels: ["FITC-A", "PE-A"],
+    });
+    expect(compensatedGraph.root.children[0]).toMatchObject({ gateId: "pe_low", count: 2 });
+
+    const table = await getPopulationTable({ workspacePath, compensationId: "manual_comp" });
+    expect(table.compensationId).toBe("manual_comp");
+    expect(table.rows[0]!.gates["pe_low"]).toMatchObject({ gateId: "pe_low", count: 2 });
+
+    // Unknown compensation_id throws
+    await expect(
+      getPopulationGraph({ workspacePath, sampleId: "sample", compensationId: "nonexistent" }),
+    ).rejects.toMatchObject({ code: "unknown_compensation" });
+  });
+
   it("returns population table across multiple samples", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-poptable-multi-"));
     // Two samples with identical channel layout but different event distributions

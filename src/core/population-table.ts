@@ -30,6 +30,7 @@ export type PopulationTableResult = {
   ok: true;
   workspacePath: string;
   revision: number;
+  compensationId?: string;
   columnKey: "gate_id" | "name_path";
   columns: PopulationTableColumn[];
   rows: PopulationTableRow[];
@@ -51,6 +52,7 @@ export async function getPopulationTable(input: {
   workspacePath: string;
   sampleIds?: string[];
   gateIds?: string[];
+  compensationId?: string;
   columnKey?: "gate_id" | "name_path";
 }): Promise<PopulationTableResult> {
   const mode: "gate_id" | "name_path" = input.columnKey ?? "gate_id";
@@ -68,7 +70,11 @@ export async function getPopulationTable(input: {
     : workspace.samples;
 
   const graphs = await Promise.all(
-    samples.map((s) => getPopulationGraph({ workspacePath: input.workspacePath, sampleId: s.id })),
+    samples.map((s) => getPopulationGraph({
+      workspacePath: input.workspacePath,
+      sampleId: s.id,
+      compensationId: input.compensationId,
+    })),
   );
 
   const gateIdFilter = input.gateIds && input.gateIds.length > 0 ? new Set(input.gateIds) : null;
@@ -126,6 +132,7 @@ export async function getPopulationTable(input: {
     ok: true,
     workspacePath: path.resolve(input.workspacePath),
     revision: workspace.revision,
+    ...(input.compensationId ? { compensationId: input.compensationId } : {}),
     columnKey: mode,
     columns,
     rows,

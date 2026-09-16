@@ -1340,14 +1340,16 @@ server.registerTool(
     inputSchema: {
       workspace_path: z.string(),
       sample_id: z.string(),
+      compensation_id: z.string().optional(),
     },
     outputSchema: JsonResultSchema,
     annotations: { readOnlyHint: true },
   },
-  async ({ workspace_path, sample_id }) => toolContent(() =>
+  async ({ workspace_path, sample_id, compensation_id }) => toolContent(() =>
     getPopulationGraph({
       workspacePath: workspace_path,
       sampleId: sample_id,
+      compensationId: compensation_id,
     }),
   ),
 );
@@ -1360,16 +1362,18 @@ server.registerTool(
       workspace_path: z.string(),
       sample_ids: z.array(z.string()).optional().describe("Samples to include. Omit for all workspace samples."),
       gate_ids: z.array(z.string()).optional().describe("Gate populations to include as columns. Omit for all gates in the workspace."),
+      compensation_id: z.string().optional().describe("Explicit compensation matrix id to apply before counting gate membership. Omit to count raw FCS values."),
       column_key: z.enum(["gate_id", "name_path"]).optional().describe("How to group columns across samples. 'gate_id' (default): one column per unique gate ID — use when a single gate applies to all samples. 'name_path': one column per unique hierarchy path like 'Lymphocytes / FITC+' — use for multi-sample comparisons where each sample has its own gate IDs for the same logical populations (e.g. propagated apoptosis gates). Each cell includes gateId for provenance."),
     },
     outputSchema: JsonResultSchema,
     annotations: { readOnlyHint: true },
   },
-  async ({ workspace_path, sample_ids, gate_ids, column_key }) => toolContent(() =>
+  async ({ workspace_path, sample_ids, gate_ids, compensation_id, column_key }) => toolContent(() =>
     getPopulationTable({
       workspacePath: workspace_path,
       sampleIds: sample_ids,
       gateIds: gate_ids,
+      compensationId: compensation_id,
       columnKey: column_key,
     }),
   ),
