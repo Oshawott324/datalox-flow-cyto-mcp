@@ -19,6 +19,20 @@ function requireExpectedRevision(expectedRevision: number | undefined): number {
   return expectedRevision;
 }
 
+function sanitizeIdPart(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^_+|_+$/g, "") || "id";
+}
+
+function propagatedGateId(sourceGateId: string, sampleId: string): string {
+  return `${sanitizeIdPart(sourceGateId)}__${sanitizeIdPart(sampleId)}`;
+}
+
+function cloneGateForSample(gate: WorkspaceGate, sampleId: string, idMap: Map<string, string>): WorkspaceGate {
+  const id = idMap.get(gate.id) ?? propagatedGateId(gate.id, sampleId);
+  const parent = gate.parent === "root" ? "root" : idMap.get(gate.parent) ?? propagatedGateId(gate.parent, sampleId);
+  return { ...gate, id, sample: sampleId, parent };
+}
+
 export async function upsertGate(params: {
   workspacePath: string;
   gate: WorkspaceGate;
@@ -61,6 +75,82 @@ export async function upsertGates(params: {
   }
   const result = await writeWorkspace({ workspacePath: params.workspacePath, workspace: next, expectedRevision });
   return result.ok ? { ...result, gates: params.gates, gateCount: next.gates.length, workspacePath: params.workspacePath } : result;
+}
+
+export async function propagateGates(params: {
+  workspacePath: string;
+  sourceGateIds: string[];
+  targetSampleIds: string[];
+  expectedRevision: number;
+}): Promise<ValidationResult & {
+  revision?: number;
+  gates?: WorkspaceGate[];
+  gateCount?: number;
+  propagatedCount?: number;
+  workspacePath?: string;
+}> {
+  const expectedRevision = requireExpectedRevision(params.expectedRevision);
+  const workspace = await readWorkspace(params.workspacePath);
+  const sourceGateIds = [...new Set(params.sourceGateIds)];
+  const targetSampleIds = [...new Set(params.targetSampleIds)];
+  if (sourceGateIds.length === 0) return gateError("/source_gate_ids", "missing_source_gates", "At least one source gate id is required.");
+  if (targetSampleIds.length === 0) return gateError("/target_sample_ids", "missing_target_samples", "At least one target sample id is required.");
+
+  const gatesById = new Map(workspace.gates.map((gate) => [gate.id, gate]));
+  const missingGates = sourceGateIds.filter((id) => !gatesById.has(id));
+  if (missingGates.length > 0) return gateError("/source_gate_ids", "unknown_gate", `Source gate(s) not found: ${missingGates.join(", ")}.`);
+
+  const sampleIds = new Set(workspace.samples.map((sample) => sample.id));
+  const missingSamples = targetSampleIds.filter((id) => !sampleIds.has(id));
+  if (missingSamples.length > 0) return gateError("/target_sample_ids", "unknown_sample", `Target sample(s) not found: ${missingSamples.join(", ")}.`);
+
+  const sourceGates = sourceGateIds.map((id) => gatesById.get(id) as WorkspaceGate);
+  const selectedSourceIds = new Set(sourceGateIds);
+  const sourceSamples = new Set(sourceGates.map((gate) => gate.sample));
+  const sourceSamplesInTargets = targetSampleIds.filter((sampleId) => sourceSamples.has(sampleId));
+  if (sourceSamplesInTargets.length > 0) {
+    return gateError(
+      "/target_sample_ids",
+      "source_sample_target",
+      `Target samples already contain source gates: ${sourceSamplesInTargets.join(", ")}.`,
+    );
+  }
+
+  const missingParents = sourceGates
+    .filter((gate) => gate.parent !== "root" && !selectedSourceIds.has(gate.parent))
+    .map((gate) => `${gate.id}->${gate.parent}`);
+  if (missingParents.length > 0) {
+    return gateError(
+      "/source_gate_ids",
+      "missing_source_parent_gate",
+      `Propagating child gates requires their selected parents too: ${missingParents.join(", ")}.`,
+    );
+  }
+
+  const propagated: WorkspaceGate[] = [];
+  for (const sampleId of targetSampleIds) {
+    const idMap = new Map(sourceGateIds.map((id) => [id, propagatedGateId(id, sampleId)]));
+    for (const gate of sourceGates) propagated.push(cloneGateForSample(gate, sampleId, idMap));
+  }
+
+  const next: FlowcytoWorkspace = {
+    ...workspace,
+    gates: [...workspace.gates],
+  };
+  for (const gate of propagated) {
+    const existingIndex = next.gates.findIndex((entry) => entry.id === gate.id);
+    if (existingIndex === -1) next.gates.push(gate);
+    else next.gates[existingIndex] = gate;
+  }
+
+  const result = await writeWorkspace({ workspacePath: params.workspacePath, workspace: next, expectedRevision });
+  return result.ok ? {
+    ...result,
+    gates: propagated,
+    gateCount: next.gates.length,
+    propagatedCount: propagated.length,
+    workspacePath: params.workspacePath,
+  } : result;
 }
 
 export async function deleteGate(params: {
