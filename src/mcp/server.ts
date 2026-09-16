@@ -25,6 +25,7 @@ import {
   exportFlowJoWorkspace,
   getEventPreview,
   getPopulationGraph,
+  getPopulationTable,
   importFlowJoWorkspace,
   getSampleMetadata,
   listSamples,
@@ -94,7 +95,7 @@ const FlowcytoCapabilities = {
   canWriteStructuredGates: true,
   liveRefreshAfterUpsertGate: true,
   canonicalArtifact: "flowcyto.workspace.json",
-  primaryTools: ["open_fcs", "import_flowjo_workspace", "export_flowjo_workspace", "list_compensations", "get_compensation_matrix", "estimate_compensation_from_controls", "upsert_compensation_matrix", "suggest_singlet_gate", "suggest_apoptosis_quadrants", "get_population_graph", "render_plot", "render_plot_image", "open_gate_editor", "get_plot_context", "upsert_gate", "upsert_gates"],
+  primaryTools: ["open_fcs", "import_flowjo_workspace", "export_flowjo_workspace", "list_compensations", "get_compensation_matrix", "estimate_compensation_from_controls", "upsert_compensation_matrix", "suggest_singlet_gate", "suggest_apoptosis_quadrants", "get_population_graph", "get_population_table", "render_plot", "render_plot_image", "open_gate_editor", "get_plot_context", "upsert_gate", "upsert_gates"],
   preferredWorkflowResource: OPEN_FCS_WORKFLOW_RESOURCE_URI,
   compactGateEditor: {
     entryTool: "open_gate_editor",
@@ -1346,6 +1347,29 @@ server.registerTool(
     getPopulationGraph({
       workspacePath: workspace_path,
       sampleId: sample_id,
+    }),
+  ),
+);
+
+server.registerTool(
+  "get_population_table",
+  {
+    description: "Return event counts and percentages for selected gate populations across multiple samples, as a table with one row per sample. Counts are computed from FCS events, not from preview sampling. Use gate_ids to select specific populations (e.g. apoptosis quadrants, T-cell subsets). Omit sample_ids to include all workspace samples.",
+    inputSchema: {
+      workspace_path: z.string(),
+      sample_ids: z.array(z.string()).optional().describe("Samples to include. Omit for all workspace samples."),
+      gate_ids: z.array(z.string()).optional().describe("Gate populations to include as columns. Omit for all gates in the workspace."),
+      column_key: z.enum(["gate_id", "name_path"]).optional().describe("How to group columns across samples. 'gate_id' (default): one column per unique gate ID — use when a single gate applies to all samples. 'name_path': one column per unique hierarchy path like 'Lymphocytes / FITC+' — use for multi-sample comparisons where each sample has its own gate IDs for the same logical populations (e.g. propagated apoptosis gates). Each cell includes gateId for provenance."),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, sample_ids, gate_ids, column_key }) => toolContent(() =>
+    getPopulationTable({
+      workspacePath: workspace_path,
+      sampleIds: sample_ids,
+      gateIds: gate_ids,
+      columnKey: column_key,
     }),
   ),
 );
