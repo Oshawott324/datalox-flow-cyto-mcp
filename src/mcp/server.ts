@@ -31,6 +31,7 @@ import {
   listSamples,
   openFcsArtifact,
   openWorkspace,
+  propagateGates,
   readWorkspace,
   suggestApoptosisQuadrants,
   suggestSingletGate,
@@ -95,7 +96,7 @@ const FlowcytoCapabilities = {
   canWriteStructuredGates: true,
   liveRefreshAfterUpsertGate: true,
   canonicalArtifact: "flowcyto.workspace.json",
-  primaryTools: ["open_fcs", "import_flowjo_workspace", "export_flowjo_workspace", "list_compensations", "get_compensation_matrix", "estimate_compensation_from_controls", "upsert_compensation_matrix", "suggest_singlet_gate", "suggest_apoptosis_quadrants", "get_population_graph", "get_population_table", "render_plot", "render_plot_image", "open_gate_editor", "get_plot_context", "upsert_gate", "upsert_gates"],
+  primaryTools: ["open_fcs", "import_flowjo_workspace", "export_flowjo_workspace", "list_compensations", "get_compensation_matrix", "estimate_compensation_from_controls", "upsert_compensation_matrix", "suggest_singlet_gate", "suggest_apoptosis_quadrants", "get_population_graph", "get_population_table", "propagate_gates", "render_plot", "render_plot_image", "open_gate_editor", "get_plot_context", "upsert_gate", "upsert_gates"],
   preferredWorkflowResource: OPEN_FCS_WORKFLOW_RESOURCE_URI,
   compactGateEditor: {
     entryTool: "open_gate_editor",
@@ -1371,6 +1372,34 @@ server.registerTool(
       gateIds: gate_ids,
       columnKey: column_key,
     }),
+  ),
+);
+
+server.registerTool(
+  "propagate_gates",
+  {
+    description: "Copy reviewed gates to explicit target samples in one revision-safe write. Use this after a user confirms gate geometry should be reused across samples. Source gates must include selected parent gates for hierarchy preservation. Target gate ids are deterministic per sample and each propagated cell remains traceable with get_population_table column_key=name_path.",
+    inputSchema: {
+      workspace_path: z.string(),
+      source_gate_ids: z.array(z.string()).min(1),
+      target_sample_ids: z.array(z.string()).min(1),
+      expected_revision: z.number().int(),
+    },
+    outputSchema: JsonResultSchema,
+  },
+  async ({ workspace_path, source_gate_ids, target_sample_ids, expected_revision }) => toolContent(() =>
+    propagateGates({
+      workspacePath: workspace_path,
+      sourceGateIds: source_gate_ids,
+      targetSampleIds: target_sample_ids,
+      expectedRevision: expected_revision,
+    }).then((result) => ({
+      ...result,
+      agentContract: flowcytoAgentContract({
+        refresh: "already_open_app_refreshes_from_revision_poll",
+      }),
+      nextAction: result.ok ? workspaceRevisionNextAction(workspace_path) : null,
+    })),
   ),
 );
 

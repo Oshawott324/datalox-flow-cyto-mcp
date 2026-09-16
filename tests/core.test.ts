@@ -45,6 +45,7 @@ import {
   openFcsArtifact,
   readPreviewColumns,
   readWorkspace,
+  propagateGates,
   suggestApoptosisQuadrants,
   suggestSingletGate,
   transformValue,
@@ -2669,6 +2670,97 @@ describe("flowcyto core", () => {
     expect((await readWorkspace(workspacePath)).gates).toHaveLength(1);
   });
 
+  it("propagates a gate hierarchy to target samples with deterministic ids", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-propagate-gates-"));
+    const sampleAPath = path.join(dir, "sampleA.fcs");
+    const sampleBPath = path.join(dir, "sampleB.fcs");
+    const sampleCPath = path.join(dir, "sampleC.fcs");
+    for (const fcsPath of [sampleAPath, sampleBPath, sampleCPath]) {
+      await writeTinyIntegerFcs({
+        fcsPath,
+        channels: ["FSC-A", "SSC-A", "FITC-A"],
+        rows: [[10, 10, 5], [50, 50, 80], [90, 90, 120]],
+      });
+    }
+    const { workspacePath, workspace } = await initWorkspace({ rootDir: dir, samplePath: sampleAPath, sampleId: "A" });
+    await writeWorkspace({
+      workspacePath,
+      workspace: {
+        ...workspace,
+        samples: [
+          ...workspace.samples,
+          { id: "B", path: path.relative(path.dirname(workspacePath), sampleBPath) },
+          { id: "C", path: path.relative(path.dirname(workspacePath), sampleCPath) },
+        ],
+      },
+      expectedRevision: workspace.revision,
+    });
+    const ws = await readWorkspace(workspacePath);
+    await upsertGates({
+      workspacePath,
+      expectedRevision: ws.revision,
+      gates: [
+        { id: "lymph", name: "Lymphocytes", sample: "A", parent: "root", type: "rect", x: "FSC-A", y: "SSC-A", xMin: 0, xMax: 100, yMin: 0, yMax: 100 },
+        { id: "fitc_pos", name: "FITC+", sample: "A", parent: "lymph", type: "range", x: "FITC-A", min: 50, max: 200 },
+      ],
+    });
+    const beforePropagate = await readWorkspace(workspacePath);
+
+    const result = await propagateGates({
+      workspacePath,
+      sourceGateIds: ["lymph", "fitc_pos"],
+      targetSampleIds: ["B", "C"],
+      expectedRevision: beforePropagate.revision,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.propagatedCount).toBe(4);
+    expect(result.gates?.map((gate) => gate.id)).toEqual(["lymph__B", "fitc_pos__B", "lymph__C", "fitc_pos__C"]);
+    const propagatedWorkspace = await readWorkspace(workspacePath);
+    expect(propagatedWorkspace.gates.find((gate) => gate.id === "fitc_pos__B")).toMatchObject({
+      sample: "B",
+      parent: "lymph__B",
+      name: "FITC+",
+    });
+    const table = await getPopulationTable({ workspacePath, sampleIds: ["A", "B", "C"], columnKey: "name_path" });
+    expect(table.columns.map((column) => column.key)).toEqual(["Lymphocytes", "Lymphocytes / FITC+"]);
+    expect(table.rows[1]?.gates["Lymphocytes / FITC+"]?.gateId).toBe("fitc_pos__B");
+    expect(table.rows[2]?.gates["Lymphocytes / FITC+"]?.gateId).toBe("fitc_pos__C");
+  });
+
+  it("requires selected parent gates when propagating child gates", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-propagate-parent-"));
+    const sampleAPath = path.join(dir, "sampleA.fcs");
+    const sampleBPath = path.join(dir, "sampleB.fcs");
+    for (const fcsPath of [sampleAPath, sampleBPath]) {
+      await writeTinyIntegerFcs({ fcsPath, channels: ["FSC-A", "SSC-A"], rows: [[10, 10], [50, 50]] });
+    }
+    const { workspacePath, workspace } = await initWorkspace({ rootDir: dir, samplePath: sampleAPath, sampleId: "A" });
+    await writeWorkspace({
+      workspacePath,
+      workspace: { ...workspace, samples: [...workspace.samples, { id: "B", path: path.relative(path.dirname(workspacePath), sampleBPath) }] },
+      expectedRevision: workspace.revision,
+    });
+    const ws = await readWorkspace(workspacePath);
+    await upsertGates({
+      workspacePath,
+      expectedRevision: ws.revision,
+      gates: [
+        { id: "parent", name: "Parent", sample: "A", parent: "root", type: "rect", x: "FSC-A", y: "SSC-A", xMin: 0, xMax: 100, yMin: 0, yMax: 100 },
+        { id: "child", name: "Child", sample: "A", parent: "parent", type: "rect", x: "FSC-A", y: "SSC-A", xMin: 10, xMax: 90, yMin: 10, yMax: 90 },
+      ],
+    });
+    const current = await readWorkspace(workspacePath);
+    const result = await propagateGates({
+      workspacePath,
+      sourceGateIds: ["child"],
+      targetSampleIds: ["B"],
+      expectedRevision: current.revision,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors[0]?.code).toBe("missing_source_parent_gate");
+  });
+
   it("emits workspace file changes when revisions change", async () => {
     const { workspacePath } = await makeWorkspace();
     const revisions: number[] = [];
@@ -4519,6 +4611,7 @@ describe("flowcyto MCP", () => {
         "open_gate_editor",
         "open_workspace",
         "probe_inline_image",
+        "propagate_gates",
         "read_workspace",
         "render_gate_editor",
         "render_plot",

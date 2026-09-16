@@ -265,10 +265,12 @@ get_sample_metadata
 get_event_preview
 upsert_gate
 upsert_gates
+propagate_gates
 delete_gate
 suggest_singlet_gate
 suggest_apoptosis_quadrants
 get_population_graph
+get_population_table
 list_compensations
 get_compensation_matrix
 estimate_compensation_from_controls

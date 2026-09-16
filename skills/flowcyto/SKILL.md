@@ -57,6 +57,13 @@ Write gates through `upsert_gate` with `expected_revision` from `render_plot` or
 `get_plot_context`. Do not patch `flowcyto.workspace.json` directly when
 `upsert_gate` is available.
 
+Use `propagate_gates` after the user confirms that reviewed gate geometry should
+be reused across explicit target samples. Pass all selected parent gates together
+with their children so the hierarchy can be remapped. After propagation, use
+`get_population_table` with `column_key="name_path"` for cross-sample summaries
+when target samples have sample-specific gate IDs for the same logical
+populations.
+
 Use Flowcyto preview/render outputs for gate geometry. Do not create local
 Python plots, inspect local preview URLs, or infer gates from screenshots when
 `render_plot` or `get_plot_context` is available.
@@ -77,6 +84,11 @@ Use `get_population_graph` when the user asks for population counts,
 percentages, or a hierarchy summary. It evaluates the workspace gates against
 the FCS events and returns exact count, percent-of-parent, and percent-of-root
 values for each node.
+
+Use `get_population_table` when the user wants counts or percentages across
+multiple samples. Use `column_key="gate_id"` for exact gate IDs and
+`column_key="name_path"` for propagated gates that represent the same logical
+population across samples but have different gate IDs.
 
 ## Compensation
 
