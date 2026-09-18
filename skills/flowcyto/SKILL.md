@@ -80,6 +80,60 @@ gate, because apoptotic/dead events are the measured biology. The tool returns
 four proposed quadrant gates and an `upsert_gates` next action; do not write
 those gates unless the user asks you to apply them.
 
+### Multi-sample apoptosis workflow
+
+When the user asks to run an apoptosis analysis on a multi-sample workspace,
+propose the complete gate hierarchy before writing anything, then write and
+propagate everything in one approved batch.
+
+Phase 1 - propose all gates, no writes yet:
+
+1. Propose or inspect the main non-debris cell gate first using Flowcyto
+   preview/render context on FSC/SSC. If no dedicated main-cell suggestion tool
+   exists, clearly mark the main gate as agent-proposed from plot context and
+   ask before writing it.
+
+2. Call `suggest_singlet_gate` on FSC-A vs FSC-H or FSC-W, using the main cell
+   gate as the parent when available. Show the proposed polygon and the
+   percentage of parent events retained.
+
+3. Call `suggest_apoptosis_quadrants` with
+   `threshold_method="negative_control_percentile"` and the user-identified
+   negative control. Show the four proposed quadrant thresholds and the
+   preliminary percentage breakdown on the reference sample. Use the singlet
+   gate as the parent; do not use a live/dead exclusion parent for apoptosis.
+
+4. Summarize the complete proposed hierarchy in one table: gate name, parent,
+   and percent of parent for the reference sample. Ask once: "Approve this
+   hierarchy to write and propagate to all samples?"
+
+Phase 2 - write and propagate after a single approval:
+
+5. Write all gates to the reference sample with one `upsert_gates` call.
+
+6. Use `propagate_gates` to copy the full hierarchy, including main cell,
+   singlet, and all four quadrant gates, to every other treatment sample.
+   Always include parent gates when propagating children.
+
+7. Call `get_population_table` with `column_key="name_path"` and
+   `compensation_id` if compensation was applied. Show the four quadrant
+   populations across all samples and briefly interpret group differences.
+
+Future multi-sample morphology tools should inspect treatment samples with
+matched axes before fitting and then pool only eligible samples. Use up to
+`max_events_per_sample` events per eligible sample, default 5000; exclude
+samples below `min_events_for_pooling` after any parent-gate filter, default
+500; and surface included/excluded sample IDs before writing gates. If all
+samples are below the minimum, do not fit a pooled gate; ask the user whether to
+lower the threshold, exclude samples, or collect more events.
+
+What must come from the user, and cannot be inferred from filenames or metadata:
+
+- Whether the FCS files are pre-compensated or raw.
+- Which sample is the negative/unstained control.
+
+If either is unclear, ask before starting Phase 1.
+
 Use `get_population_graph` when the user asks for population counts,
 percentages, or a hierarchy summary. It evaluates the workspace gates against
 the FCS events and returns exact count, percent-of-parent, and percent-of-root
@@ -103,9 +157,11 @@ open_fcs -> list_compensations -> get_compensation_matrix
 ```
 
 Apply conventional compensation only by passing the chosen `compensation_id` to
-`render_plot`, `render_plot_image`, `get_plot_context`, or `open_gate_editor`.
-If the file appears pre-compensated, spectral, or ambiguous, ask the user before
-passing `compensation_id`.
+preview, render, editor, and population-statistics tools that support it:
+`render_plot`, `render_plot_image`, `get_plot_context`, `open_gate_editor`,
+`get_population_graph`, and `get_population_table`. If the file appears
+pre-compensated, spectral, or ambiguous, ask the user before passing
+`compensation_id`.
 
 If `compensationSummary.available=false`, proceed without compensation and
 surface `list_compensations` diagnostics to the user if compensation was
@@ -141,24 +197,26 @@ estimate_compensation_from_controls({
 ```
 
 `percentile: 90` keeps the top 10% of events by background-corrected primary
-channel signal — the bright positive bead fraction.
+channel signal - the bright positive bead fraction.
 
 Use `event_selection` when:
+
 - Controls are bead-based with a declared or expected mixed negative/positive
   population.
 - The estimated matrix disagrees strongly with the file-embedded `$SPILLOVER`
-  matrix (check with `list_compensations`).
-- The user or protocol specifies that controls contain both positive and negative
-  beads (e.g., BD CompBeads, UltraComp eBeads).
+  matrix; check with `list_compensations`.
+- The user or protocol specifies that controls contain both positive and
+  negative beads, for example BD CompBeads or UltraComp eBeads.
 
 Do NOT use `event_selection` when:
-- Controls are single-stain cell samples where all cells stain uniformly.
-- Controls match the flowCore reference format where all-event median was already
-  validated.
-- You are unsure of the bead population structure — ask the user first.
 
-The default (`event_selection` omitted) remains all-event median ratio and is
-unchanged for existing callers.
+- Controls are single-stain cell samples where all cells stain uniformly.
+- Controls match the flowCore reference format where all-event median was
+  already validated.
+- You are unsure of the bead population structure - ask the user first.
+
+The default, with `event_selection` omitted, remains all-event median ratio and
+is unchanged for existing callers.
 
 ## CLI Fallback
 
@@ -176,7 +234,8 @@ npx -y -p @datalox/flowcyto-mcp@alpha flowcyto validate flowcyto.workspace.json
 
 Do not create a separate gate writer script for the normal agent path.
 
-Do not make `AGENTS.md` required for product correctness. It is optional convenience guidance and may be customized or ignored by the user.
+Do not make `AGENTS.md` required for product correctness. It is optional
+convenience guidance and may be customized or ignored by the user.
 
 Do not tell the user to install FlowJo for the MCP workflow unless they
 explicitly need FlowJo-specific export/import behavior outside Flowcyto.

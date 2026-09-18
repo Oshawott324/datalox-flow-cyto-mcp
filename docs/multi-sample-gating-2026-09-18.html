@@ -1,0 +1,930 @@
+<title>Multi-Sample Gating Spec</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --bg: #F3F6FB;
+    --surface: #FFFFFF;
+    --surface-raised: #EBF0F9;
+    --border: #CDD8EE;
+    --text: #1A2438;
+    --text-secondary: #546080;
+    --text-dim: #8A9BBF;
+    --accent: #1056AC;
+    --accent-light: #E3EDF8;
+    --warning-bg: #FFFBF0;
+    --warning-border: #E8A000;
+    --warning-text: #7A5000;
+    --note-bg: #EBF0F9;
+    --note-border: #1056AC;
+    --note-text: #1A2438;
+    --code-bg: #0C1624;
+    --code-border: #1A2E48;
+    --tok-keyword: #7AADFF;
+    --tok-type: #6ECFA0;
+    --tok-string: #FFBE7A;
+    --tok-number: #C8A8FF;
+    --tok-comment: #4E6480;
+    --tok-prop: #D8E4F6;
+    --tok-punct: #7A92B8;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0A1220;
+      --surface: #111D30;
+      --surface-raised: #182640;
+      --border: #1E3050;
+      --text: #D4E0F5;
+      --text-secondary: #7088B8;
+      --text-dim: #405070;
+      --accent: #4A8AE5;
+      --accent-light: #142040;
+      --warning-bg: #180E00;
+      --warning-border: #C87800;
+      --warning-text: #F5C04A;
+      --note-bg: #142040;
+      --note-border: #4A8AE5;
+      --note-text: #D4E0F5;
+      --code-bg: #080F1C;
+      --code-border: #14243C;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #0A1220;
+    --surface: #111D30;
+    --surface-raised: #182640;
+    --border: #1E3050;
+    --text: #D4E0F5;
+    --text-secondary: #7088B8;
+    --text-dim: #405070;
+    --accent: #4A8AE5;
+    --accent-light: #142040;
+    --warning-bg: #180E00;
+    --warning-border: #C87800;
+    --warning-text: #F5C04A;
+    --note-bg: #142040;
+    --note-border: #4A8AE5;
+    --note-text: #D4E0F5;
+    --code-bg: #080F1C;
+    --code-border: #14243C;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { font-size: 15px; }
+
+  body {
+    font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.65;
+    padding-inline: 24px;
+    padding-block: 52px;
+    max-width: 840px;
+    margin-inline: auto;
+  }
+
+  .page-header { margin-bottom: 44px; }
+
+  .eyebrow {
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 12px;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  h1 {
+    font-size: 1.9rem;
+    font-weight: 600;
+    line-height: 1.2;
+    text-wrap: balance;
+    letter-spacing: -0.025em;
+    color: var(--text);
+    margin-bottom: 12px;
+  }
+
+  .subtitle {
+    color: var(--text-secondary);
+    font-size: 0.95rem;
+    max-width: 62ch;
+    line-height: 1.6;
+    margin-bottom: 20px;
+  }
+
+  .meta {
+    display: flex;
+    gap: 28px;
+    flex-wrap: wrap;
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    font-family: 'IBM Plex Mono', monospace;
+    border-top: 1px solid var(--border);
+    padding-top: 16px;
+  }
+
+  .toc {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 20px 24px;
+    margin-bottom: 52px;
+  }
+
+  .toc-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  .toc-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .toc-list li { margin: 0; }
+
+  .toc-list a {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    text-decoration: none;
+    display: inline-block;
+  }
+
+  .toc-list a:hover { color: var(--accent); }
+
+  .toc-sub a {
+    padding-left: 18px;
+    font-size: 0.82rem;
+    color: var(--text-dim);
+    position: relative;
+  }
+
+  .toc-sub a::before {
+    content: "\00B7";
+    position: absolute;
+    left: 6px;
+    color: var(--text-dim);
+  }
+
+  section { margin-bottom: 0; }
+
+  h2 {
+    font-size: 1.15rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+    color: var(--text);
+    margin-top: 60px;
+    margin-bottom: 18px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  h3 {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-dim);
+    margin-top: 36px;
+    margin-bottom: 12px;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  h4 {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-top: 28px;
+    margin-bottom: 10px;
+  }
+
+  p { max-width: 65ch; margin-bottom: 14px; }
+  p:last-child { margin-bottom: 0; }
+  ul, ol { padding-left: 20px; margin-bottom: 16px; }
+  li { margin-bottom: 7px; max-width: 65ch; }
+  li:last-child { margin-bottom: 0; }
+  strong { font-weight: 600; }
+  em { font-style: italic; }
+
+  code {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.86em;
+    background: var(--surface-raised);
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: var(--text);
+  }
+
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 3px;
+    padding: 20px 22px;
+    overflow-x: auto;
+    margin: 18px 0 22px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.8rem;
+    line-height: 1.75;
+  }
+
+  pre code {
+    background: none;
+    padding: 0;
+    font-size: inherit;
+    color: var(--tok-prop);
+    border-radius: 0;
+  }
+
+  .tok-k { color: var(--tok-keyword); }
+  .tok-t { color: var(--tok-type); }
+  .tok-s { color: var(--tok-string); }
+  .tok-n { color: var(--tok-number); }
+  .tok-c { color: var(--tok-comment); font-style: italic; }
+  .tok-p { color: var(--tok-prop); }
+  .tok-x { color: var(--tok-punct); }
+
+  .callout {
+    padding: 14px 18px;
+    margin: 18px 0;
+    border-radius: 0 3px 3px 0;
+  }
+
+  .callout-label {
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 7px;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  .callout p {
+    font-size: 0.875rem;
+    margin-bottom: 8px;
+    max-width: 60ch;
+    line-height: 1.6;
+  }
+
+  .callout p:last-child { margin-bottom: 0; }
+
+  .callout-warning { background: var(--warning-bg); border-left: 3px solid var(--warning-border); }
+  .callout-warning .callout-label { color: var(--warning-border); }
+  .callout-warning p { color: var(--warning-text); }
+
+  .callout-note { background: var(--note-bg); border-left: 3px solid var(--note-border); }
+  .callout-note .callout-label { color: var(--accent); }
+  .callout-note p { color: var(--note-text); }
+
+  .table-wrap { overflow-x: auto; margin: 16px 0 22px; }
+
+  .param-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.855rem;
+    min-width: 500px;
+  }
+
+  .param-table th {
+    text-align: left;
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    padding: 0 16px 10px 0;
+    border-bottom: 1px solid var(--border);
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  .param-table td {
+    padding: 11px 16px 11px 0;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+
+  .param-table tr:last-child td { border-bottom: none; }
+
+  .pn { font-family: 'IBM Plex Mono', monospace; color: var(--accent); font-size: 0.82rem; white-space: nowrap; }
+  .pt { font-family: 'IBM Plex Mono', monospace; color: var(--tok-type); font-size: 0.78rem; white-space: nowrap; }
+  .pd { font-family: 'IBM Plex Mono', monospace; color: var(--tok-number); font-size: 0.78rem; }
+
+  /* Gate hierarchy diagram */
+  .hierarchy {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.82rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 16px 20px;
+    margin: 16px 0 22px;
+    line-height: 1.9;
+    overflow-x: auto;
+  }
+
+  .hier-row { display: flex; gap: 20px; align-items: baseline; }
+  .hier-indent { color: var(--text-dim); }
+  .hier-gate { color: var(--text); font-weight: 500; }
+  .hier-meta { color: var(--text-secondary); font-size: 0.75rem; }
+  .hier-tool { color: var(--accent); font-size: 0.75rem; }
+
+  .impl-list {
+    list-style: none;
+    padding: 0;
+    margin: 18px 0;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+    background: var(--surface);
+  }
+
+  .impl-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 18px;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .impl-item:last-child { border-bottom: none; }
+
+  .impl-num {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    min-width: 18px;
+    padding-top: 2px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .impl-content { flex: 1; min-width: 0; }
+
+  .impl-title {
+    font-weight: 600;
+    font-size: 0.875rem;
+    margin-bottom: 4px;
+    font-family: 'IBM Plex Mono', monospace;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .impl-note {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    margin: 0;
+    max-width: 60ch;
+  }
+
+  .tag {
+    display: inline-block;
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border-radius: 2px;
+    font-family: 'IBM Plex Sans', sans-serif;
+  }
+
+  .tag-next { background: var(--accent-light); color: var(--accent); border: 1px solid var(--accent); }
+  .tag-defer { background: var(--surface-raised); color: var(--text-dim); border: 1px solid var(--border); }
+
+  .change-badge {
+    display: inline-block;
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 1px 6px;
+    border-radius: 2px;
+    background: #FFF3CD;
+    color: #7A5000;
+    border: 1px solid #E8A000;
+    font-family: 'IBM Plex Sans', sans-serif;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .change-badge {
+      background: #2A1A00;
+      color: #F5C04A;
+      border-color: #C87800;
+    }
+  }
+
+  :root[data-theme="dark"] .change-badge {
+    background: #2A1A00;
+    color: #F5C04A;
+    border-color: #C87800;
+  }
+
+  @media (max-width: 520px) {
+    body { padding-inline: 16px; padding-block: 36px; }
+    h1 { font-size: 1.5rem; }
+    h2 { font-size: 1.05rem; margin-top: 44px; }
+    pre { font-size: 0.73rem; padding: 14px 16px; }
+    .meta { gap: 14px; }
+    .hier-meta, .hier-tool { display: none; }
+  }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+</style>
+
+<div class="page-header">
+  <div class="eyebrow">datalox-flow-cyto-mcp &middot; feature spec</div>
+  <h1>Multi-Sample Rendering &amp; Pooled Gate Suggestion</h1>
+  <p class="subtitle">Three capabilities: multi-sample inspection renders, a new dedicated main-cell gate tool, and pooled event sampling so morphology gates generalise across the cohort rather than overfit a single file.</p>
+  <div class="meta">
+    <span>rev 2026-09-18</span>
+    <span>status: design-approved, pre-implementation</span>
+    <span>author: fangimm</span>
+  </div>
+</div>
+
+<nav class="toc" aria-label="Contents">
+  <div class="toc-label">Contents</div>
+  <ul class="toc-list">
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#feature-render">Feature 1 &mdash; Multi-sample render_plot</a></li>
+    <li class="toc-sub"><a href="#render-params">New parameters</a></li>
+    <li class="toc-sub"><a href="#render-small-multiples">small_multiples mode</a></li>
+    <li class="toc-sub"><a href="#render-overlay">overlay mode</a></li>
+    <li><a href="#feature-pooled">Feature 2 &mdash; Pooled event sampling (shared contract)</a></li>
+    <li class="toc-sub"><a href="#pooled-params">New parameters</a></li>
+    <li class="toc-sub"><a href="#pooled-algorithm">Pool construction algorithm</a></li>
+    <li class="toc-sub"><a href="#pooled-diagnostics">Diagnostics &amp; error cases</a></li>
+    <li class="toc-sub"><a href="#pooled-compat">Backward compatibility</a></li>
+    <li><a href="#feature-main-cell">Feature 3 &mdash; suggest_main_cell_gate (new tool)</a></li>
+    <li class="toc-sub"><a href="#main-cell-naming">Naming rationale</a></li>
+    <li class="toc-sub"><a href="#main-cell-api">API</a></li>
+    <li class="toc-sub"><a href="#main-cell-algorithm">Algorithm notes</a></li>
+    <li><a href="#apoptosis">Apoptosis workflow &mdash; full hierarchy</a></li>
+    <li><a href="#impl-order">Implementation order</a></li>
+  </ul>
+</nav>
+
+<section id="overview">
+  <h2>Overview</h2>
+  <p>Current single-sample gate proposal risks overfitting coordinates to one sample's distribution. When treatment groups shift morphology or fluorescence baselines, gates drawn from one sample misclassify events in others.</p>
+  <p>Three coordinated capabilities address this:</p>
+  <ul>
+    <li><strong>Inspection</strong> &mdash; render multiple samples side-by-side with matched axes so the agent detects distribution shifts, debris differences, or compensation artefacts before committing coordinates.</li>
+    <li><strong>Robust fitting</strong> &mdash; pooled event sampling across eligible samples ensures gate coordinates sit at the population centroid of the cohort. One low-event sample is excluded, not allowed to shrink the pool for all others.</li>
+    <li><strong>Dedicated main-cell tool</strong> &mdash; <code>suggest_main_cell_gate</code> covers the FSC/SSC debris-exclusion step that <code>suggest_singlet_gate</code> does not. The three-level hierarchy &mdash; main cell, singlet, apoptosis quadrants &mdash; now has a dedicated suggest tool at each level.</li>
+  </ul>
+  <p>Physical file concatenation is not a primitive. Event pooling happens in-memory; no new FCS object is created or persisted.</p>
+</section>
+
+<section id="feature-render">
+  <h2>Feature 1 &mdash; Multi-sample render_plot / render_plot_image</h2>
+  <p>Extend both render tools with optional <code>sample_ids</code> and <code>mode</code>. Single-sample calls are unchanged.</p>
+
+  <h3 id="render-params">New parameters</h3>
+  <div class="table-wrap">
+    <table class="param-table">
+      <thead>
+        <tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="pn">sample_ids</td>
+          <td class="pt">string[]</td>
+          <td class="pd">&mdash;</td>
+          <td>When provided, renders multiple samples. Mutually exclusive with singular <code>sample_id</code>; server validates and returns an error if both are present.</td>
+        </tr>
+        <tr>
+          <td class="pn">mode</td>
+          <td class="pt">"small_multiples" | "overlay"</td>
+          <td class="pd">"small_multiples"</td>
+          <td>Rendering layout. Only valid when <code>sample_ids</code> is provided. Ignored on single-sample calls.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h4 id="render-small-multiples">small_multiples mode (default)</h4>
+  <p>N separate density maps in the same coordinate space. Per-sample identity is preserved, making outlier detection unambiguous. This is the correct default for inspection.</p>
+  <ul>
+    <li>Axis bounds computed as the union of all sample extents, then shared. Existing explicit <code>bounds</code> parameter overrides the computed union.</li>
+    <li>Each plot entry contains <code>sampleId</code>, <code>eventCount</code>, and the same bins/contour format as a single-sample response.</li>
+    <li><code>eventCountPerSample</code> at the top level lets the agent flag anomalously small samples before gating.</li>
+  </ul>
+
+<pre><code><span class="tok-c">// render_plot response &mdash; small_multiples</span>
+<span class="tok-x">{</span>
+  <span class="tok-p">mode</span><span class="tok-x">:</span> <span class="tok-s">"small_multiples"</span><span class="tok-x">,</span>
+  <span class="tok-p">sharedBounds</span><span class="tok-x">: {</span> <span class="tok-p">xMin</span><span class="tok-x">:</span> <span class="tok-n">0</span><span class="tok-x">,</span> <span class="tok-p">xMax</span><span class="tok-x">:</span> <span class="tok-n">262143</span><span class="tok-x">,</span> <span class="tok-p">yMin</span><span class="tok-x">:</span> <span class="tok-n">0</span><span class="tok-x">,</span> <span class="tok-p">yMax</span><span class="tok-x">:</span> <span class="tok-n">262143</span> <span class="tok-x">},</span>
+  <span class="tok-p">eventCountPerSample</span><span class="tok-x">: {</span> <span class="tok-s">"group_1"</span><span class="tok-x">:</span> <span class="tok-n">16942</span><span class="tok-x">,</span> <span class="tok-s">"group_2"</span><span class="tok-x">:</span> <span class="tok-n">21289</span> <span class="tok-x">},</span>
+  <span class="tok-p">plots</span><span class="tok-x">: [</span>
+    <span class="tok-x">{</span> <span class="tok-p">sampleId</span><span class="tok-x">:</span> <span class="tok-s">"group_1"</span><span class="tok-x">,</span> <span class="tok-p">eventCount</span><span class="tok-x">:</span> <span class="tok-n">16942</span><span class="tok-x">,</span> <span class="tok-p">bins</span><span class="tok-x">: [</span> <span class="tok-c">/* same as single-sample */</span> <span class="tok-x">] },</span>
+    <span class="tok-c">// &hellip; one entry per sample_id, in input order</span>
+  <span class="tok-x">]</span>
+<span class="tok-x">}</span></code></pre>
+
+  <h4 id="render-overlay">overlay mode</h4>
+  <p>All sample events projected into one 2D density grid. Lower priority than small_multiples; implement after small_multiples is stable.</p>
+
+<pre><code><span class="tok-c">// render_plot response &mdash; overlay</span>
+<span class="tok-x">{</span>
+  <span class="tok-p">mode</span><span class="tok-x">:</span> <span class="tok-s">"overlay"</span><span class="tok-x">,</span>
+  <span class="tok-p">eventCountPerSample</span><span class="tok-x">: {</span> <span class="tok-s">"group_1"</span><span class="tok-x">:</span> <span class="tok-n">16942</span><span class="tok-x">,</span> <span class="tok-s">"group_2"</span><span class="tok-x">:</span> <span class="tok-n">21289</span> <span class="tok-x">},</span>
+  <span class="tok-p">bins</span><span class="tok-x">: [</span> <span class="tok-c">/* merged bins, same schema as single-sample */</span> <span class="tok-x">]</span>
+<span class="tok-x">}</span></code></pre>
+
+  <div class="callout callout-note">
+    <div class="callout-label">Agent workflow</div>
+    <p>Call <code>render_plot_image(sample_ids=[&hellip;], mode="small_multiples")</code> before proposing any gate geometry. Inspect for FSC/SSC cloud position differences, channel baseline shifts, or anomalously low event counts. Proceed to gate suggestion only after confirming samples are comparable.</p>
+  </div>
+</section>
+
+<section id="feature-pooled">
+  <h2>Feature 2 &mdash; Pooled event sampling (shared contract)</h2>
+  <p>This parameter contract applies to <code>suggest_main_cell_gate</code> and <code>suggest_singlet_gate</code> (and any future morphology gate tool). When <code>sample_ids</code> is provided, events are drawn equally from each <em>eligible</em> sample. Samples below <code>min_events_for_pooling</code> are <em>excluded</em> &mdash; not used to shrink the pool for the others.</p>
+
+  <h3 id="pooled-params">New parameters (all morphology suggest tools)</h3>
+  <div class="table-wrap">
+    <table class="param-table">
+      <thead>
+        <tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="pn">sample_ids</td>
+          <td class="pt">string[]</td>
+          <td class="pd">&mdash;</td>
+          <td>Samples to pool. Replaces singular <code>sample_id</code>. All IDs must exist in the workspace.</td>
+        </tr>
+        <tr>
+          <td class="pn">max_events_per_sample</td>
+          <td class="pt">number</td>
+          <td class="pd">5000</td>
+          <td>Upper bound on events drawn per eligible sample. Effective count further capped by the smallest eligible sample. Does not affect excluded samples.</td>
+        </tr>
+        <tr>
+          <td class="pn">min_events_for_pooling</td>
+          <td class="pt">number</td>
+          <td class="pd">500</td>
+          <td>Minimum eligible event count to include a sample in pooling. Samples below this are excluded and reported in <code>excludedSampleIds</code>. They still appear in inspection renders and receive counts after gate propagation.</td>
+        </tr>
+        <tr>
+          <td class="pn">seed</td>
+          <td class="pt">number</td>
+          <td class="pd">42</td>
+          <td>Random seed for reproducible subsampling. Same workspace + seed + parameters &rarr; identical pooled gate coordinates.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-note">
+    <div class="callout-label">Eligible event count</div>
+    <p>For root-level gates (no parent), eligible count is raw FCS <code>$TOT</code>. For child gates, eligible count is events surviving the parent gate for that sample. A sample with 50,000 total events but only 4,200 inside the main-cell gate contributes 4,200 toward <code>min_events_for_pooling</code> and the subsample cap.</p>
+  </div>
+
+  <h3 id="pooled-algorithm">Pool construction algorithm</h3>
+
+<pre><code><span class="tok-k">const</span> <span class="tok-p">cap</span> <span class="tok-x">=</span> input<span class="tok-x">.</span><span class="tok-p">max_events_per_sample</span> <span class="tok-x">??</span> <span class="tok-n">5000</span><span class="tok-x">;</span>
+<span class="tok-k">const</span> <span class="tok-p">minForPooling</span> <span class="tok-x">=</span> input<span class="tok-x">.</span><span class="tok-p">min_events_for_pooling</span> <span class="tok-x">??</span> <span class="tok-n">500</span><span class="tok-x">;</span>
+
+<span class="tok-c">// eligible count: events after parent gate filter, or $TOT for root-level</span>
+<span class="tok-k">const</span> <span class="tok-p">eligibleCounts</span> <span class="tok-x">= await</span> readEligibleCounts<span class="tok-x">(</span>sampleIds<span class="tok-x">,</span> parentGateId<span class="tok-x">);</span>
+
+<span class="tok-k">const</span> <span class="tok-p">included</span> <span class="tok-x">=</span> sampleIds<span class="tok-x">.</span>filter<span class="tok-x">(</span>id <span class="tok-x">=&gt;</span> eligibleCounts<span class="tok-x">.</span>get<span class="tok-x">(</span>id<span class="tok-x">) ??</span> <span class="tok-n">0</span><span class="tok-x">) &gt;=</span> minForPooling<span class="tok-x">);</span>
+<span class="tok-k">const</span> <span class="tok-p">excluded</span> <span class="tok-x">=</span> sampleIds<span class="tok-x">.</span>filter<span class="tok-x">(</span>id <span class="tok-x">=&gt;</span> eligibleCounts<span class="tok-x">.</span>get<span class="tok-x">(</span>id<span class="tok-x">) ??</span> <span class="tok-n">0</span><span class="tok-x">) &lt;</span> minForPooling<span class="tok-x">);</span>
+
+<span class="tok-c">// guard: must have at least 2 eligible samples to pool</span>
+<span class="tok-k">if</span> <span class="tok-x">(</span>included<span class="tok-x">.</span>length <span class="tok-x">===</span> <span class="tok-n">0</span><span class="tok-x">)</span>
+  <span class="tok-k">throw</span> FlowcytoError<span class="tok-x">(</span><span class="tok-s">"insufficient_events_for_pooling"</span><span class="tok-x">, ...);</span>
+
+<span class="tok-k">const</span> <span class="tok-p">minCount</span> <span class="tok-x">=</span> Math<span class="tok-x">.</span>min<span class="tok-x">(...</span>included<span class="tok-x">.</span>map<span class="tok-x">(</span>id <span class="tok-x">=&gt;</span> eligibleCounts<span class="tok-x">.</span>get<span class="tok-x">(</span>id<span class="tok-x">)!));</span>
+<span class="tok-k">const</span> <span class="tok-p">effectiveN</span> <span class="tok-x">=</span> Math<span class="tok-x">.</span>min<span class="tok-x">(</span>cap<span class="tok-x">,</span> minCount<span class="tok-x">);</span>
+
+<span class="tok-c">// null when cap is the binding constraint (minCount >= cap)</span>
+<span class="tok-k">const</span> <span class="tok-p">limitedBySampleId</span> <span class="tok-x">=</span>
+  minCount <span class="tok-x">&lt;</span> cap <span class="tok-x">?</span> included<span class="tok-x">.</span>find<span class="tok-x">(</span>id <span class="tok-x">=&gt;</span> eligibleCounts<span class="tok-x">.</span>get<span class="tok-x">(</span>id<span class="tok-x">) ===</span> minCount<span class="tok-x">)!</span>
+             <span class="tok-x">:</span> <span class="tok-t">null</span><span class="tok-x">;</span>
+
+<span class="tok-k">const</span> <span class="tok-p">pooled</span> <span class="tok-x">=</span> included<span class="tok-x">.</span>flatMap<span class="tok-x">(</span>id <span class="tok-x">=&gt;</span> sampleRandomSubset<span class="tok-x">(</span>id<span class="tok-x">,</span> effectiveN<span class="tok-x">,</span> seed<span class="tok-x">));</span></code></pre>
+
+  <h3 id="pooled-diagnostics">Diagnostics &amp; error cases</h3>
+
+  <h4>Normal response</h4>
+<pre><code><span class="tok-x">{</span>
+  <span class="tok-p">gate</span><span class="tok-x">: {</span> <span class="tok-c">/* polygon &mdash; same shape as single-sample */</span> <span class="tok-x">},</span>
+  <span class="tok-p">poolingDiagnostics</span><span class="tok-x">: {</span>
+    <span class="tok-p">requestedMaxEventsPerSample</span><span class="tok-x">:</span> <span class="tok-n">5000</span><span class="tok-x">,</span>
+    <span class="tok-p">minEventsForPooling</span><span class="tok-x">:</span> <span class="tok-n">500</span><span class="tok-x">,</span>
+    <span class="tok-p">effectiveEventsPerSample</span><span class="tok-x">:</span> <span class="tok-n">3241</span><span class="tok-x">,</span>
+    <span class="tok-p">limitedBySampleId</span><span class="tok-x">:</span> <span class="tok-s">"group_5"</span><span class="tok-x">,</span>  <span class="tok-c">// null when cap was binding</span>
+    <span class="tok-p">includedSampleIds</span><span class="tok-x">: [</span><span class="tok-s">"group_1"</span><span class="tok-x">,</span> <span class="tok-s">"group_2"</span><span class="tok-x">,</span> <span class="tok-s">"group_3"</span><span class="tok-x">,</span> <span class="tok-s">"group_5"</span><span class="tok-x">],</span>
+    <span class="tok-p">excludedSampleIds</span><span class="tok-x">: [</span><span class="tok-s">"group_7"</span><span class="tok-x">],</span>
+    <span class="tok-p">eventCountPerSample</span><span class="tok-x">: {</span>             <span class="tok-c">// eligible counts, not raw $TOT</span>
+      <span class="tok-s">"group_1"</span><span class="tok-x">:</span> <span class="tok-n">16942</span><span class="tok-x">,</span> <span class="tok-s">"group_2"</span><span class="tok-x">:</span> <span class="tok-n">21289</span><span class="tok-x">,</span>
+      <span class="tok-s">"group_3"</span><span class="tok-x">:</span> <span class="tok-n">36075</span><span class="tok-x">,</span> <span class="tok-s">"group_5"</span><span class="tok-x">:</span> <span class="tok-n">3241</span><span class="tok-x">,</span>
+      <span class="tok-s">"group_7"</span><span class="tok-x">:</span> <span class="tok-n">180</span>  <span class="tok-c">// excluded: below min_events_for_pooling</span>
+    <span class="tok-x">},</span>
+    <span class="tok-p">warnings</span><span class="tok-x">: [</span>
+      <span class="tok-s">"group_7 has only 180 eligible events and was excluded from pooled gate fitting. It will still appear in inspection renders and receive gate counts after propagation."</span>
+    <span class="tok-x">]</span>
+  <span class="tok-x">}</span>
+<span class="tok-x">}</span></code></pre>
+
+  <h4>Error: no eligible samples</h4>
+  <p>When zero samples meet <code>min_events_for_pooling</code>, do not fit a gate. Return an error with full diagnostics so the agent can explain the situation and suggest a remedy.</p>
+<pre><code><span class="tok-x">{</span>
+  <span class="tok-p">error</span><span class="tok-x">:</span> <span class="tok-s">"insufficient_events_for_pooling"</span><span class="tok-x">,</span>
+  <span class="tok-p">message</span><span class="tok-x">:</span> <span class="tok-s">"No samples meet the minimum event threshold of 500. Consider lowering min_events_for_pooling or using a single-sample call."</span><span class="tok-x">,</span>
+  <span class="tok-p">poolingDiagnostics</span><span class="tok-x">: {</span>
+    <span class="tok-p">minEventsForPooling</span><span class="tok-x">:</span> <span class="tok-n">500</span><span class="tok-x">,</span>
+    <span class="tok-p">includedSampleIds</span><span class="tok-x">: [],</span>
+    <span class="tok-p">excludedSampleIds</span><span class="tok-x">: [</span><span class="tok-s">"group_1"</span><span class="tok-x">,</span> <span class="tok-s">"group_2"</span><span class="tok-x">],</span>
+    <span class="tok-p">eventCountPerSample</span><span class="tok-x">: {</span> <span class="tok-s">"group_1"</span><span class="tok-x">:</span> <span class="tok-n">180</span><span class="tok-x">,</span> <span class="tok-s">"group_2"</span><span class="tok-x">:</span> <span class="tok-n">312</span> <span class="tok-x">}</span>
+  <span class="tok-x">}</span>
+<span class="tok-x">}</span></code></pre>
+
+  <h4>Warning: exactly one eligible sample</h4>
+  <p>Return the gate, but warn that pooled fitting has degraded to single-sample fitting. The gate coordinates may not generalise.</p>
+<pre><code><span class="tok-x">{</span>
+  <span class="tok-p">gate</span><span class="tok-x">: {</span> <span class="tok-c">/* polygon fit from group_3 only */</span> <span class="tok-x">},</span>
+  <span class="tok-p">poolingDiagnostics</span><span class="tok-x">: {</span>
+    <span class="tok-p">effectiveEventsPerSample</span><span class="tok-x">:</span> <span class="tok-n">4200</span><span class="tok-x">,</span>
+    <span class="tok-p">includedSampleIds</span><span class="tok-x">: [</span><span class="tok-s">"group_3"</span><span class="tok-x">],</span>
+    <span class="tok-p">excludedSampleIds</span><span class="tok-x">: [</span><span class="tok-s">"group_1"</span><span class="tok-x">,</span> <span class="tok-s">"group_2"</span><span class="tok-x">,</span> <span class="tok-s">"group_7"</span><span class="tok-x">],</span>
+    <span class="tok-p">warnings</span><span class="tok-x">: [</span>
+      <span class="tok-s">"Only 1 of 4 samples met min_events_for_pooling. Pooled fitting degraded to single-sample fitting on group_3. Gate coordinates may not generalise across the cohort."</span>
+    <span class="tok-x">]</span>
+  <span class="tok-x">}</span>
+<span class="tok-x">}</span></code></pre>
+
+  <h3 id="pooled-compat">Backward compatibility</h3>
+  <p>When <code>sample_ids</code> is absent and singular <code>sample_id</code> is used, the existing single-sample code path runs unchanged. <code>poolingDiagnostics</code> is absent. No breaking changes.</p>
+
+  <div class="callout callout-note">
+    <div class="callout-label">Documentation line</div>
+    <p>Balanced pooled fitting uses up to 5,000 events per sample by default. Samples with fewer than 500 eligible events (after any parent gate filter) are excluded from pooling and reported in diagnostics. They still appear in inspection renders and receive final counts after gate propagation.</p>
+  </div>
+</section>
+
+<section id="feature-main-cell">
+  <h2>Feature 3 &mdash; suggest_main_cell_gate (new tool)</h2>
+
+  <h3 id="main-cell-naming">Naming rationale</h3>
+  <p>The FSC/SSC gate that precedes singlet and apoptosis gating must be called <strong>Main cell / non-debris gate</strong>. Do not call it:</p>
+  <ul>
+    <li><em>Live-cell gate</em> &mdash; live cells and dead cells are both in-scope; this gate only excludes non-cellular debris.</li>
+    <li><em>Apoptosis removal gate</em> or <em>dead-cell exclusion gate</em> &mdash; apoptotic and dead cells are the biology being measured in an apoptosis assay. Excluding them at this stage would bias the downstream Annexin/PI percentages.</li>
+  </ul>
+  <p>The gate should exclude obvious non-cellular events: extreme debris at the bottom-left of FSC/SSC, very large aggregates at the top-right. It should not attempt to separate viable from apoptotic/dead cells based on FSC position.</p>
+
+  <h3 id="main-cell-api">API</h3>
+  <div class="table-wrap">
+    <table class="param-table">
+      <thead>
+        <tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="pn">workspace_path</td>
+          <td class="pt">string</td>
+          <td class="pd">&mdash;</td>
+          <td>Path to the workspace JSON file.</td>
+        </tr>
+        <tr>
+          <td class="pn">sample_id</td>
+          <td class="pt">string</td>
+          <td class="pd">&mdash;</td>
+          <td>Single-sample path. Mutually exclusive with <code>sample_ids</code>.</td>
+        </tr>
+        <tr>
+          <td class="pn">sample_ids</td>
+          <td class="pt">string[]</td>
+          <td class="pd">&mdash;</td>
+          <td>Pooled path. See Feature 2 contract above.</td>
+        </tr>
+        <tr>
+          <td class="pn">x</td>
+          <td class="pt">string</td>
+          <td class="pd">auto</td>
+          <td>X-axis channel. Defaults to the first FSC-A-like parameter found in the sample metadata.</td>
+        </tr>
+        <tr>
+          <td class="pn">y</td>
+          <td class="pt">string</td>
+          <td class="pd">auto</td>
+          <td>Y-axis channel. Defaults to the first SSC-A-like parameter.</td>
+        </tr>
+        <tr>
+          <td class="pn">max_events_per_sample</td>
+          <td class="pt">number</td>
+          <td class="pd">5000</td>
+          <td>See Feature 2.</td>
+        </tr>
+        <tr>
+          <td class="pn">min_events_for_pooling</td>
+          <td class="pt">number</td>
+          <td class="pd">500</td>
+          <td>See Feature 2. For root-level gate, eligible count is raw <code>$TOT</code>.</td>
+        </tr>
+        <tr>
+          <td class="pn">mode</td>
+          <td class="pt">"non_debris" | "main_population" | "lymphocyte_like"</td>
+          <td class="pd">"main_population"</td>
+          <td>Algorithm intent. <strong>non_debris</strong>: conservative, removes only clear non-cellular events &mdash; correct default for apoptosis assays. <strong>main_population</strong>: fits the dominant scatter cluster. <strong>lymphocyte_like</strong>: targets the low-FSC, low-to-mid-SSC lymphocyte region. When the calling agent knows the assay type (e.g. apoptosis workflow), it should pass <code>mode: "non_debris"</code> explicitly.</td>
+        </tr>
+        <tr>
+          <td class="pn">seed</td>
+          <td class="pt">number</td>
+          <td class="pd">42</td>
+          <td>See Feature 2.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+<pre><code><span class="tok-c">// suggest_main_cell_gate response</span>
+<span class="tok-x">{</span>
+  <span class="tok-p">gate</span><span class="tok-x">: {</span>
+    <span class="tok-p">type</span><span class="tok-x">:</span> <span class="tok-s">"polygon"</span><span class="tok-x">,</span>
+    <span class="tok-p">name</span><span class="tok-x">:</span> <span class="tok-s">"Main cells"</span><span class="tok-x">,</span>
+    <span class="tok-p">xChannel</span><span class="tok-x">:</span> <span class="tok-s">"FSC-A"</span><span class="tok-x">,</span>
+    <span class="tok-p">yChannel</span><span class="tok-x">:</span> <span class="tok-s">"SSC-A"</span><span class="tok-x">,</span>
+    <span class="tok-p">vertices</span><span class="tok-x">: [</span> <span class="tok-c">/* polygon coordinates */</span> <span class="tok-x">],</span>
+    <span class="tok-p">summary</span><span class="tok-x">: {</span>
+      <span class="tok-p">count</span><span class="tok-x">:</span> <span class="tok-n">15453</span><span class="tok-x">,</span>
+      <span class="tok-p">percentOfParent</span><span class="tok-x">:</span> <span class="tok-n">91.21</span>
+    <span class="tok-x">}</span>
+  <span class="tok-x">},</span>
+  <span class="tok-p">gateIntent</span><span class="tok-x">:</span> <span class="tok-s">"non_debris"</span><span class="tok-x">,</span>  <span class="tok-c">// echoes the mode used &mdash; agent should surface this to the user</span>
+  <span class="tok-p">gateIntentWarning</span><span class="tok-x">?:</span> <span class="tok-s">"For apoptosis assays this gate is conservative and is not intended to exclude apoptotic/dead cells."</span><span class="tok-x">,</span>
+  <span class="tok-p">poolingDiagnostics</span><span class="tok-x">?: {</span> <span class="tok-c">/* present when sample_ids used; see Feature 2 */</span> <span class="tok-x">},</span>
+  <span class="tok-p">nextAction</span><span class="tok-x">:</span> <span class="tok-s">"upsert_gate"</span>  <span class="tok-c">// or "upsert_gates" for multi-sample writes</span>
+<span class="tok-x">}</span></code></pre>
+
+  <h3 id="main-cell-algorithm">Algorithm notes</h3>
+  <p>Use density-based or HDR-style gating on the FSC/SSC space:</p>
+  <ul>
+    <li>Find the highest-density region in the 2D FSC/SSC plot.</li>
+    <li>Draw a <strong>conservative</strong> polygon around it &mdash; err on the side of inclusion. The polygon should capture the dominant non-debris population including cells that have shifted to lower FSC due to early apoptosis.</li>
+    <li>Exclude only clearly non-cellular events: extreme debris below the main cloud (very low FSC and SSC), and very large aggregates/clumps above it.</li>
+    <li>Do not attempt to separate viable from non-viable cells based on FSC intensity; that distinction belongs to the Annexin/PI gates downstream.</li>
+  </ul>
+
+  <div class="callout callout-warning">
+    <div class="callout-label">Assay context matters</div>
+    <p>For apoptosis assays specifically, a tight live-cell polygon that excludes low-FSC apoptotic events will artificially reduce the Annexin+/PI+ populations. The main-cell gate should be drawn broadly enough to retain apoptotic cells; they will be characterised downstream by Annexin V and PI staining.</p>
+    <p>Some assays (e.g. activation assays) do want dead-cell exclusion at this stage. The algorithm should default to conservative/inclusive and let the user tighten the gate manually if the assay requires it.</p>
+  </div>
+</section>
+
+<section id="apoptosis">
+  <h2>Apoptosis workflow &mdash; full hierarchy</h2>
+
+  <p>Generic three-level structure that applies across assay types:</p>
+
+  <div class="hierarchy" aria-label="Generic gate hierarchy">
+    <div class="hier-row"><span class="hier-gate">Root</span></div>
+    <div class="hier-row">
+      <span class="hier-indent">&nbsp;&nbsp;&rarr;&nbsp;</span>
+      <span class="hier-gate">Main cell / assay-appropriate morphology gate</span>
+      <span class="hier-meta">&nbsp;&nbsp;FSC-A vs SSC-A</span>
+      <span class="hier-tool">&nbsp;&nbsp;suggest_main_cell_gate</span>
+    </div>
+    <div class="hier-row">
+      <span class="hier-indent">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr;&nbsp;</span>
+      <span class="hier-gate">Singlet gate(s)</span>
+      <span class="hier-meta">&nbsp;&nbsp;FSC-A/FSC-H, FSC-A/FSC-W, SSC variants as needed</span>
+      <span class="hier-tool">&nbsp;&nbsp;suggest_singlet_gate</span>
+    </div>
+    <div class="hier-row">
+      <span class="hier-indent">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr;&nbsp;</span>
+      <span class="hier-gate">Assay readout gate</span>
+      <span class="hier-meta">&nbsp;&nbsp;Annexin vs PI &middot; live/dead vs marker &middot; tetramer vs marker &hellip;</span>
+      <span class="hier-tool">&nbsp;&nbsp;assay-specific tool</span>
+    </div>
+  </div>
+
+  <p>For apoptosis specifically:</p>
+
+  <div class="hierarchy" aria-label="Apoptosis gate hierarchy">
+    <div class="hier-row"><span class="hier-gate">Root</span></div>
+    <div class="hier-row">
+      <span class="hier-indent">&nbsp;&nbsp;&rarr;&nbsp;</span>
+      <span class="hier-gate">Non-debris cell gate</span>
+      <span class="hier-meta">&nbsp;&nbsp;FSC-A vs SSC-A</span>
+      <span class="hier-tool">&nbsp;&nbsp;suggest_main_cell_gate(mode: "non_debris")</span>
+    </div>
+    <div class="hier-row">
+      <span class="hier-indent">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr;&nbsp;</span>
+      <span class="hier-gate">Singlets</span>
+      <span class="hier-meta">&nbsp;&nbsp;FSC-A vs FSC-H (or user-selected axes)</span>
+      <span class="hier-tool">&nbsp;&nbsp;suggest_singlet_gate</span>
+    </div>
+    <div class="hier-row">
+      <span class="hier-indent">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr;&nbsp;</span>
+      <span class="hier-gate">Annexin/PI quadrants (4 gates)</span>
+      <span class="hier-meta">&nbsp;&nbsp;Annexin-A vs PI-A</span>
+      <span class="hier-tool">&nbsp;&nbsp;suggest_apoptosis_quadrants</span>
+    </div>
+  </div>
+
+  <div class="callout callout-warning">
+    <div class="callout-label">Critical &mdash; apoptosis assay gating</div>
+    <p>For apoptosis assays, morphology gates should be conservative and assay-aware. They should remove debris/non-events but should not try to purify only healthy/live-looking cells before Annexin/PI quantification. Excluding cells that have shifted to lower FSC due to apoptosis will bias the Annexin+ and PI+ percentages &mdash; the most dangerous automated-gating mistake in this assay.</p>
+  </div>
+
+  <p>Notes on singlet gating: FSC-A vs FSC-H is most common; FSC-A vs FSC-W and SSC-A vs SSC-H are also used. Some protocols apply singlet gating twice (FSC then SSC). Axis choice is user preference &mdash; the tool accepts explicit axes via <code>axes</code> and defaults to FSC-A / FSC-H. Sequential double-gating is deferred; see implementation order.</p>
+
+  <h3>Pooling rules per gate level</h3>
+  <ul>
+    <li><strong>Main cell / non-debris gate</strong> &mdash; pool treatment samples. Exclude the unstained control unless it was collected from the same preparation. Eligible count = raw <code>$TOT</code>.</li>
+    <li><strong>Singlets</strong> &mdash; pool treatment samples. Eligible count = events surviving the main-cell gate (not raw <code>$TOT</code>).</li>
+    <li><strong>Annexin/PI quadrant thresholds</strong> &mdash; negative control only. Pooling does not apply. <code>suggest_apoptosis_quadrants</code> already accepts <code>negative_control_sample_id</code>.</li>
+    <li><strong>Final population counts</strong> &mdash; always per real sample via <code>get_population_table</code>. Pooled fitting is only for gate coordinate derivation.</li>
+  </ul>
+
+  <h3>Future multi-sample apoptosis workflow</h3>
+<pre><code><span class="tok-c">// Phase 1 &mdash; inspect (no writes)</span>
+render_plot_image<span class="tok-x">(</span>
+  <span class="tok-p">sample_ids</span><span class="tok-x">: [</span>...treatmentSamples<span class="tok-x">],</span>
+  <span class="tok-p">mode</span><span class="tok-x">:</span> <span class="tok-s">"small_multiples"</span><span class="tok-x">,</span>
+  <span class="tok-p">x</span><span class="tok-x">:</span> <span class="tok-s">"FSC-A"</span><span class="tok-x">,</span> <span class="tok-p">y</span><span class="tok-x">:</span> <span class="tok-s">"SSC-A"</span>
+<span class="tok-x">)</span>
+<span class="tok-c">// &rarr; inspect for shifted populations or anomalous samples</span>
+
+<span class="tok-c">// Phase 2 &mdash; propose all gates (no writes)</span>
+suggest_main_cell_gate<span class="tok-x">(</span>
+  <span class="tok-p">sample_ids</span><span class="tok-x">: [</span>...treatmentSamples<span class="tok-x">]</span>   <span class="tok-c">// pooled, eligible = $TOT</span>
+<span class="tok-x">)</span>
+suggest_singlet_gate<span class="tok-x">(</span>
+  <span class="tok-p">sample_ids</span><span class="tok-x">: [</span>...treatmentSamples<span class="tok-x">],</span>    <span class="tok-c">// pooled, eligible = post-main-cell events</span>
+  <span class="tok-p">parent_gate_id</span><span class="tok-x">:</span> proposedMainCellGateId
+<span class="tok-x">)</span>
+suggest_apoptosis_quadrants<span class="tok-x">(</span>
+  <span class="tok-p">negative_control_sample_id</span><span class="tok-x">:</span> <span class="tok-s">"unstain"</span>    <span class="tok-c">// control-derived thresholds only</span>
+<span class="tok-x">)</span>
+<span class="tok-c">// &rarr; present complete hierarchy table, ask once for approval</span>
+
+<span class="tok-c">// Phase 3 &mdash; write and propagate (after single approval)</span>
+upsert_gates<span class="tok-x">(...)</span>
+propagate_gates<span class="tok-x">(...)</span>
+
+<span class="tok-c">// Phase 4 &mdash; results</span>
+get_population_table<span class="tok-x">(</span><span class="tok-p">column_key</span><span class="tok-x">:</span> <span class="tok-s">"name_path"</span><span class="tok-x">)</span></code></pre>
+</section>
+
+<section id="impl-order">
+  <h2>Implementation order</h2>
+  <ul class="impl-list">
+    <li class="impl-item">
+      <span class="impl-num">1</span>
+      <div class="impl-content">
+        <div class="impl-title">render_plot / render_plot_image &mdash; small_multiples <span class="tag tag-next">next</span></div>
+        <p class="impl-note">Highest immediate value. Unlocks the inspection step and the &ldquo;agent catches a distribution shift&rdquo; demo moment before any gate-fitting changes land.</p>
+      </div>
+    </li>
+    <li class="impl-item">
+      <span class="impl-num">2</span>
+      <div class="impl-content">
+        <div class="impl-title">suggest_main_cell_gate &mdash; new tool</div>
+        <p class="impl-note">New dedicated tool for the FSC/SSC non-debris gate. Implement with the full pooling contract from day one. Conservative HDR-based algorithm; name the proposed gate "Main cells" by default.</p>
+      </div>
+    </li>
+    <li class="impl-item">
+      <span class="impl-num">3</span>
+      <div class="impl-content">
+        <div class="impl-title">suggest_singlet_gate &mdash; add sample_ids pooling + axes parameter</div>
+        <p class="impl-note">Extend the existing tool. Add <code>sample_ids</code> pooling (Feature 2 contract). Also add <code>axes?: Array&lt;{x: string, y: string}&gt;</code> to accept explicit axis pairs (default: FSC-A / FSC-H). Sequential double-gating (<code>strategy: "sequential"</code>) is deferred &mdash; start with single-gate only. Backward compat: single-sample path unchanged.</p>
+      </div>
+    </li>
+    <li class="impl-item">
+      <span class="impl-num">4</span>
+      <div class="impl-content">
+        <div class="impl-title">render_plot / render_plot_image &mdash; overlay mode</div>
+        <p class="impl-note">Lower priority than small_multiples. Implement after small_multiples is stable.</p>
+      </div>
+    </li>
+    <li class="impl-item">
+      <span class="impl-num">5</span>
+      <div class="impl-content">
+        <div class="impl-title">Physical concatenated FCS export <span class="tag tag-defer">deferred</span></div>
+        <p class="impl-note">Only if users request downstream compatibility with FlowJo or FCSExpress. Not in scope for this spec.</p>
+      </div>
+    </li>
+  </ul>
+</section>
