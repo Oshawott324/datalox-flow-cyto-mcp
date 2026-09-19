@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import process from "node:process";
+import path from "node:path";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 
@@ -75,6 +76,7 @@ const WidgetAccessibleToolMeta = {
 type GateEditorSession = {
   server: GateEditorServer;
   nativeWindow?: NativeGateEditorWindow;
+  workspacePath: string;
 };
 
 type GateEditorSelection = {
@@ -430,6 +432,36 @@ function mcpAppGateEditorResult(params: {
   };
 }
 
+function findReusableNativeGateEditorSession(
+  sessions: Map<string, GateEditorSession>,
+  params: {
+    workspacePath: string;
+    sessionId?: string;
+    reuseSession: boolean;
+  },
+): { sessionId: string; session: GateEditorSession } | undefined {
+  if (params.sessionId) {
+    const session = sessions.get(params.sessionId);
+    if (!session) {
+      throw new FlowcytoError("unknown_gate_editor_session", `Gate editor session ${params.sessionId} is not present.`, "/session_id");
+    }
+    if (path.resolve(session.workspacePath) !== path.resolve(params.workspacePath)) {
+      throw new FlowcytoError(
+        "incompatible_gate_editor_session",
+        `Gate editor session ${params.sessionId} belongs to a different workspace.`,
+        "/session_id",
+      );
+    }
+    return { sessionId: params.sessionId, session };
+  }
+  if (!params.reuseSession) return undefined;
+  const compatible = [...sessions.entries()].filter(([, session]) =>
+    session.nativeWindow && path.resolve(session.workspacePath) === path.resolve(params.workspacePath));
+  // Map iteration preserves insertion order; the last compatible session is the most recently opened one.
+  const latest = compatible[compatible.length - 1];
+  return latest ? { sessionId: latest[0], session: latest[1] } : undefined;
+}
+
 async function nativeWindowGateEditorResult(
   sessions: Map<string, GateEditorSession>,
   params: {
@@ -443,12 +475,19 @@ async function nativeWindowGateEditorResult(
     maxEvents?: number;
     compensationId?: string;
     selection: GateEditorSelection;
+    sessionId?: string;
+    reuseSession: boolean;
     width?: number;
     height?: number;
   },
 ) {
   const readinessError = nativeGateEditorReadinessError();
   if (readinessError) throw readinessError;
+  const reusable = findReusableNativeGateEditorSession(sessions, {
+    workspacePath: params.workspacePath,
+    sessionId: params.sessionId,
+    reuseSession: params.reuseSession,
+  });
 
   const gateEditor = await startGateEditorServer({
     workspacePath: params.workspacePath,
@@ -475,10 +514,16 @@ async function nativeWindowGateEditorResult(
       height: params.height,
     });
     await nativeWindow.ready;
-    sessions.set(gateEditor.sessionId, { server: gateEditor, nativeWindow });
+    if (reusable) {
+      reusable.session.nativeWindow?.close();
+      await reusable.session.server.close().catch(() => undefined);
+      sessions.delete(reusable.sessionId);
+    }
+    sessions.set(gateEditor.sessionId, { server: gateEditor, nativeWindow, workspacePath: gateEditor.workspacePath });
     return {
       ok: true,
       sessionId: gateEditor.sessionId,
+      ...(reusable ? { reusedSessionId: reusable.sessionId } : {}),
       workspacePath: gateEditor.workspacePath,
       host: gateEditor.host,
       port: gateEditor.port,
@@ -1517,7 +1562,7 @@ server.registerTool(
 server.registerTool(
   "open_gate_editor",
   {
-    description: "Open the compact gate editor surface for a workspace, including workspaces created by open_fcs. In CLI or non-UI agent hosts, pass surface=\"native_window\" so a compact native window opens. After this call, call get_plot_context using result.nextAction.arguments. Do not inspect local preview URLs, run local FCS analysis scripts, or write the workspace JSON directly.",
+    description: "Open the compact gate editor surface for a workspace, including workspaces created by open_fcs. In CLI or non-UI agent hosts, pass surface=\"native_window\" so a compact native window opens. Native windows reuse the most recent same-workspace session by default; pass reuse_session=false only when the user explicitly wants multiple windows. After this call, call get_plot_context using result.nextAction.arguments. Do not inspect local preview URLs, run local FCS analysis scripts, or write the workspace JSON directly.",
     inputSchema: {
       workspace_path: z.string(),
       surface: GateEditorSurfaceSchema.optional(),
@@ -1529,6 +1574,8 @@ server.registerTool(
       y: z.string().optional(),
       max_events: z.number().int().positive().optional(),
       compensation_id: z.string().optional(),
+      session_id: z.string().optional().describe("Existing gate editor session to replace. Must belong to the same workspace_path."),
+      reuse_session: z.boolean().optional().describe("For native_window, replace the most recent same-workspace editor instead of leaving multiple windows open. Defaults to true."),
       width: z.number().int().positive().optional(),
       height: z.number().int().positive().optional(),
     },
@@ -1536,7 +1583,7 @@ server.registerTool(
     annotations: { readOnlyHint: true },
     _meta: GateEditorMcpAppMeta,
   },
-  async ({ workspace_path, surface, host, port, sample_id, parent_gate_id, x, y, max_events, compensation_id, width, height }) =>
+  async ({ workspace_path, surface, host, port, sample_id, parent_gate_id, x, y, max_events, compensation_id, session_id, reuse_session, width, height }) =>
     toolContent(async () => {
       const selection = await resolveGateEditorSelection({
         workspacePath: workspace_path,
@@ -1560,6 +1607,8 @@ server.registerTool(
           maxEvents: selection.maxEvents,
           compensationId: selection.compensationId,
           selection,
+          sessionId: session_id,
+          reuseSession: reuse_session ?? true,
           width,
           height,
         });

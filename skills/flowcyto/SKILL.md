@@ -31,11 +31,11 @@ FlowJo. The current export path writes reference-only `.wsp` files for polygon,
 rectangle, and range gates. Do not claim portable bundles, compensated FCS
 export, or full FlowJo transform compatibility unless those tools are added.
 
-Do not stop after `open_fcs` when the user asked to gate, draw, edit, or inspect
-the main population. Follow the returned `nextAction` immediately so the compact
-gate editor opens and the workspace has a live, user-visible gate-writing
-surface. In fresh CLI agents this defaults to `open_gate_editor` with
-`surface="native_window"`; in MCP Apps hosts use `surface="mcp_app"`.
+Do not stop after `open_fcs` when the user asked to draw, edit, or manually
+review a gate. Follow the returned `nextAction` so the compact gate editor opens
+and the workspace has a live, user-visible gate-writing surface. In fresh CLI
+agents this defaults to `open_gate_editor` with `surface="native_window"`; in
+MCP Apps hosts use `surface="mcp_app"`.
 
 Use `render_plot` for agent-readable plot data such as FSC/SSC, marker plots,
 or comparing channels. Use `render_plot_image` when the user asks to show,
@@ -44,12 +44,19 @@ render MCP image content, use the `render_plot_image` file output path under
 `.datalox/cache/plots/`. Use `get_plot_context` for the active compact editor
 view.
 
+Use render tools for agent inspection. Use `open_gate_editor` only when the user
+needs to visually review or manually adjust a gate. Keep one native editor per
+workspace by default: reuse the current session unless the user explicitly asks
+for multiple windows.
+
 Host surface choice:
 
 - In MCP Apps hosts, use `surface="mcp_app"` and let the embedded gate editor
   call widget-accessible tools when the host supports `openai/widgetAccessible`.
 - In CLI, VS Code, or hosts without embedded MCP app support, use
   `surface="native_window"` for manual gating when a native window is available.
+  Let the default `reuse_session=true` update the same workspace editor instead
+  of opening extra windows.
 - For render-only automation or hosts that cannot show a UI, use `surface="none"`
   and call `render_plot_image` for a deterministic SVG file.
 
@@ -234,8 +241,7 @@ npx -y -p @datalox/flowcyto-mcp@alpha flowcyto validate flowcyto.workspace.json
 
 Do not create a separate gate writer script for the normal agent path.
 
-Do not make `AGENTS.md` required for product correctness. It is optional
-convenience guidance and may be customized or ignored by the user.
+Do not make `AGENTS.md` required for product correctness. It is optional convenience guidance and may be customized or ignored by the user.
 
 Do not tell the user to install FlowJo for the MCP workflow unless they
 explicitly need FlowJo-specific export/import behavior outside Flowcyto.

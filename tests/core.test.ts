@@ -4786,9 +4786,15 @@ describe("flowcyto MCP", () => {
       ]);
       const openTool = tools.tools.find((tool) => tool.name === "open_gate_editor") as {
         _meta?: Record<string, unknown>;
+        description?: string;
+        inputSchema?: unknown;
       } | undefined;
+      const openSchema = JSON.stringify(openTool?.inputSchema ?? {});
       expect(openTool?._meta?.["openai/outputTemplate"]).toBe("ui://flowcyto/gate-editor-v1.html");
       expect((openTool?._meta?.ui as { resourceUri?: string } | undefined)?.resourceUri).toBe("ui://flowcyto/gate-editor-v1.html");
+      expect(openTool?.description).toContain("reuse_session=false");
+      expect(openSchema).toContain("session_id");
+      expect(openSchema).toContain("reuse_session");
       for (const name of ["get_plot_context", "get_workspace_revision", "upsert_gate", "upsert_gates", "delete_gate"]) {
         const tool = tools.tools.find((entry) => entry.name === name) as { _meta?: Record<string, unknown> } | undefined;
         expect(tool?._meta?.["openai/widgetAccessible"], name).toBe(true);
