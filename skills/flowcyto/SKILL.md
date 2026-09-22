@@ -84,7 +84,7 @@ Annexin V / 7-AAD, or similar apoptosis quadrant analysis. Pass explicit
 `annexin_channel` and `death_channel`; do not infer the assay from filenames
 alone. Prefer a non-debris singlet parent population, not a live-cell parent
 gate, because apoptotic/dead events are the measured biology. The tool returns
-four proposed quadrant gates and an `upsert_gates` next action; do not write
+one coupled quadrant gate with four named populations and an `upsert_gate` next action; do not write
 those gates unless the user asks you to apply them.
 
 ### Multi-sample apoptosis workflow
@@ -106,7 +106,7 @@ Phase 1 - propose all gates, no writes yet:
 
 3. Call `suggest_apoptosis_quadrants` with
    `threshold_method="negative_control_percentile"` and the user-identified
-   negative control. Show the four proposed quadrant thresholds and the
+   negative control. Show the proposed coupled thresholds and the four
    preliminary percentage breakdown on the reference sample. Use the singlet
    gate as the parent; do not use a live/dead exclusion parent for apoptosis.
 
@@ -116,10 +116,12 @@ Phase 1 - propose all gates, no writes yet:
 
 Phase 2 - write and propagate after a single approval:
 
-5. Write all gates to the reference sample with one `upsert_gates` call.
+5. Write the reviewed hierarchy in one revision-safe action. Use `upsert_gates`
+   for multiple proposed gates or the suggestion's `upsert_gate` next action
+   when only the coupled quadrant gate remains to be written.
 
 6. Use `propagate_gates` to copy the full hierarchy, including main cell,
-   singlet, and all four quadrant gates, to every other treatment sample.
+   singlet, and the quadrant gate, to every other treatment sample.
    Always include parent gates when propagating children.
 
 7. Call `get_population_table` with `column_key="name_path"` and

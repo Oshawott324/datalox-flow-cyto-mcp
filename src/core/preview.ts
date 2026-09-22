@@ -11,8 +11,8 @@ import {
   type EventPreview,
   type FlowcytoWorkspace,
   type PreviewFormat,
-  type WorkspaceGate,
 } from "./types.js";
+import { resolveParentGateChain } from "./gate-model.js";
 import { readWorkspace, resolveSamplePath, resolveWorkspaceRoot } from "./workspace.js";
 
 const PREVIEW_CACHE_VERSION = 3;
@@ -257,32 +257,6 @@ function resolveCompensation(workspace: FlowcytoWorkspace, input: { sampleId: st
   return matrix;
 }
 
-function parentGateChain(workspace: FlowcytoWorkspace, input: { sampleId: string; parent: string }): WorkspaceGate[] {
-  if (input.parent === "root") return [];
-  const byId = new Map(workspace.gates.map((gate) => [gate.id, gate]));
-  const chain: WorkspaceGate[] = [];
-  const seen = new Set<string>();
-  let cursor = input.parent;
-  while (cursor !== "root") {
-    if (seen.has(cursor)) {
-      throw new FlowcytoError("parent_ancestry_broken", `Parent gate ancestry contains a cycle at ${cursor}.`, "/parent_gate_id");
-    }
-    seen.add(cursor);
-    const gate = byId.get(cursor);
-    if (!gate) throw new FlowcytoError("unknown_parent_gate", `Parent gate ${cursor} is not present.`, "/parent_gate_id");
-    if (gate.sample !== input.sampleId) {
-      throw new FlowcytoError(
-        "parent_ancestry_broken",
-        `Parent gate ${cursor} belongs to sample ${gate.sample}, not ${input.sampleId}.`,
-        "/parent_gate_id",
-      );
-    }
-    chain.push(gate);
-    cursor = gate.parent;
-  }
-  return chain.reverse();
-}
-
 function deserializeWorkerError(error: WorkerResponse["error"]): FlowcytoError {
   if (!error) return new FlowcytoError("preview_worker_failed", "Preview worker failed without a structured error.", "/");
   return new FlowcytoError(error.code, error.message, error.path);
@@ -349,7 +323,7 @@ export async function getEventPreview(params: GetEventPreviewInput): Promise<Eve
   const binHeight = normalizePositiveInteger(params.binHeight, DEFAULT_BIN_HEIGHT, "/bin_height");
   const format = normalizeFormat(params.format);
   const parent = params.parent ?? "root";
-  const chain = parentGateChain(workspace, { sampleId: params.sampleId, parent });
+  const chain = resolveParentGateChain(workspace, { sampleId: params.sampleId, parent });
   const samplePath = resolveSamplePath(params.workspacePath, sample.path);
   const compensation = resolveCompensation(workspace, { sampleId: params.sampleId, compensationId: params.compensationId });
   const key = await previewCacheKey({

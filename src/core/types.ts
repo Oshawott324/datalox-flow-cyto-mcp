@@ -93,7 +93,37 @@ export type RangeGate = GateBase & {
   max: number;
 };
 
-export type WorkspaceGate = PolygonGate | RectGate | RangeGate;
+export type QuadrantSign = "-" | "+";
+
+export type QuadrantPopulation = {
+  id: string;
+  name?: string;
+  x: QuadrantSign;
+  y: QuadrantSign;
+};
+
+export type QuadrantGate = GateBase & {
+  type: "quadrant";
+  x: string;
+  y: string;
+  xThreshold: number;
+  yThreshold: number;
+  quadrants: QuadrantPopulation[];
+};
+
+export type QuadrantRegionGate = GateBase & {
+  type: "quadrant_region";
+  quadrantGateId: string;
+  x: string;
+  y: string;
+  xThreshold: number;
+  yThreshold: number;
+  xSign: QuadrantSign;
+  ySign: QuadrantSign;
+};
+
+export type WorkspaceGate = PolygonGate | RectGate | RangeGate | QuadrantGate;
+export type EvaluableGate = PolygonGate | RectGate | RangeGate | QuadrantRegionGate;
 
 export type FlowcytoWorkspace = {
   version: 1;

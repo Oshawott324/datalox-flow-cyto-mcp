@@ -12,12 +12,14 @@ import {
   transformPoint,
   upsertGate,
   upsertGates,
+  upsertView,
   validateWorkspace,
   watchWorkspaceFile,
   type AxisScale,
   type EventPreview,
   type PreviewFormat,
   type FlowcytoWorkspace,
+  type FlowcytoView,
   type PlotBounds,
   type SampleMetadata,
   type WorkspaceGate,
@@ -29,6 +31,7 @@ export type GateEditorServerOptions = {
   host?: string;
   port?: number;
   sampleId?: string;
+  parent?: string;
   x?: string;
   y?: string;
   maxEvents?: number;
@@ -133,6 +136,7 @@ function mcpAppPreviewHtml(options: GateEditorServerOptions): string {
   const config = {
     workspacePath: options.workspacePath,
     sampleId: options.sampleId,
+    parent: options.parent,
     x: options.x,
     y: options.y,
     maxEvents: options.maxEvents,
@@ -173,7 +177,7 @@ function mcpAppPreviewHtml(options: GateEditorServerOptions): string {
         if (name === "get_plot_context" || name === "get_gate_editor_state") {
           const params = new URLSearchParams();
           const sampleId = value("sample_id", ${scriptJson(options.sampleId)});
-          const parent = value("parent_gate_id", "root");
+          const parent = value("parent_gate_id", ${scriptJson(options.parent ?? "root")});
           const x = value("x", ${scriptJson(options.x)});
           const y = value("y", ${scriptJson(options.y)});
           const maxEvents = value("max_events", ${scriptJson(options.maxEvents)});
@@ -217,6 +221,13 @@ function mcpAppPreviewHtml(options: GateEditorServerOptions): string {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ gateId: args.gate_id, expectedRevision: args.expected_revision })
+          });
+        }
+        if (name === "upsert_view") {
+          return jsonFetch("/api/views/upsert", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ view: args.view, expectedRevision: args.expected_revision })
           });
         }
         throw new Error("Unsupported preview MCP tool: " + name);
@@ -521,7 +532,7 @@ export async function getRenderablePlotContext(options: PlotContextOptions): Pro
     },
     gates,
     gateSchema: {
-      preferredTypes: ["polygon", "rect", "range"],
+      preferredTypes: ["polygon", "rect", "range", "quadrant"],
       requiredRevisionField: "expected_revision",
     },
     expected_revision: workspace.revision,
@@ -553,7 +564,7 @@ async function statePayload(options: GateEditorServerOptions, url: URL): Promise
   return getPlotContext({
     workspacePath: options.workspacePath,
     sampleId: stringParam(url, "sample_id") ?? options.sampleId,
-    parent: stringParam(url, "parent"),
+    parent: stringParam(url, "parent") ?? options.parent,
     x: stringParam(url, "x") ?? options.x,
     y: stringParam(url, "y") ?? options.y,
     maxEvents: numberParam(url, "max_events") ?? options.maxEvents,
@@ -649,6 +660,16 @@ async function handleJsonRoute(
     const result = await deleteGate({
       workspacePath: options.workspacePath,
       gateId: requiredString(body.gateId, "/gateId", "gateId"),
+      expectedRevision: requiredRevision(body.expectedRevision),
+    });
+    jsonResponse(response, result.ok ? 200 : 409, result);
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/views/upsert") {
+    const body = await readJsonBody(request);
+    const result = await upsertView({
+      workspacePath: options.workspacePath,
+      view: body.view as FlowcytoView,
       expectedRevision: requiredRevision(body.expectedRevision),
     });
     jsonResponse(response, result.ok ? 200 : 409, result);

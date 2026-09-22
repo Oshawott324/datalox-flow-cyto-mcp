@@ -188,25 +188,68 @@ function parseRangeGate(node: XmlNode, base: ImportedGateBase, resolveChannel: C
   return { ...base, type: "range", x, min: convertCoordinate(x, min, gateName), max: convertCoordinate(x, max, gateName) };
 }
 
-function parseGateWrapper(wrapper: XmlNode, sampleId: string, parentId: string, warnings: string[], resolveChannel: ChannelResolver, convertCoordinate: CoordinateConverter): WorkspaceGate | null {
+function parseQuadrantGate(node: XmlNode, base: ImportedGateBase, resolveChannel: ChannelResolver, convertCoordinate: CoordinateConverter): WorkspaceGate | null {
+  const dividers = arrayOf(node.divider).map(asRecord).filter((entry): entry is XmlNode => entry !== null);
+  if (dividers.length !== 2) return null;
+  const parsedDividers = dividers.map((divider) => {
+    const id = stringAttr(divider, "id");
+    const channel = parameterName(divider, resolveChannel);
+    const values = arrayOf(divider.value).map((value) => Number(value)).filter(Number.isFinite);
+    if (!id || !channel || values.length !== 1) return null;
+    return { id, channel, threshold: values[0] as number };
+  });
+  const xDivider = parsedDividers[0];
+  const yDivider = parsedDividers[1];
+  if (!xDivider || !yDivider) return null;
+  const quadrants = arrayOf(node.Quadrant).map(asRecord).map((quadrant) => {
+    const id = stringAttr(quadrant, "id");
+    const positions = arrayOf(quadrant?.position).map(asRecord).filter((entry): entry is XmlNode => entry !== null);
+    const positionByDivider = new Map(positions.map((position) => [stringAttr(position, "divider_ref"), numberAttr(position, "location")]));
+    const xLocation = positionByDivider.get(xDivider.id);
+    const yLocation = positionByDivider.get(yDivider.id);
+    if (!id || xLocation === undefined || yLocation === undefined) return null;
+    return {
+      id: sanitizeId(id, "quadrant_population"),
+      name: id,
+      x: xLocation >= xDivider.threshold ? "+" as const : "-" as const,
+      y: yLocation >= yDivider.threshold ? "+" as const : "-" as const,
+    };
+  }).filter((quadrant): quadrant is NonNullable<typeof quadrant> => quadrant !== null);
+  if (quadrants.length !== 4) return null;
+  const gateName = base.name ?? base.id;
+  return {
+    ...base,
+    type: "quadrant",
+    x: xDivider.channel,
+    y: yDivider.channel,
+    xThreshold: convertCoordinate(xDivider.channel, xDivider.threshold, gateName),
+    yThreshold: convertCoordinate(yDivider.channel, yDivider.threshold, gateName),
+    quadrants,
+  };
+}
+
+function parseGateWrapper(wrapper: XmlNode, sampleId: string, parentId: string, knownPopulationIds: Set<string>, warnings: string[], resolveChannel: ChannelResolver, convertCoordinate: CoordinateConverter): WorkspaceGate | null {
   const flowJoGate = asRecord(wrapper.Gate);
   const geometryParent = flowJoGate ?? wrapper;
   const polygon = asRecord(geometryParent.PolygonGate);
   const rectangle = asRecord(geometryParent.RectangleGate);
   const range = asRecord(geometryParent.RangeGate) ?? asRecord(geometryParent.IntervalGate);
-  const unsupported = ["EllipsoidGate", "QuadrantGate", "BooleanGate"].find((key) => geometryParent[key] !== undefined);
-  const gateNode = polygon ?? rectangle ?? range;
+  const quadrant = asRecord(geometryParent.QuadrantGate);
+  const unsupported = ["EllipsoidGate", "BooleanGate"].find((key) => geometryParent[key] !== undefined);
+  const gateNode = polygon ?? rectangle ?? range ?? quadrant;
   const name = stringAttr(wrapper, "name") ?? stringAttr(gateNode, "name");
   const id = stringAttr(gateNode, "id") ?? stringAttr(flowJoGate, "id") ?? stringAttr(wrapper, "id") ?? sanitizeId(name ?? "gate", "gate");
+  const explicitParent = stringAttr(gateNode, "parent_id") || stringAttr(flowJoGate, "parent_id") || stringAttr(wrapper, "parent_id");
   const base = {
     id: sanitizeId(id, "flowjo_gate"),
     name,
     sample: sampleId,
-    parent: parentId,
+    parent: explicitParent && knownPopulationIds.has(explicitParent) ? explicitParent : parentId,
   };
   if (polygon) return parsePolygonGate(polygon, base, resolveChannel, convertCoordinate);
   if (rectangle) return parseRectangleGate(rectangle, base, resolveChannel, convertCoordinate);
   if (range) return parseRangeGate(range, base, resolveChannel, convertCoordinate);
+  if (quadrant) return parseQuadrantGate(quadrant, base, resolveChannel, convertCoordinate);
   if (unsupported) warnings.push(`${unsupported} skipped for gate ${name ?? id}.`);
   return null;
 }
@@ -220,9 +263,130 @@ function collectGateWrappers(subpopulations: unknown): XmlNode[] {
   ].map(asRecord).filter((entry): entry is XmlNode => entry !== null);
 }
 
+type FlowJoQuadrantRectangle = {
+  wrapper: XmlNode;
+  id: string;
+  name: string;
+  parent: string;
+  x: string;
+  y: string;
+  xThreshold: number;
+  yThreshold: number;
+  xSign: "-" | "+";
+  ySign: "-" | "+";
+};
+
+function flowJoQuadrantRectangle(
+  wrapper: XmlNode,
+  sampleId: string,
+  parentId: string,
+  knownPopulationIds: Set<string>,
+  resolveChannel: ChannelResolver,
+  convertCoordinate: CoordinateConverter,
+): FlowJoQuadrantRectangle | null {
+  void sampleId;
+  const flowJoGate = asRecord(wrapper.Gate);
+  const rectangle = asRecord((flowJoGate ?? wrapper).RectangleGate);
+  if (!rectangle) return null;
+  const dimensions = arrayOf(rectangle.dimension).map(asRecord).filter((entry): entry is XmlNode => entry !== null);
+  if (dimensions.length !== 2) return null;
+  const [xDimension, yDimension] = dimensions;
+  if (!xDimension || !yDimension) return null;
+  const x = parameterName(xDimension, resolveChannel);
+  const y = parameterName(yDimension, resolveChannel);
+  const xMin = numberAttr(xDimension, "min");
+  const xMax = numberAttr(xDimension, "max");
+  const yMin = numberAttr(yDimension, "min");
+  const yMax = numberAttr(yDimension, "max");
+  if (!x || !y || (xMin === undefined) === (xMax === undefined) || (yMin === undefined) === (yMax === undefined)) return null;
+  const rawId = stringAttr(flowJoGate, "id") ?? stringAttr(wrapper, "id");
+  const name = stringAttr(wrapper, "name");
+  if (!rawId || !name) return null;
+  const explicitParent = stringAttr(flowJoGate, "parent_id") || stringAttr(wrapper, "parent_id");
+  const parent = explicitParent && knownPopulationIds.has(explicitParent) ? explicitParent : parentId;
+  return {
+    wrapper,
+    id: sanitizeId(rawId, "flowjo_quadrant_population"),
+    name,
+    parent,
+    x,
+    y,
+    xThreshold: convertCoordinate(x, xMin ?? xMax as number, name),
+    yThreshold: convertCoordinate(y, yMin ?? yMax as number, name),
+    xSign: xMin === undefined ? "-" : "+",
+    ySign: yMin === undefined ? "-" : "+",
+  };
+}
+
+function nativeQuadrantGroups(
+  wrappers: XmlNode[],
+  sampleId: string,
+  parentId: string,
+  knownPopulationIds: Set<string>,
+  resolveChannel: ChannelResolver,
+  convertCoordinate: CoordinateConverter,
+): Map<XmlNode, FlowJoQuadrantRectangle[]> {
+  const candidates = wrappers.map((wrapper) => flowJoQuadrantRectangle(
+    wrapper,
+    sampleId,
+    parentId,
+    knownPopulationIds,
+    resolveChannel,
+    convertCoordinate,
+  )).filter((entry): entry is FlowJoQuadrantRectangle => entry !== null);
+  const bySignature = new Map<string, FlowJoQuadrantRectangle[]>();
+  for (const candidate of candidates) {
+    const signature = [candidate.parent, candidate.x, candidate.y, candidate.xThreshold, candidate.yThreshold].join("\0");
+    bySignature.set(signature, [...(bySignature.get(signature) ?? []), candidate]);
+  }
+  const result = new Map<XmlNode, FlowJoQuadrantRectangle[]>();
+  for (const group of bySignature.values()) {
+    const signs = new Set(group.map((entry) => `${entry.xSign}${entry.ySign}`));
+    if (group.length !== 4 || signs.size !== 4 || !["--", "+-", "++", "-+"].every((sign) => signs.has(sign))) continue;
+    for (const entry of group) result.set(entry.wrapper, group);
+  }
+  return result;
+}
+
 function appendNestedGates(wrappers: XmlNode[], sampleId: string, parentId: string, gates: WorkspaceGate[], warnings: string[], resolveChannel: ChannelResolver, convertCoordinate: CoordinateConverter): void {
+  const knownPopulationIds = new Set(gates.flatMap((entry) => [
+    entry.id,
+    ...(entry.type === "quadrant" ? entry.quadrants.map((population) => population.id) : []),
+  ]));
+  const quadrantGroups = nativeQuadrantGroups(wrappers, sampleId, parentId, knownPopulationIds, resolveChannel, convertCoordinate);
+  const importedQuadrants = new Set<FlowJoQuadrantRectangle[]>();
   for (const wrapper of wrappers) {
-    const gate = parseGateWrapper(wrapper, sampleId, parentId, warnings, resolveChannel, convertCoordinate);
+    const quadrantGroup = quadrantGroups.get(wrapper);
+    if (quadrantGroup) {
+      if (importedQuadrants.has(quadrantGroup)) continue;
+      importedQuadrants.add(quadrantGroup);
+      const first = quadrantGroup[0];
+      if (!first) continue;
+      const ordered = ["--", "+-", "++", "-+"].map((sign) => quadrantGroup.find((entry) => `${entry.xSign}${entry.ySign}` === sign));
+      if (ordered.some((entry) => !entry)) continue;
+      gates.push({
+        id: sanitizeId(`${first.id}_quadrant`, "flowjo_quadrant"),
+        name: "Quadrant",
+        sample: sampleId,
+        parent: first.parent,
+        type: "quadrant",
+        x: first.x,
+        y: first.y,
+        xThreshold: first.xThreshold,
+        yThreshold: first.yThreshold,
+        quadrants: ordered.map((entry) => ({
+          id: entry!.id,
+          name: entry!.name,
+          x: entry!.xSign,
+          y: entry!.ySign,
+        })),
+      });
+      for (const entry of quadrantGroup) {
+        appendNestedGates(collectGateWrappers(entry.wrapper.Subpopulations), sampleId, entry.id, gates, warnings, resolveChannel, convertCoordinate);
+      }
+      continue;
+    }
+    const gate = parseGateWrapper(wrapper, sampleId, parentId, knownPopulationIds, warnings, resolveChannel, convertCoordinate);
     const nextParent = gate?.id ?? parentId;
     if (gate) gates.push(gate);
     appendNestedGates(collectGateWrappers(wrapper.Subpopulations), sampleId, nextParent, gates, warnings, resolveChannel, convertCoordinate);

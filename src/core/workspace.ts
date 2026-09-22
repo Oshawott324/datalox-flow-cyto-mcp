@@ -13,6 +13,7 @@ import {
   type CompensationStatus,
   FlowcytoError,
   type FlowcytoSample,
+  type FlowcytoView,
   type FlowcytoWorkspace,
   type SampleParameter,
   type SampleMetadata,
@@ -507,7 +508,7 @@ function validateShape(workspace: unknown): ValidationError[] {
 function validateGateShape(gate: unknown, index: number): WorkspaceGate | null {
   if (!isRecord(gate)) return null;
   const type = gate.type;
-  if (type !== "polygon" && type !== "rect" && type !== "range") return null;
+  if (type !== "polygon" && type !== "rect" && type !== "range" && type !== "quadrant") return null;
   return gate as WorkspaceGate;
 }
 
@@ -550,6 +551,8 @@ export async function validateWorkspaceObject(workspacePath: string, workspace: 
   const compensations = Array.isArray(candidate.compensations) ? candidate.compensations : [];
   const sampleIds = new Set<string>();
   const gateIds = new Set<string>();
+  const parentPopulationIds = new Set<string>();
+  const quadrantPopulationParent = new Map<string, string>();
   const compensationIds = new Set<string>();
 
   samples.forEach((sample, index) => {
@@ -581,14 +584,32 @@ export async function validateWorkspaceObject(workspacePath: string, workspace: 
   gates.forEach((rawGate, index) => {
     const gate = validateGateShape(rawGate, index);
     if (!gate) {
-      errors.push(validationError(`/gates/${index}`, "invalid_gate", "Gate must be a polygon, rect, or range gate object."));
+      errors.push(validationError(`/gates/${index}`, "invalid_gate", "Gate must be a polygon, rect, range, or quadrant gate object."));
       return;
     }
     if (!asString(gate.id)) errors.push(validationError(`/gates/${index}/id`, "missing_gate_id", "Gate id is required."));
     if (gateIds.has(gate.id)) errors.push(validationError(`/gates/${index}/id`, "duplicate_gate_id", `Duplicate gate id ${gate.id}.`));
     gateIds.add(gate.id);
+    if (gate.type !== "quadrant") parentPopulationIds.add(gate.id);
+    if (gate.type === "quadrant" && Array.isArray(gate.quadrants)) {
+      gate.quadrants.forEach((population, populationIndex) => {
+        const id = isRecord(population) ? asString(population.id) : null;
+        if (!id) return;
+        if (gateIds.has(id)) {
+          errors.push(validationError(`/gates/${index}/quadrants/${populationIndex}/id`, "duplicate_gate_id", `Duplicate gate or quadrant population id ${id}.`));
+        }
+        gateIds.add(id);
+        parentPopulationIds.add(id);
+        quadrantPopulationParent.set(id, gate.parent);
+      });
+    }
+  });
+
+  gates.forEach((rawGate, index) => {
+    const gate = validateGateShape(rawGate, index);
+    if (!gate) return;
     if (!sampleIds.has(gate.sample)) errors.push(validationError(`/gates/${index}/sample`, "unknown_sample", `Sample ${gate.sample} is not present.`));
-    if (gate.parent !== "root" && !gates.some((entry) => isRecord(entry) && entry.id === gate.parent)) {
+    if (gate.parent !== "root" && !parentPopulationIds.has(gate.parent)) {
       errors.push(validationError(`/gates/${index}/parent`, "unknown_parent_gate", `Parent gate ${gate.parent} is not present.`));
     }
 
@@ -617,6 +638,40 @@ export async function validateWorkspaceObject(workspacePath: string, workspace: 
         errors.push(validationError(`/gates/${index}/max`, "invalid_range_bounds", "Range gate max must be greater than min."));
       }
     }
+    if (gate.type === "quadrant") {
+      if (!parameters.has(gate.x)) errors.push(validationError(`/gates/${index}/x`, "unknown_parameter", `Parameter ${gate.x} is not present in sample ${gate.sample}.`));
+      if (!parameters.has(gate.y)) errors.push(validationError(`/gates/${index}/y`, "unknown_parameter", `Parameter ${gate.y} is not present in sample ${gate.sample}.`));
+      if (!isFiniteNumber(gate.xThreshold)) {
+        errors.push(validationError(`/gates/${index}/xThreshold`, "invalid_quadrant_threshold", "Quadrant xThreshold must be finite."));
+      }
+      if (!isFiniteNumber(gate.yThreshold)) {
+        errors.push(validationError(`/gates/${index}/yThreshold`, "invalid_quadrant_threshold", "Quadrant yThreshold must be finite."));
+      }
+      if (!Array.isArray(gate.quadrants) || gate.quadrants.length !== 4) {
+        errors.push(validationError(`/gates/${index}/quadrants`, "invalid_quadrant_populations", "Quadrant gates require exactly four populations."));
+      } else {
+        const positions = new Set<string>();
+        gate.quadrants.forEach((population, populationIndex) => {
+          if (!isRecord(population)) {
+            errors.push(validationError(`/gates/${index}/quadrants/${populationIndex}`, "invalid_quadrant_population", "Quadrant population must be an object."));
+            return;
+          }
+          const id = asString(population.id);
+          if (!id) errors.push(validationError(`/gates/${index}/quadrants/${populationIndex}/id`, "missing_gate_id", "Quadrant population id is required."));
+          const xSign = asString(population.x);
+          const ySign = asString(population.y);
+          if ((xSign !== "-" && xSign !== "+") || (ySign !== "-" && ySign !== "+")) {
+            errors.push(validationError(`/gates/${index}/quadrants/${populationIndex}`, "invalid_quadrant_position", "Quadrant population x and y must each be '-' or '+'."));
+            return;
+          }
+          const position = `${xSign}${ySign}`;
+          if (positions.has(position)) {
+            errors.push(validationError(`/gates/${index}/quadrants/${populationIndex}`, "duplicate_quadrant_position", `Quadrant position ${position} is duplicated.`));
+          }
+          positions.add(position);
+        });
+      }
+    }
   });
 
   if (candidate.compensations !== undefined && !Array.isArray(candidate.compensations)) {
@@ -634,6 +689,7 @@ export async function validateWorkspaceObject(workspacePath: string, workspace: 
     }
   });
 
+  const storedGateById = new Map(gates.filter(isRecord).map((gate) => [asString(gate.id), gate]));
   for (const gate of gates) {
     if (!isRecord(gate) || !asString(gate.id)) continue;
     const seen = new Set<string>();
@@ -647,8 +703,14 @@ export async function validateWorkspaceObject(workspacePath: string, workspace: 
         break;
       }
       seen.add(cursorId);
-      const next = gates.find((entry) => isRecord(entry) && entry.id === cursorParent);
-      cursor = isRecord(next) ? next : undefined;
+      const next = storedGateById.get(cursorParent);
+      if (next && next.type === "quadrant") break;
+      if (next) {
+        cursor = next;
+        continue;
+      }
+      const quadrantParent = quadrantPopulationParent.get(cursorParent);
+      cursor = quadrantParent ? { id: cursorParent, parent: quadrantParent } : undefined;
     }
   }
 
@@ -661,7 +723,7 @@ export async function validateWorkspaceObject(workspacePath: string, workspace: 
     if (!sample || !sampleIds.has(sample)) errors.push(validationError(`/views/${index}/sample`, "unknown_sample", `Sample ${String(view.sample)} is not present.`));
     const parent = asString(view.parent);
     if (!parent) errors.push(validationError(`/views/${index}/parent`, "missing_parent", "View parent is required."));
-    if (parent && parent !== "root" && !gateIds.has(parent)) {
+    if (parent && parent !== "root" && !parentPopulationIds.has(parent)) {
       errors.push(validationError(`/views/${index}/parent`, "unknown_parent_gate", `Parent gate ${parent} is not present.`));
     }
     const metadata = sample ? metadataBySample.get(sample) : undefined;
@@ -670,6 +732,10 @@ export async function validateWorkspaceObject(workspacePath: string, workspace: 
     const y = asString(view.y);
     if (!x || !parameters.has(x)) errors.push(validationError(`/views/${index}/x`, "unknown_parameter", `Parameter ${String(view.x)} is not present.`));
     if (!y || !parameters.has(y)) errors.push(validationError(`/views/${index}/y`, "unknown_parameter", `Parameter ${String(view.y)} is not present.`));
+    const scale = isRecord(view.scale) ? view.scale : null;
+    const validScales = new Set(["linear", "log", "arcsinh", "biex"]);
+    if (!scale || !validScales.has(String(scale.x))) errors.push(validationError(`/views/${index}/scale/x`, "invalid_scale", `Scale ${String(scale?.x)} is not supported.`));
+    if (!scale || !validScales.has(String(scale.y))) errors.push(validationError(`/views/${index}/scale/y`, "invalid_scale", `Scale ${String(scale?.y)} is not supported.`));
   });
 
   return { ok: errors.length === 0, errors };
@@ -753,6 +819,21 @@ export async function writeWorkspace(params: {
   if (!validation.ok) return validation;
   await atomicWriteJson(params.workspacePath, next);
   return { ok: true, errors: [], revision: next.revision };
+}
+
+export async function upsertView(params: {
+  workspacePath: string;
+  view: FlowcytoView;
+  expectedRevision: number;
+}): Promise<ValidationResult & { revision?: number; view?: FlowcytoView }> {
+  const workspace = await readWorkspace(params.workspacePath);
+  const views = workspace.views.filter((view) => view.id !== params.view.id);
+  const result = await writeWorkspace({
+    workspacePath: params.workspacePath,
+    expectedRevision: params.expectedRevision,
+    workspace: { ...workspace, views: [...views, params.view] },
+  });
+  return result.ok ? { ...result, view: params.view } : result;
 }
 
 export async function upsertCompensationMatrix(params: {

@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 
 import { alignCompensationMatrix, applyCompensationColumns } from "./compensation.js";
-import { FlowcytoError, type CompensationMatrix, type FcsColumns, type PreviewColumns, type SampleMetadata, type SampleParameter, type WorkspaceGate } from "./types.js";
+import { FlowcytoError, type CompensationMatrix, type EvaluableGate, type FcsColumns, type PreviewColumns, type SampleMetadata, type SampleParameter, type WorkspaceGate } from "./types.js";
 
 type TextDict = Record<string, string>;
 
@@ -259,12 +259,12 @@ export function pointInRect(px: number, py: number, gate: Extract<WorkspaceGate,
   return px >= gate.xMin && px <= gate.xMax && py >= gate.yMin && py <= gate.yMax;
 }
 
-function gateParameterNames(gate: WorkspaceGate): string[] {
+function gateParameterNames(gate: EvaluableGate): string[] {
   if (gate.type === "range") return [gate.x];
   return [gate.x, gate.y];
 }
 
-function gateContainsEvent(gate: WorkspaceGate, values: Map<string, number>): boolean {
+function gateContainsEvent(gate: EvaluableGate, values: Map<string, number>): boolean {
   if (gate.type === "range") {
     const value = values.get(gate.x);
     return value !== undefined && value >= gate.min && value <= gate.max;
@@ -273,6 +273,11 @@ function gateContainsEvent(gate: WorkspaceGate, values: Map<string, number>): bo
   const y = values.get(gate.y);
   if (x === undefined || y === undefined) return false;
   if (gate.type === "rect") return pointInRect(x, y, gate);
+  if (gate.type === "quadrant_region") {
+    const xMatches = gate.xSign === "+" ? x >= gate.xThreshold : x < gate.xThreshold;
+    const yMatches = gate.ySign === "+" ? y >= gate.yThreshold : y < gate.yThreshold;
+    return xMatches && yMatches;
+  }
   return pointInPolygon(x, y, gate.vertices);
 }
 
@@ -360,7 +365,7 @@ export async function readPreviewColumns(input: {
   x: string;
   y: string;
   maxEvents?: number;
-  parentGateChain?: WorkspaceGate[];
+  parentGateChain?: EvaluableGate[];
   compensation?: CompensationMatrix;
 }): Promise<PreviewColumns> {
   const { path, x, y, maxEvents, parentGateChain = [], compensation } = input;

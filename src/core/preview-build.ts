@@ -4,7 +4,7 @@ import {
   type CompensationMatrix,
   type EventPreview,
   type PreviewFormat,
-  type WorkspaceGate,
+  type EvaluableGate,
 } from "./types.js";
 
 export const POINT_PREVIEW_MAX_EVENTS = 50_000;
@@ -21,7 +21,7 @@ export type BuildEventPreviewInput = {
   format: PreviewFormat;
   binWidth?: number;
   binHeight?: number;
-  parentGateChain?: WorkspaceGate[];
+  parentGateChain?: EvaluableGate[];
   compensation?: CompensationMatrix;
 };
 

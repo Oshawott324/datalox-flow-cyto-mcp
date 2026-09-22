@@ -341,9 +341,8 @@ not the downloaded FCS binaries.
 - Not a validated clinical, diagnostic, or regulated analysis product.
 - Not a full FlowJo replacement.
 - FCS parser coverage is fixture-driven but still incomplete.
-- No Gating-ML import/export yet.
-- FlowJo workspace import/export is limited to polygon, rectangle, and range
-  gates in reference-only `.wsp` files.
+- FlowJo workspace import/export supports polygon, rectangle, range, and
+  Gating-ML quadrant gates, but remains limited to reference-only `.wsp` files.
 - No public-network HTTP security posture yet.
 - Real named MCP-host validation is still required before public beta.
 - The UI is optimized for manual gating and visual review, not full batch

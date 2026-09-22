@@ -100,7 +100,15 @@ export async function getPopulationTable(input: {
   }
 
   // Column display names
-  const gateNameByWorkspace = new Map(workspace.gates.map((g) => [g.id, g.name || g.id]));
+  const gateNameByWorkspace = new Map<string, string>();
+  for (const gate of workspace.gates) {
+    gateNameByWorkspace.set(gate.id, gate.name || gate.id);
+    if (gate.type === "quadrant") {
+      for (const population of gate.quadrants) {
+        gateNameByWorkspace.set(population.id, population.name || population.id);
+      }
+    }
+  }
   const columns: PopulationTableColumn[] = columnKeys.map((key) => {
     if (mode === "gate_id") {
       return { key, name: gateNameByWorkspace.get(key) ?? key };

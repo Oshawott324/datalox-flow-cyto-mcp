@@ -955,6 +955,25 @@ describe("flowcyto core", () => {
     expect(xml).toContain("<gating:PolygonGate");
     expect(xml).toContain("<gating:RectangleGate");
     expect(xml).toContain("<gating:RangeGate");
+    expect(xml).toContain('<DataSet uri="file:');
+    expect(xml).toContain('sampleID="1"');
+    expect(xml).toContain('<Population name="Lymphocytes"');
+    expect(xml).toMatch(/<Population name="Lymphocytes"[\s\S]*?<Gate gating:id="lymph"[\s\S]*?<gating:PolygonGate/);
+    // Gate dimensions must use fcs-dimension (raw $PnN lookup), not data-type:parameter,
+    // because compensation-ref="uncompensated" requires direct FCS channel references.
+    // (data-type:parameter is still correct inside <transforms:*> entries.)
+    expect(xml).toContain("data-type:fcs-dimension");
+    expect(xml).not.toMatch(/<gating:dimension[\s\S]*?<data-type:parameter/);
+    // Gate IDs must live only on <Gate>, not repeated on geometry elements.
+    // Real FlowJo WSP format puts gating:id only on the wrapper, not on PolygonGate etc.
+    expect(xml).not.toMatch(/<gating:PolygonGate[^>]*gating:id/);
+    expect(xml).not.toMatch(/<gating:RectangleGate[^>]*gating:id/);
+    expect(xml).not.toMatch(/<gating:RangeGate[^>]*gating:id/);
+    expect(xml).not.toMatch(/<gating:QuadrantGate[^>]*gating:id/);
+    // compensation-ref must not appear on <gating:dimension> — it causes FlowJo to look up
+    // scatter channels (FSC-A, SSC-A) in the transform matrix list where they don't exist.
+    expect(xml).not.toMatch(/<gating:dimension[^>]*gating:compensation-ref/);
+    expect(exported.warnings.some((warning) => warning.includes("LayoutEditor"))).toBe(true);
 
     const roundTripDir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-roundtrip-"));
     const imported = await importFlowJoWorkspace({
@@ -997,7 +1016,7 @@ describe("flowcyto core", () => {
     }
   });
 
-  it("exportFlowJoWorkspace writes FlowJo biex transform metadata and display-space coordinates", async () => {
+  it("exportFlowJoWorkspace writes FlowJo biex metadata with raw gate coordinates", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-export-biex-"));
     const samplePath = path.join(dir, "sample.fcs");
     await writeTinyIntegerFcs({
@@ -1042,6 +1061,7 @@ describe("flowcyto core", () => {
     const xml = await fs.readFile(outputPath, "utf8");
     expect(xml).toContain("<transforms:biex");
     expect(xml).toContain('transforms:width="-10"');
+    expect(xml).toMatch(/<gating:dimension gating:min="300" gating:max="900">/);
 
     const importedDir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-export-biex-roundtrip-"));
     const imported = await importFlowJoWorkspace({
@@ -1084,7 +1104,7 @@ describe("flowcyto core", () => {
     })).rejects.toMatchObject({ code: "ambiguous_flowjo_transform" });
   });
 
-  it("exportFlowJoWorkspace rejects a gate coordinate that is non-finite under log transform", async () => {
+  it("exportFlowJoWorkspace keeps zero gate coordinates raw under log display transforms", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-export-nonfinite-"));
     const samplePath = path.join(dir, "sample.fcs");
     await writeTinyIntegerFcs({
@@ -1103,10 +1123,13 @@ describe("flowcyto core", () => {
       ...ws,
       views: [{ id: "v1", sample: "sample", parent: "root", x: "FITC-A", y: "FSC-A", scale: { x: "log", y: "linear" } }],
     }, null, 2)}\n`, "utf8");
-    await expect(exportFlowJoWorkspace({
+    await exportFlowJoWorkspace({
       workspacePath,
       outputPath: path.join(dir, "out.wsp"),
-    })).rejects.toMatchObject({ code: "invalid_flowjo_export_coordinate" });
+    });
+    const xml = await fs.readFile(path.join(dir, "out.wsp"), "utf8");
+    expect(xml).toContain("<transforms:log");
+    expect(xml).toMatch(/<gating:dimension gating:min="0" gating:max="500">/);
   });
 
   it("exportFlowJoWorkspace rejects an unknown compensationId", async () => {
@@ -2224,6 +2247,220 @@ describe("flowcyto core", () => {
     expect((await readWorkspace(workspacePath)).gates).toEqual([]);
   });
 
+  it("exportFlowJoWorkspace writes a coupled quadrant as four FlowJo rectangle populations", async () => {
+    const { dir, workspacePath } = await makeWorkspace();
+    await upsertGate({
+      workspacePath,
+      expectedRevision: 0,
+      gate: {
+        id: "quad",
+        name: "Apoptosis",
+        sample: "sample_001",
+        parent: "root",
+        type: "quadrant",
+        x: "FSC-A",
+        y: "SSC-A",
+        xThreshold: 50,
+        yThreshold: 60,
+        quadrants: [
+          { id: "quad_nn", name: "Viable", x: "-", y: "-" },
+          { id: "quad_pn", name: "Early", x: "+", y: "-" },
+          { id: "quad_pp", name: "Late", x: "+", y: "+" },
+          { id: "quad_np", name: "Damaged", x: "-", y: "+" },
+        ],
+      },
+    });
+    const outputPath = path.join(path.dirname(workspacePath), "quadrant.wsp");
+    await exportFlowJoWorkspace({ workspacePath, outputPath });
+    const xml = await fs.readFile(outputPath, "utf8");
+    expect(xml).not.toContain("gating:QuadrantGate");
+    expect(xml).not.toContain('<Population name="Apoptosis"');
+    expect(xml).toContain('<Population name="Viable"');
+    expect(xml).toContain('<Population name="Early"');
+    expect(xml).toContain('<Population name="Late"');
+    expect(xml).toContain('<Population name="Damaged"');
+    expect(xml).toMatch(/<Gate gating:id="quad_nn">[\s\S]*?<gating:dimension gating:max="50">[\s\S]*?name="FSC-A"[\s\S]*?<gating:dimension gating:max="60">[\s\S]*?name="SSC-A"/);
+    expect(xml).toMatch(/<Gate gating:id="quad_pp">[\s\S]*?<gating:dimension gating:min="50">[\s\S]*?name="FSC-A"[\s\S]*?<gating:dimension gating:min="60">[\s\S]*?name="SSC-A"/);
+
+    const importDir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-quadrant-roundtrip-"));
+    const imported = await importFlowJoWorkspace({
+      wspPath: outputPath,
+      workspaceDir: importDir,
+      samplePathMap: { "sample.fcs": path.join(dir, "data", "sample.fcs") },
+    });
+    const importedWorkspace = await readWorkspace(imported.workspacePath);
+    const importedQuadrant = importedWorkspace.gates.find((gate) => gate.type === "quadrant");
+    expect(importedQuadrant).toMatchObject({ type: "quadrant", xThreshold: 50, yThreshold: 60 });
+    if (importedQuadrant?.type !== "quadrant") throw new Error("Expected imported FlowJo rectangle quartet to become a quadrant.");
+    expect(importedQuadrant.quadrants.map((population) => `${population.x}${population.y}`)).toEqual(["--", "+-", "++", "-+"]);
+    expect(importedQuadrant.quadrants.map((population) => population.name)).toEqual(["Viable", "Early", "Late", "Damaged"]);
+  });
+
+  it("exports marker-named gate axes as raw FCS detector dimensions", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-detector-dimensions-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["BL1-A", "BL3-A"],
+      markers: ["Annexin X-FITC-A", "PI-PerCP-Cy5.5-A"],
+      rows: [[10, 10], [80, 10], [80, 90], [10, 90]],
+      extraKeywords: { "$FIL": "sample.with.dot.fcs", "$CYT": "Test Cytometer" },
+    });
+    const { workspacePath } = await initWorkspace({ rootDir: dir, samplePath, sampleId: "sample" });
+    await upsertGate({
+      workspacePath,
+      expectedRevision: 0,
+      gate: {
+        id: "apoptosis",
+        name: "Apoptosis",
+        sample: "sample",
+        parent: "root",
+        type: "quadrant",
+        x: "Annexin X-FITC-A",
+        y: "PI-PerCP-Cy5.5-A",
+        xThreshold: 50,
+        yThreshold: 50,
+        quadrants: [
+          { id: "viable", name: "Viable", x: "-", y: "-" },
+          { id: "early", name: "Early", x: "+", y: "-" },
+          { id: "late", name: "Late", x: "+", y: "+" },
+          { id: "damaged", name: "Damaged", x: "-", y: "+" },
+        ],
+      },
+    });
+    const outputPath = path.join(dir, "detectors.wsp");
+    await exportFlowJoWorkspace({ workspacePath, outputPath });
+    const xml = await fs.readFile(outputPath, "utf8");
+    expect(xml).toContain('<data-type:fcs-dimension data-type:name="BL1-A"');
+    expect(xml).toContain('<data-type:fcs-dimension data-type:name="BL3-A"');
+    expect(xml).not.toContain('<data-type:fcs-dimension data-type:name="Annexin X-FITC-A"');
+    expect(xml).not.toContain('<data-type:fcs-dimension data-type:name="PI-PerCP-Cy5.5-A"');
+    expect(xml).toContain('<DataSet uri="file:/');
+    expect(xml).not.toContain('keyword="$CYT"');
+    expect(xml).toContain('<Keyword name="$FIL" value="sample.with.dot.fcs"');
+    expect(xml).toContain('<Keyword name="$P1N" value="BL1-A"');
+    expect(xml).toContain('<Keyword name="$P2N" value="BL3-A"');
+    expect(xml).toContain('<SampleNode name="sample.with.dot.fcs"');
+    expect(xml).toContain('<Transformations>');
+    expect(xml).toMatch(/<transforms:linear[^>]*>[\s\S]*?<data-type:parameter data-type:name="BL1-A"/);
+    expect(xml).not.toContain('gating:parent_id=""');
+
+    const importDir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-detector-roundtrip-"));
+    const imported = await importFlowJoWorkspace({
+      wspPath: outputPath,
+      workspaceDir: importDir,
+      samplePathMap: { "sample.fcs": samplePath },
+    });
+    const roundTrip = await readWorkspace(imported.workspacePath);
+    const quadrant = roundTrip.gates.find((gate) => gate.type === "quadrant");
+    expect(quadrant).toMatchObject({ x: "Annexin X-FITC-A", y: "PI-PerCP-Cy5.5-A" });
+  });
+
+  it("exportFlowJoWorkspace assigns distinct sequential sampleIDs for multi-sample workspaces", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-multisample-export-"));
+    const sampleAPath = path.join(dir, "sampleA.fcs");
+    const sampleBPath = path.join(dir, "sampleB.fcs");
+    for (const fcsPath of [sampleAPath, sampleBPath]) {
+      await writeTinyIntegerFcs({
+        fcsPath,
+        channels: ["FSC-A", "SSC-A"],
+        rows: [[100, 200], [150, 250]],
+      });
+    }
+    const { workspacePath, workspace } = await initWorkspace({ rootDir: dir, samplePath: sampleAPath, sampleId: "sampleA" });
+    await writeWorkspace({
+      workspacePath,
+      workspace: {
+        ...workspace,
+        samples: [...workspace.samples, { id: "sampleB", path: path.relative(path.dirname(workspacePath), sampleBPath) }],
+      },
+      expectedRevision: workspace.revision,
+    });
+    const current = await readWorkspace(workspacePath);
+    await upsertGates({
+      workspacePath,
+      expectedRevision: current.revision,
+      gates: [
+        { id: "gate_a", name: "Main A", sample: "sampleA", parent: "root", type: "rect", x: "FSC-A", y: "SSC-A", xMin: 50, xMax: 200, yMin: 50, yMax: 300 },
+        { id: "gate_b", name: "Main B", sample: "sampleB", parent: "root", type: "rect", x: "FSC-A", y: "SSC-A", xMin: 50, xMax: 200, yMin: 50, yMax: 300 },
+      ],
+    });
+    const outputPath = path.join(dir, "multi.wsp");
+    const exported = await exportFlowJoWorkspace({ workspacePath, outputPath });
+    expect(exported.samplesExported).toBe(2);
+    const xml = await fs.readFile(outputPath, "utf8");
+    expect(xml).toContain('sampleID="1"');
+    expect(xml).toContain('sampleID="2"');
+    // Both samples must have distinct DataSet entries; the second must not reuse "1"
+    const sampleIdMatches = [...xml.matchAll(/sampleID="(\d+)"/g)].map((match) => match[1]);
+    const uniqueIds = new Set(sampleIdMatches);
+    expect(uniqueIds.size).toBeGreaterThanOrEqual(2);
+    // Cytometers section must be present even when no non-linear views are defined
+    expect(xml).toContain("<Cytometers>");
+    expect(xml).toMatch(/<Cytometers>\s*<Cytometer name="Flowcyto" linearRescale="1"\s*\/>\s*<\/Cytometers>/);
+    expect(xml).toContain('<GroupNode name="All Samples"');
+    expect(xml).toContain('<Group name="All Samples"');
+    expect(xml).toMatch(/<SampleRefs>[\s\S]*?<SampleRef sampleID="1"\s*\/>[\s\S]*?<SampleRef sampleID="2"\s*\/>[\s\S]*?<\/SampleRefs>/);
+  });
+
+  it("exportFlowJoWorkspace nests child-of-quadrant-population gate in Subpopulations", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-quadrant-child-export-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["Annexin-A", "PI-A"],
+      rows: [[10, 10], [80, 10], [80, 90], [10, 90]],
+    });
+    const { workspacePath } = await initWorkspace({ rootDir: dir, samplePath, sampleId: "sample" });
+    await upsertGates({
+      workspacePath,
+      expectedRevision: 0,
+      gates: [
+        {
+          id: "apoptosis",
+          name: "Apoptosis",
+          sample: "sample",
+          parent: "root",
+          type: "quadrant",
+          x: "Annexin-A",
+          y: "PI-A",
+          xThreshold: 50,
+          yThreshold: 50,
+          quadrants: [
+            { id: "viable", name: "Viable", x: "-", y: "-" },
+            { id: "early", name: "Early", x: "+", y: "-" },
+            { id: "late", name: "Late", x: "+", y: "+" },
+            { id: "damaged", name: "Damaged", x: "-", y: "+" },
+          ],
+        },
+        // This gate's parent is a quadrant population id (not the quadrant gate itself)
+        { id: "late_bright", name: "Late Bright", sample: "sample", parent: "late", type: "range", x: "PI-A", min: 80, max: 100 },
+      ],
+    });
+    const outputPath = path.join(dir, "child.wsp");
+    await exportFlowJoWorkspace({ workspacePath, outputPath });
+    const xml = await fs.readFile(outputPath, "utf8");
+    // The Late Bright range gate must appear in the XML
+    expect(xml).toContain('<Population name="Late Bright"');
+    // It must be nested inside the matching FlowJo rectangle population.
+    expect(xml).toMatch(/<Population name="Late"[\s\S]*?<Gate gating:id="late"[\s\S]*?<gating:RectangleGate[\s\S]*?<Population name="Late Bright"[\s\S]*?<gating:RangeGate/);
+    // It must not appear before its quadrant population.
+    const apoptosisPos = xml.indexOf('<Population name="Late"');
+    const lateBrightPos = xml.indexOf('<Population name="Late Bright"');
+    expect(lateBrightPos).toBeGreaterThan(apoptosisPos);
+
+    // Round-trip: imported workspace must preserve the parent reference to the quadrant population
+    const importDir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-quadrant-child-roundtrip-"));
+    const imported = await importFlowJoWorkspace({
+      wspPath: outputPath,
+      workspaceDir: importDir,
+      samplePathMap: { "sample.fcs": samplePath },
+    });
+    const importedWorkspace = await readWorkspace(imported.workspacePath);
+    const lateBrightImported = importedWorkspace.gates.find((gate) => gate.id === "late_bright");
+    expect(lateBrightImported?.parent).toBe("late");
+  });
+
   it("returns exact population graph counts and percentages", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-popgraph-"));
     const samplePath = path.join(dir, "sample.fcs");
@@ -2546,8 +2783,14 @@ describe("flowcyto core", () => {
     expect(result.thresholds).toMatchObject({ annexin: 50, death: 50, source: "manual" });
     expect(result.diagnostics.confidence).toBe("manual_thresholds");
     expect(result.diagnostics.compensation.applied).toBe(false);
-    expect(result.gates).toHaveLength(4);
-    expect(result.gates.every((gate) => gate.type === "rect" && gate.parent === "root")).toBe(true);
+    expect(result.gate).toMatchObject({
+      type: "quadrant",
+      parent: "root",
+      xThreshold: 50,
+      yThreshold: 50,
+    });
+    expect(result.gate.quadrants).toHaveLength(4);
+    expect(new Set(result.gate.quadrants.map((population) => `${population.x}${population.y}`))).toEqual(new Set(["--", "+-", "++", "-+"]));
     expect(result.summary).toMatchObject({
       viable: { count: 1, percentOfParent: 25 },
       earlyApoptotic: { count: 1, percentOfParent: 25 },
@@ -2555,10 +2798,32 @@ describe("flowcyto core", () => {
       necroticOrMembraneDamaged: { count: 1, percentOfParent: 25 },
     });
     expect(result.nextAction).toMatchObject({
-      tool: "upsert_gates",
+      tool: "upsert_gate",
       arguments: { expected_revision: 0 },
     });
     expect((await readWorkspace(workspacePath)).gates).toEqual([]);
+
+    const written = await upsertGate({ workspacePath, gate: result.gate, expectedRevision: 0 });
+    expect(written.ok).toBe(true);
+    const graph = await getPopulationGraph({ workspacePath, sampleId: "sample" });
+    expect(Object.fromEntries(graph.root.children.map((node) => [node.gateId, node.count]))).toEqual(
+      Object.fromEntries(result.gate.quadrants.map((population) => [population.id, 1])),
+    );
+    const viablePreview = await getEventPreview({
+      workspacePath,
+      sampleId: "sample",
+      parent: result.gate.quadrants[0].id,
+      x: "Annexin-A",
+      y: "PI-A",
+    });
+    expect(viablePreview.filteredEvents).toBe(1);
+    const table = await getPopulationTable({
+      workspacePath,
+      sampleIds: ["sample"],
+      gateIds: result.gate.quadrants.map((population) => population.id),
+    });
+    expect(table.columns).toHaveLength(4);
+    expect(Object.values(table.rows[0]!.gates).map((cell) => cell?.count)).toEqual([1, 1, 1, 1]);
   });
 
   it("anchors apoptosis thresholds to a negative control percentile", async () => {
@@ -2787,6 +3052,184 @@ describe("flowcyto core", () => {
     expect(table.columns.map((column) => column.key)).toEqual(["Lymphocytes", "Lymphocytes / FITC+"]);
     expect(table.rows[1]?.gates["Lymphocytes / FITC+"]?.gateId).toBe("fitc_pos__B");
     expect(table.rows[2]?.gates["Lymphocytes / FITC+"]?.gateId).toBe("fitc_pos__C");
+  });
+
+  it("propagates quadrant population ids and downstream parent references", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-propagate-quadrant-"));
+    const sampleAPath = path.join(dir, "sampleA.fcs");
+    const sampleBPath = path.join(dir, "sampleB.fcs");
+    for (const fcsPath of [sampleAPath, sampleBPath]) {
+      await writeTinyIntegerFcs({
+        fcsPath,
+        channels: ["Annexin-A", "PI-A"],
+        rows: [[10, 10], [80, 10], [80, 90], [10, 90]],
+      });
+    }
+    const { workspacePath, workspace } = await initWorkspace({ rootDir: dir, samplePath: sampleAPath, sampleId: "A" });
+    await writeWorkspace({
+      workspacePath,
+      workspace: { ...workspace, samples: [...workspace.samples, { id: "B", path: path.relative(path.dirname(workspacePath), sampleBPath) }] },
+      expectedRevision: workspace.revision,
+    });
+    const current = await readWorkspace(workspacePath);
+    await upsertGates({
+      workspacePath,
+      expectedRevision: current.revision,
+      gates: [
+        {
+          id: "apoptosis",
+          name: "Apoptosis",
+          sample: "A",
+          parent: "root",
+          type: "quadrant",
+          x: "Annexin-A",
+          y: "PI-A",
+          xThreshold: 50,
+          yThreshold: 50,
+          quadrants: [
+            { id: "viable", name: "Viable", x: "-", y: "-" },
+            { id: "early", name: "Early", x: "+", y: "-" },
+            { id: "late", name: "Late", x: "+", y: "+" },
+            { id: "damaged", name: "Damaged", x: "-", y: "+" },
+          ],
+        },
+        { id: "late_high", name: "Late high", sample: "A", parent: "late", type: "range", x: "PI-A", min: 80, max: 100 },
+      ],
+    });
+    const before = await readWorkspace(workspacePath);
+    const result = await propagateGates({
+      workspacePath,
+      sourceGateIds: ["apoptosis", "late_high"],
+      targetSampleIds: ["B"],
+      expectedRevision: before.revision,
+    });
+    expect(result.ok).toBe(true);
+    const propagated = await readWorkspace(workspacePath);
+    const quadrant = propagated.gates.find((gate) => gate.id === "apoptosis__B");
+    if (quadrant?.type !== "quadrant") throw new Error("Expected propagated quadrant gate.");
+    expect(quadrant.quadrants.map((population) => population.id)).toEqual(["viable__B", "early__B", "late__B", "damaged__B"]);
+    expect(propagated.gates.find((gate) => gate.id === "late_high__B")?.parent).toBe("late__B");
+    const graph = await getPopulationGraph({ workspacePath, sampleId: "B" });
+    const late = graph.root.children.find((node) => node.gateId === "late__B");
+    expect(late?.count).toBe(1);
+    expect(late?.children[0]).toMatchObject({ gateId: "late_high__B", count: 1 });
+  });
+
+  it("classifies quadrant events using compensated channel values", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-quadrant-comp-eval-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    // Annexin-A spills into PI-A at 90% (extreme spillover so the effect is unambiguous).
+    // Event [60, 55]: raw PI=55 > threshold 50 (PI+), compensated PI = 55 - 0.9×60 = 1 < 50 (PI-).
+    // Without compensation the event falls in the late-apoptotic quadrant (Annexin+/PI+).
+    // With compensation it moves to early-apoptotic (Annexin+/PI-).
+    //
+    // The $SPILLOVER matrix is stored in transposed orientation relative to the standard
+    // FCS column-vector convention: the code uses observed × S⁻¹ (row-vector form), so
+    // S[row=Annexin][col=PI]=0.9 encodes "PI is removed from the Annexin channel during
+    // compensation". To encode "Annexin spills into PI", the 0.9 goes at S[row=Annexin][col=PI]
+    // in the transposed-storage sense, i.e., the matrix string is "1,0.9,0,1" not "1,0,0.9,1".
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["Annexin-A", "PI-A"],
+      rows: [
+        [60, 55], // moves quadrants after compensation
+        [10, 10], // viable in both cases
+      ],
+      extraKeywords: { $SPILLOVER: "2,Annexin-A,PI-A,1,0.9,0,1" },
+    });
+    const opened = await openFcsArtifact({ path: samplePath, workspaceDir: dir, sampleId: "sample" });
+    const workspace = await readWorkspace(opened.workspacePath);
+    const compId = workspace.compensations?.[0]?.id;
+    expect(compId).toBeDefined();
+
+    await upsertGate({
+      workspacePath: opened.workspacePath,
+      gate: {
+        id: "apoptosis",
+        name: "Apoptosis",
+        sample: "sample",
+        parent: "root",
+        type: "quadrant",
+        x: "Annexin-A",
+        y: "PI-A",
+        xThreshold: 50,
+        yThreshold: 50,
+        quadrants: [
+          { id: "viable", name: "Viable", x: "-", y: "-" },
+          { id: "early", name: "Early", x: "+", y: "-" },
+          { id: "late", name: "Late", x: "+", y: "+" },
+          { id: "damaged", name: "Damaged", x: "-", y: "+" },
+        ],
+      },
+      expectedRevision: workspace.revision,
+    });
+
+    const toCount = (graph: Awaited<ReturnType<typeof getPopulationGraph>>) =>
+      Object.fromEntries(graph.root.children.map((n) => [n.gateId, n.count]));
+
+    const raw = toCount(await getPopulationGraph({ workspacePath: opened.workspacePath, sampleId: "sample" }));
+    expect(raw["late"]).toBe(1);  // [60,55] is Annexin+/PI+ without compensation
+    expect(raw["early"]).toBe(0);
+
+    const comp = toCount(await getPopulationGraph({ workspacePath: opened.workspacePath, sampleId: "sample", compensationId: compId }));
+    expect(comp["early"]).toBe(1); // [60,55] moves to Annexin+/PI- after compensation
+    expect(comp["late"]).toBe(0);
+    expect(comp["viable"]).toBe(1); // [10,10] is unaffected
+  });
+
+  it("aligns propagated quadrant populations by name path in population table", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-table-namepath-"));
+    const sampleAPath = path.join(dir, "sampleA.fcs");
+    const sampleBPath = path.join(dir, "sampleB.fcs");
+    // Sample A: 2 viable, 1 early apoptotic.  Sample B: 1 viable, 2 early apoptotic.
+    await writeTinyIntegerFcs({ fcsPath: sampleAPath, channels: ["Annexin-A", "PI-A"], rows: [[10, 10], [10, 10], [80, 10]] });
+    await writeTinyIntegerFcs({ fcsPath: sampleBPath, channels: ["Annexin-A", "PI-A"], rows: [[10, 10], [80, 10], [80, 10]] });
+
+    const { workspacePath, workspace } = await initWorkspace({ rootDir: dir, samplePath: sampleAPath, sampleId: "A" });
+    await writeWorkspace({
+      workspacePath,
+      workspace: { ...workspace, samples: [...workspace.samples, { id: "B", path: path.relative(path.dirname(workspacePath), sampleBPath) }] },
+      expectedRevision: workspace.revision,
+    });
+    const current = await readWorkspace(workspacePath);
+    await upsertGates({
+      workspacePath,
+      expectedRevision: current.revision,
+      gates: [{
+        id: "apoptosis",
+        name: "Apoptosis",
+        sample: "A",
+        parent: "root",
+        type: "quadrant",
+        x: "Annexin-A",
+        y: "PI-A",
+        xThreshold: 50,
+        yThreshold: 50,
+        quadrants: [
+          { id: "viable", name: "Viable", x: "-", y: "-" },
+          { id: "early", name: "Early Apoptotic", x: "+", y: "-" },
+          { id: "late", name: "Late Apoptotic", x: "+", y: "+" },
+          { id: "damaged", name: "Damaged", x: "-", y: "+" },
+        ],
+      }],
+    });
+    const before = await readWorkspace(workspacePath);
+    await propagateGates({ workspacePath, sourceGateIds: ["apoptosis"], targetSampleIds: ["B"], expectedRevision: before.revision });
+
+    const table = await getPopulationTable({ workspacePath, sampleIds: ["A", "B"], columnKey: "name_path" });
+
+    const viableCol = table.columns.find((col) => col.name === "Viable");
+    const earlyCol = table.columns.find((col) => col.name === "Early Apoptotic");
+    expect(viableCol).toBeDefined();
+    expect(earlyCol).toBeDefined();
+
+    const rowA = table.rows.find((r) => r.sampleId === "A");
+    expect(rowA?.gates[viableCol!.key]?.count).toBe(2);
+    expect(rowA?.gates[earlyCol!.key]?.count).toBe(1);
+
+    const rowB = table.rows.find((r) => r.sampleId === "B");
+    expect(rowB?.gates[viableCol!.key]?.count).toBe(1);
+    expect(rowB?.gates[earlyCol!.key]?.count).toBe(2);
   });
 
   it("requires selected parent gates when propagating child gates", async () => {
@@ -3743,7 +4186,8 @@ describe("flowcyto gate editor server", () => {
       await page.locator("#xScale").selectOption("arcsinh");
       await page.locator("#yScale").selectOption("arcsinh");
       await expect.poll(() => page.locator("#plot").getAttribute("aria-label")).toContain("arcsinh");
-      expect(await readWorkspace(workspacePath).then((workspace) => workspace.revision)).toBe(0);
+      await expect.poll(() => readWorkspace(workspacePath).then((workspace) => workspace.revision)).toBe(2);
+      expect((await readWorkspace(workspacePath)).views[0]?.scale).toEqual({ x: "arcsinh", y: "arcsinh" });
       const scaledStats = await canvasStats();
       expect(scaledStats.hash).not.toBe(defaultStats.hash);
       await page.locator("#xScale").selectOption("log");
@@ -3754,6 +4198,9 @@ describe("flowcyto gate editor server", () => {
       await expect.poll(() => page.locator("#plot").getAttribute("aria-label")).toContain("biex");
       await page.locator("#xScale").selectOption("linear");
       await page.locator("#yScale").selectOption("linear");
+      await expect.poll(() => readWorkspace(workspacePath).then((workspace) => workspace.revision)).toBe(8);
+      await expect.poll(() => page.locator("#status").textContent()).toContain("Saved view revision 8");
+      const revisionAfterScaleChanges = (await readWorkspace(workspacePath)).revision;
       await page.locator("#xSelect").selectOption("HDR-T");
       await page.locator("#ySelect").selectOption("FSC-A");
       await expect.poll(() => page.locator("#plot").getAttribute("aria-label")).toContain("HDR-T");
@@ -3763,14 +4210,14 @@ describe("flowcyto gate editor server", () => {
       if (!box) throw new Error("Plot canvas has no bounding box.");
       await page.mouse.click(box.x + 20, box.y + 20);
       await page.locator("#saveGate").click();
-      await expect.poll(() => readWorkspace(workspacePath).then((workspace) => workspace.revision)).toBe(0);
+      await expect.poll(() => readWorkspace(workspacePath).then((workspace) => workspace.revision)).toBe(revisionAfterScaleChanges);
       await page.mouse.move(box.x + 220, box.y + 180);
       await page.mouse.down();
       await page.mouse.move(box.x + 420, box.y + 340);
       await page.mouse.up();
       await page.locator("#gateName").fill("Root Gate");
       await page.locator("#saveGate").click();
-      await expect.poll(() => readWorkspace(workspacePath).then((workspace) => workspace.revision)).toBe(1);
+      await expect.poll(() => readWorkspace(workspacePath).then((workspace) => workspace.revision)).toBe(revisionAfterScaleChanges + 1);
       const rootWorkspace = await readWorkspace(workspacePath);
       const rootGate = rootWorkspace.gates[0];
       await expect.poll(() => page.locator("#gateTray").evaluate((element) => element.hasAttribute("hidden"))).toBe(false);
@@ -3785,7 +4232,7 @@ describe("flowcyto gate editor server", () => {
       expect(rootGate.xMax).toBeGreaterThan(rootGate.xMin);
 
       await page.locator("#parentSelect").selectOption(rootGate.id);
-      await expect.poll(() => page.locator("#status").textContent()).toContain("Ready revision 1");
+      await expect.poll(() => page.locator("#status").textContent()).toContain(`Ready revision ${revisionAfterScaleChanges + 1}`);
       await page.locator("#rectMode").click();
       await page.mouse.move(box.x + 260, box.y + 220);
       await page.mouse.down();
@@ -3793,8 +4240,8 @@ describe("flowcyto gate editor server", () => {
       await page.mouse.up();
       await page.locator("#gateName").fill("Child Gate");
       await page.locator("#saveGate").click();
-      await expect.poll(() => readWorkspace(workspacePath).then((workspace) => workspace.revision)).toBe(2);
-      await expect.poll(() => page.locator("#status").textContent()).toContain("revision 2");
+      await expect.poll(() => readWorkspace(workspacePath).then((workspace) => workspace.revision)).toBe(revisionAfterScaleChanges + 2);
+      await expect.poll(() => page.locator("#status").textContent()).toContain(`revision ${revisionAfterScaleChanges + 2}`);
       const childWorkspace = await readWorkspace(workspacePath);
       expect(childWorkspace.gates).toHaveLength(2);
       const childGate = childWorkspace.gates[1];
@@ -3820,7 +4267,7 @@ describe("flowcyto gate editor server", () => {
 
       await upsertGate({
         workspacePath,
-        expectedRevision: 2,
+        expectedRevision: revisionAfterScaleChanges + 2,
         gate: {
           id: "root_fsc_ssc_gate",
           name: "Root FSC SSC Gate",
@@ -3835,7 +4282,7 @@ describe("flowcyto gate editor server", () => {
           yMax: 50,
         },
       });
-      await expect.poll(() => page.locator("#status").textContent()).toContain("Workspace revision 3");
+      await expect.poll(() => page.locator("#status").textContent()).toContain(`Workspace revision ${revisionAfterScaleChanges + 3}`);
       await page.locator("#parentSelect").selectOption("root");
       await expect.poll(() => page.locator("#xSelect").inputValue()).toBe("FSC-A");
       expect(await page.locator("#ySelect").inputValue()).toBe("SSC-A");
@@ -3855,7 +4302,7 @@ describe("flowcyto gate editor server", () => {
       await page.locator("#parentSelect").selectOption("root");
       await upsertGate({
         workspacePath,
-        expectedRevision: 3,
+        expectedRevision: revisionAfterScaleChanges + 3,
         gate: {
           id: "agent_gate",
           name: "<img src=x onerror=alert(1)>Agent Gate",
@@ -3870,7 +4317,7 @@ describe("flowcyto gate editor server", () => {
           yMax: 50,
         },
       });
-      await expect.poll(() => page.locator("#status").textContent()).toContain("Workspace revision 4");
+      await expect.poll(() => page.locator("#status").textContent()).toContain(`Workspace revision ${revisionAfterScaleChanges + 4}`);
       await expect.poll(() => page.locator("#gateList").textContent()).toContain("<img src=x onerror=alert(1)>Agent Gate");
       await expect.poll(() => page.locator("#gateList img").count()).toBe(0);
     } finally {
@@ -3880,7 +4327,7 @@ describe("flowcyto gate editor server", () => {
     }
   }, 15000);
 
-  it("supports square gates, drag-translate, and quadrant batch creation", async () => {
+  it("supports square gates, drag-translate, and coupled quadrant creation", async () => {
     const { workspacePath } = await makeWorkspace();
     const server = await startGateEditorServer({ workspacePath, port: 0, maxEvents: 128 });
     const browser = await chromium.launch({ headless: true });
@@ -3995,12 +4442,126 @@ describe("flowcyto gate editor server", () => {
       await page.locator("#quadrantMode").click();
       await page.locator("#gateName").fill("Apoptosis");
       await page.mouse.click(box.x + 320, box.y + 260);
+      expect((await readWorkspace(workspacePath)).revision).toBe(3);
+      await page.locator("#saveGate").click();
       await expect.poll(() => readWorkspace(workspacePath).then((workspace) => workspace.revision)).toBe(4);
       const quadrantWorkspace = await readWorkspace(workspacePath);
-      const quadrants = quadrantWorkspace.gates.filter((gate) => gate.name?.startsWith("Apoptosis Q"));
-      expect(quadrants.map((gate) => gate.name).sort()).toEqual(["Apoptosis Q1", "Apoptosis Q2", "Apoptosis Q3", "Apoptosis Q4"]);
-      expect(quadrants.every((gate) => gate.type === "rect" && gate.parent === "root")).toBe(true);
+      const quadrant = quadrantWorkspace.gates.find((gate) => gate.name === "Apoptosis");
+      expect(quadrant?.type).toBe("quadrant");
+      if (quadrant?.type !== "quadrant") throw new Error("Expected coupled quadrant gate.");
+      expect(quadrant.parent).toBe("root");
+      expect(quadrant.quadrants.map((population) => population.name).sort()).toEqual(["Apoptosis Q1", "Apoptosis Q2", "Apoptosis Q3", "Apoptosis Q4"]);
       expect((await validateWorkspace(workspacePath)).ok).toBe(true);
+    } finally {
+      await page.close();
+      await browser.close();
+      await server.close();
+    }
+  }, 15000);
+
+  it("keeps the logical parent population and fixed axes when switching samples", async () => {
+    const { workspacePath } = await makeWorkspace();
+    const workspace = await readWorkspace(workspacePath);
+    const samplePath = workspace.samples[0]?.path;
+    if (!samplePath) throw new Error("Expected fixture sample path.");
+    const written = await writeWorkspace({
+      workspacePath,
+      expectedRevision: workspace.revision,
+      workspace: {
+        ...workspace,
+        samples: [...workspace.samples, { id: "sample_002", path: samplePath }],
+        gates: [
+          {
+            id: "main_a",
+            name: "Main cells",
+            sample: "sample_001",
+            parent: "root",
+            type: "rect",
+            x: "FSC-A",
+            y: "SSC-A",
+            xMin: 0,
+            xMax: 200,
+            yMin: 0,
+            yMax: 200,
+          },
+          {
+            id: "singlets_a",
+            name: "Singlets",
+            sample: "sample_001",
+            parent: "main_a",
+            type: "rect",
+            x: "HDR-T",
+            y: "FSC-A",
+            xMin: 0,
+            xMax: 200,
+            yMin: 0,
+            yMax: 200,
+          },
+          {
+            id: "main_b",
+            name: "Main cells",
+            sample: "sample_002",
+            parent: "root",
+            type: "rect",
+            x: "FSC-A",
+            y: "SSC-A",
+            xMin: 0,
+            xMax: 200,
+            yMin: 0,
+            yMax: 200,
+          },
+          {
+            id: "singlets_b",
+            name: "Singlets",
+            sample: "sample_002",
+            parent: "main_b",
+            type: "rect",
+            x: "HDR-T",
+            y: "FSC-A",
+            xMin: 0,
+            xMax: 200,
+            yMin: 0,
+            yMax: 200,
+          },
+        ],
+      },
+    });
+    expect(written.ok).toBe(true);
+    const server = await startGateEditorServer({
+      workspacePath,
+      port: 0,
+      maxEvents: 128,
+      sampleId: "sample_001",
+      parent: "main_a",
+      x: "HDR-T",
+      y: "FSC-A",
+    });
+    const initialState = await fetch(`${server.url}api/state`).then((response) => response.json()) as { parent?: string; x?: string; y?: string };
+    expect(initialState).toMatchObject({ parent: "main_a", x: "HDR-T", y: "FSC-A" });
+    const browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 900, height: 680 } });
+    try {
+      await page.goto(server.url);
+      await expect.poll(() => page.locator("#parentSelect").inputValue()).toBe("main_a");
+      await expect.poll(() => page.locator("#xSelect").inputValue()).toBe("HDR-T");
+      expect(await page.locator("#ySelect").inputValue()).toBe("FSC-A");
+
+      await page.locator("#sampleSelect").selectOption("sample_002");
+
+      await expect.poll(() => page.locator("#parentSelect").inputValue()).toBe("main_b");
+      expect(await page.locator("#xSelect").inputValue()).toBe("HDR-T");
+      expect(await page.locator("#ySelect").inputValue()).toBe("FSC-A");
+
+      const beforeViewSave = (await readWorkspace(workspacePath)).revision;
+      await page.locator("#xScale").selectOption("biex");
+      await expect.poll(() => readWorkspace(workspacePath).then((value) => value.revision)).toBe(beforeViewSave + 1);
+      const savedView = (await readWorkspace(workspacePath)).views.find((view) => view.sample === "sample_002");
+      expect(savedView).toMatchObject({
+        parent: "main_b",
+        x: "HDR-T",
+        y: "FSC-A",
+        scale: { x: "biex", y: "linear" },
+      });
     } finally {
       await page.close();
       await browser.close();
@@ -4781,6 +5342,7 @@ describe("flowcyto MCP", () => {
         "upsert_compensation_matrix",
         "upsert_gate",
         "upsert_gates",
+        "upsert_view",
         "validate_workspace",
         "write_workspace",
       ]);
@@ -4813,6 +5375,7 @@ describe("flowcyto MCP", () => {
       expect(resource.contents[0]?.mimeType).toBe("text/html;profile=mcp-app");
       const resourceHtml = "text" in resource.contents[0] ? resource.contents[0].text : "";
       expect(resourceHtml).toContain("window.openai.callTool");
+      expect(resourceHtml).toContain("/api/gates/upsert-many");
       expect(resourceHtml).toContain("value !== undefined");
       expect(resourceHtml).toContain("<canvas id=\"plot\"");
 

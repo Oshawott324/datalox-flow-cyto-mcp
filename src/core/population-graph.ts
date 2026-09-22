@@ -2,7 +2,8 @@ import path from "node:path";
 
 import { alignCompensationMatrix, applyCompensationColumns } from "./compensation.js";
 import { pointInPolygon, pointInRect, readFcsColumns, readFcsMetadata } from "./fcs.js";
-import { FlowcytoError, type AppliedCompensation, type CompensationMatrix, type FlowcytoWorkspace, type WorkspaceGate } from "./types.js";
+import { quadrantRegionGate } from "./gate-model.js";
+import { FlowcytoError, type AppliedCompensation, type CompensationMatrix, type EvaluableGate, type FlowcytoWorkspace, type WorkspaceGate } from "./types.js";
 import { readWorkspace, resolveSamplePath } from "./workspace.js";
 
 export type PopulationGraphNode = {
@@ -30,7 +31,7 @@ function gateChannels(gate: WorkspaceGate): string[] {
   return [gate.x, gate.y];
 }
 
-function contains(gate: WorkspaceGate, values: Map<string, number>): boolean {
+function contains(gate: EvaluableGate, values: Map<string, number>): boolean {
   if (gate.type === "range") {
     const value = values.get(gate.x);
     return value !== undefined && value >= gate.min && value <= gate.max;
@@ -39,6 +40,11 @@ function contains(gate: WorkspaceGate, values: Map<string, number>): boolean {
   const y = values.get(gate.y);
   if (x === undefined || y === undefined) return false;
   if (gate.type === "rect") return pointInRect(x, y, gate);
+  if (gate.type === "quadrant_region") {
+    const xMatches = gate.xSign === "+" ? x >= gate.xThreshold : x < gate.xThreshold;
+    const yMatches = gate.ySign === "+" ? y >= gate.yThreshold : y < gate.yThreshold;
+    return xMatches && yMatches;
+  }
   return pointInPolygon(x, y, gate.vertices);
 }
 
@@ -110,7 +116,23 @@ export async function getPopulationGraph(input: {
   childrenByParent.forEach((children) => children.sort((left, right) => (left.name || left.id).localeCompare(right.name || right.id)));
 
   const build = (parentId: string, parentIndexes: number[], rootCount: number): PopulationGraphNode[] =>
-    (childrenByParent.get(parentId) ?? []).map((gate) => {
+    (childrenByParent.get(parentId) ?? []).flatMap((gate) => {
+      if (gate.type === "quadrant") {
+        return gate.quadrants.map((population) => {
+          const region = quadrantRegionGate({ gate, population });
+          const indexes = parentIndexes.filter((eventIndex) => contains(region, events[eventIndex] ?? new Map()));
+          return {
+            gateId: population.id,
+            name: population.name || population.id,
+            type: "quadrant" as const,
+            parent: parentId === "root" ? "root" : parentId,
+            count: indexes.length,
+            percentOfParent: pct(indexes.length, parentIndexes.length),
+            percentOfRoot: pct(indexes.length, rootCount),
+            children: build(population.id, indexes, rootCount),
+          };
+        });
+      }
       const indexes = parentIndexes.filter((eventIndex) => contains(gate, events[eventIndex] ?? new Map()));
       const node: PopulationGraphNode = {
         gateId: gate.id,
@@ -123,7 +145,7 @@ export async function getPopulationGraph(input: {
         children: [],
       };
       node.children = build(gate.id, indexes, rootCount);
-      return node;
+      return [node];
     });
 
   const root: PopulationGraphNode = {

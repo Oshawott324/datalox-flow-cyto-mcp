@@ -30,6 +30,18 @@ function propagatedGateId(sourceGateId: string, sampleId: string): string {
 function cloneGateForSample(gate: WorkspaceGate, sampleId: string, idMap: Map<string, string>): WorkspaceGate {
   const id = idMap.get(gate.id) ?? propagatedGateId(gate.id, sampleId);
   const parent = gate.parent === "root" ? "root" : idMap.get(gate.parent) ?? propagatedGateId(gate.parent, sampleId);
+  if (gate.type === "quadrant") {
+    return {
+      ...gate,
+      id,
+      sample: sampleId,
+      parent,
+      quadrants: gate.quadrants.map((population) => ({
+        ...population,
+        id: idMap.get(population.id) ?? propagatedGateId(population.id, sampleId),
+      })),
+    };
+  }
   return { ...gate, id, sample: sampleId, parent };
 }
 
@@ -106,6 +118,11 @@ export async function propagateGates(params: {
 
   const sourceGates = sourceGateIds.map((id) => gatesById.get(id) as WorkspaceGate);
   const selectedSourceIds = new Set(sourceGateIds);
+  for (const gate of sourceGates) {
+    if (gate.type === "quadrant") {
+      for (const population of gate.quadrants) selectedSourceIds.add(population.id);
+    }
+  }
   const sourceSamples = new Set(sourceGates.map((gate) => gate.sample));
   const sourceSamplesInTargets = targetSampleIds.filter((sampleId) => sourceSamples.has(sampleId));
   if (sourceSamplesInTargets.length > 0) {
@@ -129,7 +146,11 @@ export async function propagateGates(params: {
 
   const propagated: WorkspaceGate[] = [];
   for (const sampleId of targetSampleIds) {
-    const idMap = new Map(sourceGateIds.map((id) => [id, propagatedGateId(id, sampleId)]));
+    const sourcePopulationIds = sourceGates.flatMap((gate) => [
+      gate.id,
+      ...(gate.type === "quadrant" ? gate.quadrants.map((population) => population.id) : []),
+    ]);
+    const idMap = new Map(sourcePopulationIds.map((id) => [id, propagatedGateId(id, sampleId)]));
     for (const gate of sourceGates) propagated.push(cloneGateForSample(gate, sampleId, idMap));
   }
 

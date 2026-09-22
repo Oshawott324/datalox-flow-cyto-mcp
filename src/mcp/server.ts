@@ -39,9 +39,11 @@ import {
   upsertCompensationMatrix,
   upsertGate,
   upsertGates,
+  upsertView,
   validateWorkspace,
   writeWorkspace,
   type FlowcytoWorkspace,
+  type FlowcytoView,
   type WorkspaceGate,
 } from "../core/index.js";
 
@@ -494,6 +496,7 @@ async function nativeWindowGateEditorResult(
     host: params.host,
     port: params.port,
     sampleId: params.sampleId,
+    parent: params.parent,
     x: params.x,
     y: params.y,
     maxEvents: params.maxEvents,
@@ -731,7 +734,7 @@ server.registerTool(
 server.registerTool(
   "import_flowjo_workspace",
   {
-    description: "Import FlowJo .wsp gates into a canonical flowcyto.workspace.json. Pass sample_names or sample_ids for a single-sample import; omit them only for intentional batch import. Existing sample paths are preserved unless overwrite_samples=true. Requires explicit sample_path_map when FlowJo file URIs are not valid local FCS paths. Supports polygon, rectangle, and range gates in this initial import path.",
+    description: "Import FlowJo .wsp gates into a canonical flowcyto.workspace.json. Pass sample_names or sample_ids for a single-sample import; omit them only for intentional batch import. Existing sample paths are preserved unless overwrite_samples=true. Requires explicit sample_path_map when FlowJo file URIs are not valid local FCS paths. Supports polygon, rectangle, range, and Gating-ML quadrant gates.",
     inputSchema: {
       wsp_path: z.string(),
       workspace_dir: z.string(),
@@ -762,7 +765,7 @@ server.registerTool(
 server.registerTool(
   "export_flowjo_workspace",
   {
-    description: "Export a canonical flowcyto.workspace.json to a FlowJo .wsp file. Writes reference_only XML for polygon, rectangle, and range gates, including log/arcsinh/biex transform metadata derived from saved workspace views. Compensated FCS export and portable bundles are not implemented.",
+    description: "Export a canonical flowcyto.workspace.json to a FlowJo .wsp file. Writes reference_only XML for polygon, rectangle, range, and Gating-ML quadrant gates, including log/arcsinh/biex transform metadata derived from saved workspace views. Compensation matrices, FlowJo LayoutEditor layouts, compensated FCS export, and portable bundles are not implemented.",
     inputSchema: {
       workspace_path: z.string(),
       output_path: z.string(),
@@ -1307,7 +1310,7 @@ server.registerTool(
 server.registerTool(
   "suggest_apoptosis_quadrants",
   {
-    description: "Return four proposed Annexin/death-dye apoptosis quadrant gates and population percentages. This read-only tool does not write the workspace; pass result.nextAction.arguments to upsert_gates only after user confirmation.",
+    description: "Return one coupled Annexin/death-dye quadrant gate with four named populations and population percentages. This read-only tool does not write the workspace; pass result.nextAction.arguments to upsert_gate only after user confirmation.",
     inputSchema: {
       workspace_path: z.string(),
       sample_id: z.string(),
@@ -1450,6 +1453,26 @@ server.registerTool(
       nextAction: result.ok ? workspaceRevisionNextAction(workspace_path) : null,
     })),
   ),
+);
+
+server.registerTool(
+  "upsert_view",
+  {
+    description: "Save the active plot axes, parent population, and axis scales in the canonical workspace using a revision-safe write.",
+    inputSchema: {
+      workspace_path: z.string(),
+      view: JsonObject,
+      expected_revision: z.number().int(),
+    },
+    outputSchema: JsonResultSchema,
+    _meta: WidgetAccessibleToolMeta,
+  },
+  async ({ workspace_path, view, expected_revision }) => toolContent(() =>
+    upsertView({
+      workspacePath: workspace_path,
+      view: view as FlowcytoView,
+      expectedRevision: expected_revision,
+    })),
 );
 
 server.registerTool(

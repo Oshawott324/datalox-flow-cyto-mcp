@@ -335,7 +335,7 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       <select id="parentSelect" class="wide-select" aria-label="Parent population"></select>
       <button id="selectMode" data-mode="select" class="active" title="Select, drag handles, or drag empty plot space to pan" aria-label="Select">↖</button>
       <button id="rectMode" data-mode="rect" title="Drag a rectangle; hold Shift for a square, then Save" aria-label="Rectangle gate">▭</button>
-      <button id="quadrantMode" data-mode="quadrant" title="Click to create four quadrant gates" aria-label="Quadrant gate">⊞</button>
+      <button id="quadrantMode" data-mode="quadrant" title="Create a coupled quadrant gate" aria-label="Quadrant gate">⊞</button>
       <button id="polygonMode" data-mode="polygon" title="Click at least three vertices, then Save" aria-label="Polygon gate">△</button>
       <button id="resetView" title="Reset plot pan and zoom" aria-label="Reset view">↺</button>
       <button id="gateTrayToggle" title="Show gates" aria-label="Show gates" aria-expanded="false">☰</button>
@@ -531,11 +531,27 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
           expected_revision: body.expectedRevision
         });
       }
+      if (url.pathname === "/api/gates/upsert-many") {
+        const body = JSON.parse(options && options.body ? options.body : "{}");
+        return callFlowcytoTool("upsert_gates", {
+          workspace_path: workspacePath,
+          gates: Array.isArray(body.gates) ? body.gates : [],
+          expected_revision: body.expectedRevision
+        });
+      }
       if (url.pathname === "/api/gates/delete") {
         const body = JSON.parse(options && options.body ? options.body : "{}");
         return callFlowcytoTool("delete_gate", {
           workspace_path: workspacePath,
           gate_id: body.gateId,
+          expected_revision: body.expectedRevision
+        });
+      }
+      if (url.pathname === "/api/views/upsert") {
+        const body = JSON.parse(options && options.body ? options.body : "{}");
+        return callFlowcytoTool("upsert_view", {
+          workspace_path: workspacePath,
+          view: body.view,
           expected_revision: body.expectedRevision
         });
       }
@@ -572,8 +588,15 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       });
       function addChildren(parentId, depth) {
         (childrenByParent.get(parentId) || []).forEach((gate) => {
-          values.push({ id: gate.id, label: "\u00a0\u00a0\u00a0".repeat(depth) + gateLabel(gate) });
-          addChildren(gate.id, depth + 1);
+          if (gate.type === "quadrant") {
+            gate.quadrants.forEach((population) => {
+              values.push({ id: population.id, label: "\u00a0\u00a0\u00a0".repeat(depth) + gateLabel(gate) + " / " + gateLabel(population) });
+              addChildren(population.id, depth + 1);
+            });
+          } else {
+            values.push({ id: gate.id, label: "\u00a0\u00a0\u00a0".repeat(depth) + gateLabel(gate) });
+            addChildren(gate.id, depth + 1);
+          }
         });
       }
       addChildren("root", 1);
@@ -592,7 +615,7 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       if (!state.workspace) return [];
       return state.workspace.gates.filter((gate) => {
         if (gate.sample !== state.sampleId || gate.parent !== state.parent) return false;
-        if (gate.type === "polygon" || gate.type === "rect") return gate.x === state.x && gate.y === state.y;
+        if (gate.type === "polygon" || gate.type === "rect" || gate.type === "quadrant") return gate.x === state.x && gate.y === state.y;
         return gate.x === state.x;
       });
     }
@@ -606,6 +629,75 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       return gate.name || gate.id;
     }
 
+    function populationPath(sampleId, parentId) {
+      if (!state.workspace || !parentId || parentId === "root") return [];
+      const segments = [];
+      const seen = new Set();
+      let cursor = parentId;
+      while (cursor && cursor !== "root" && !seen.has(cursor)) {
+        seen.add(cursor);
+        const gate = state.workspace.gates.find((entry) => entry.sample === sampleId && entry.id === cursor);
+        if (gate) {
+          segments.unshift({ kind: "gate", name: gateLabel(gate), type: gate.type, x: gate.x, y: gate.y });
+          cursor = gate.parent;
+          continue;
+        }
+        const owner = state.workspace.gates.find((entry) =>
+          entry.sample === sampleId
+          && entry.type === "quadrant"
+          && entry.quadrants.some((population) => population.id === cursor)
+        );
+        const population = owner && owner.quadrants.find((entry) => entry.id === cursor);
+        if (!owner || !population) return [];
+        segments.unshift({
+          kind: "quadrant_population",
+          gateName: gateLabel(owner),
+          gateX: owner.x,
+          gateY: owner.y,
+          name: gateLabel(population),
+          x: population.x,
+          y: population.y
+        });
+        cursor = owner.parent;
+      }
+      return cursor === "root" ? segments : [];
+    }
+
+    function matchingParentForSample(sampleId, segments) {
+      if (!state.workspace || segments.length === 0) return "root";
+      let parent = "root";
+      for (const segment of segments) {
+        if (segment.kind === "gate") {
+          const matches = state.workspace.gates.filter((gate) =>
+            gate.sample === sampleId
+            && gate.parent === parent
+            && gate.type === segment.type
+            && gateLabel(gate) === segment.name
+            && gate.x === segment.x
+            && (gate.type === "range" || gate.y === segment.y)
+          );
+          if (matches.length !== 1) return "root";
+          parent = matches[0].id;
+          continue;
+        }
+        const owners = state.workspace.gates.filter((gate) =>
+          gate.sample === sampleId
+          && gate.parent === parent
+          && gate.type === "quadrant"
+          && gateLabel(gate) === segment.gateName
+          && gate.x === segment.gateX
+          && gate.y === segment.gateY
+        );
+        if (owners.length !== 1) return "root";
+        const populations = owners[0].quadrants.filter((population) =>
+          gateLabel(population) === segment.name && population.x === segment.x && population.y === segment.y
+        );
+        if (populations.length !== 1) return "root";
+        parent = populations[0].id;
+      }
+      return parent;
+    }
+
     function gateAncestry(parentId) {
       if (!state.workspace || !parentId || parentId === "root") return [];
       const byId = new Map(state.workspace.gates.map((gate) => [gate.id, gate]));
@@ -615,9 +707,16 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       while (cursor && cursor !== "root" && !seen.has(cursor)) {
         seen.add(cursor);
         const gate = byId.get(cursor);
-        if (!gate) break;
-        chain.push(gate);
-        cursor = gate.parent;
+        if (gate) {
+          chain.push(gate);
+          cursor = gate.parent;
+          continue;
+        }
+        const owner = state.workspace.gates.find((entry) => entry.type === "quadrant" && entry.quadrants.some((population) => population.id === cursor));
+        const population = owner && owner.quadrants.find((entry) => entry.id === cursor);
+        if (!owner || !population) break;
+        chain.push(population);
+        cursor = owner.parent;
       }
       return chain.reverse();
     }
@@ -635,6 +734,10 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
 
     function axesForParentContext(parentId) {
       if (!state.workspace) return null;
+      const quadrantOwner = state.workspace.gates.find((gate) =>
+        gate.type === "quadrant" && gate.quadrants.some((population) => population.id === parentId)
+      );
+      if (quadrantOwner) return gateAxes(quadrantOwner);
       const childGates = state.workspace.gates.filter((gate) =>
         gate.sample === state.sampleId && gate.parent === parentId && gateAxes(gate)
       );
@@ -749,6 +852,9 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
           [[gate.xMin, gate.yMin], [gate.xMin, gate.yMax], [gate.xMax, gate.yMin], [gate.xMax, gate.yMax]].forEach((point) => {
             includeVisualPoint(transformPoint(point), bounds);
           });
+        }
+        if (gate.type === "quadrant") {
+          includeVisualPoint(transformPoint([gate.xThreshold, gate.yThreshold]), bounds);
         }
       });
       if (!Number.isFinite(bounds.xMin) || !Number.isFinite(bounds.xMax) || bounds.xMin === bounds.xMax) {
@@ -897,6 +1003,21 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
         ctx.fillStyle = color;
         ctx.fillRect(screen[0] - 3, screen[1] - 3, 6, 6);
       });
+    }
+
+    function drawQuadrantGate(gate, color, selected) {
+      const area = plotArea();
+      const pivot = dataToCanvas([gate.xThreshold, gate.yThreshold]);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = selected ? 2.5 : 1.6;
+      ctx.beginPath();
+      ctx.moveTo(pivot[0], area.top);
+      ctx.lineTo(pivot[0], area.top + area.height);
+      ctx.moveTo(area.left, pivot[1]);
+      ctx.lineTo(area.left + area.width, pivot[1]);
+      ctx.stroke();
+      ctx.fillStyle = color;
+      ctx.fillRect(pivot[0] - 4, pivot[1] - 4, 8, 8);
     }
 
     function plotClip(area, render) {
@@ -1181,9 +1302,11 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
           const color = selected ? "#8f3f2d" : "#136f63";
           if (gate.type === "polygon") drawPolygon(gate.vertices, color, selected);
           if (gate.type === "rect") drawRectGate(gate, color, selected);
+          if (gate.type === "quadrant") drawQuadrantGate(gate, color, selected);
         });
         if (state.draft && state.draft.type === "polygon") drawPolygon(state.draft.vertices, "#8f3f2d", true);
         if (state.draft && state.draft.type === "rect") drawRectGate(state.draft, "#8f3f2d", true);
+        if (state.draft && state.draft.type === "quadrant") drawQuadrantGate(state.draft, "#8f3f2d", true);
       });
       drawAxes(area);
       drawTitle(area);
@@ -1210,7 +1333,7 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
           row.className = "gate-row"
             + (gate.id === state.parent ? " context" : "")
             + (gate.id === state.selectedGateId ? " selected" : "");
-          const hasChildren = (childrenByParent.get(gate.id) || []).length > 0;
+          const hasChildren = gate.type === "quadrant" || (childrenByParent.get(gate.id) || []).length > 0;
           const collapsed = state.collapsedGates.has(gate.id);
           const toggle = document.createElement(hasChildren ? "button" : "span");
           if (hasChildren) toggle.type = "button";
@@ -1238,7 +1361,17 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
           button.appendChild(name);
           button.appendChild(type);
           button.addEventListener("click", () => {
-            navigateToParent(gate.id);
+            if (gate.type === "quadrant") {
+              state.selectedGateId = gate.id;
+              gateName.value = gateLabel(gate);
+              state.parent = gate.parent;
+              parentSelect.value = gate.parent;
+              xSelect.value = gate.x;
+              ySelect.value = gate.y;
+              loadState("axis");
+            } else {
+              navigateToParent(gate.id);
+            }
           });
           const edit = document.createElement("button");
           edit.type = "button";
@@ -1256,7 +1389,31 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
           row.appendChild(button);
           row.appendChild(edit);
           gateList.appendChild(row);
-          if (!collapsed) renderChildren(gate.id, depth + 1);
+          if (!collapsed && gate.type === "quadrant") {
+            gate.quadrants.forEach((population) => {
+              const populationRow = document.createElement("div");
+              populationRow.className = "gate-row" + (population.id === state.parent ? " context" : "");
+              const spacer = document.createElement("span");
+              spacer.className = "gate-toggle placeholder";
+              spacer.style.marginLeft = ((depth + 1) * 14) + "px";
+              const populationButton = document.createElement("button");
+              populationButton.type = "button";
+              populationButton.className = "gate-nav";
+              const populationName = document.createElement("span");
+              populationName.textContent = gateLabel(population);
+              const populationType = document.createElement("small");
+              populationType.textContent = population.x + population.y;
+              populationButton.appendChild(populationName);
+              populationButton.appendChild(populationType);
+              populationButton.addEventListener("click", () => navigateToParent(population.id));
+              populationRow.appendChild(spacer);
+              populationRow.appendChild(populationButton);
+              gateList.appendChild(populationRow);
+              renderChildren(population.id, depth + 2);
+            });
+          } else if (!collapsed) {
+            renderChildren(gate.id, depth + 1);
+          }
         });
       }
 
@@ -1266,17 +1423,25 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       }
     }
 
+    let loadSequence = 0;
+
     async function loadState(reason) {
+      const sequence = ++loadSequence;
       const params = new URLSearchParams();
       if (sampleSelect.value) params.set("sample_id", sampleSelect.value);
-      if (reason !== "sample" && parentSelect.value) params.set("parent", parentSelect.value);
-      if (reason !== "sample" && xSelect.value) params.set("x", xSelect.value);
-      if (reason !== "sample" && ySelect.value) params.set("y", ySelect.value);
+      const parent = reason === "sample"
+        ? matchingParentForSample(sampleSelect.value, populationPath(state.sampleId, state.parent))
+        : parentSelect.value;
+      if (parent) params.set("parent", parent);
+      if (xSelect.value) params.set("x", xSelect.value);
+      if (ySelect.value) params.set("y", ySelect.value);
       const body = await api("/api/state?" + params.toString());
       if (!body.ok) {
         setErrors(body.errors);
         return;
       }
+      if (sequence !== loadSequence) return;
+      if (state.workspace && body.workspace.revision < state.workspace.revision) return;
       state.workspace = body.workspace;
       state.metadata = body.metadata;
       state.preview = body.preview;
@@ -1284,6 +1449,10 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       state.parent = body.parent || "root";
       state.x = body.x;
       state.y = body.y;
+      state.viewId = body.viewId || null;
+      state.scale = body.scale || { x: "linear", y: "linear" };
+      xScaleSelect.value = state.scale.x;
+      yScaleSelect.value = state.scale.y;
       state.localDirty = false;
       const nextViewKey = [state.sampleId, state.parent, state.x, state.y].join("\\0");
       if (state.viewKey !== nextViewKey || reason === "sample" || reason === "axis" || reason === "parent") {
@@ -1302,6 +1471,41 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       setStatus(reason === "file" ? "Workspace revision " + body.workspace.revision : "Ready revision " + body.workspace.revision);
     }
 
+    let viewSaveQueue = Promise.resolve();
+
+    async function saveView() {
+      if (!state.workspace) return;
+      const view = {
+        id: state.viewId || ("view_" + state.sampleId),
+        sample: state.sampleId,
+        parent: state.parent,
+        x: state.x,
+        y: state.y,
+        scale: { x: state.scale.x, y: state.scale.y }
+      };
+      state.savePending = true;
+      const result = await api("/api/views/upsert", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ view, expectedRevision: state.workspace.revision })
+      });
+      state.savePending = false;
+      if (!result.ok) {
+        setErrors(result.errors);
+        setStatus("View write rejected", true);
+        return;
+      }
+      state.viewId = view.id;
+      state.workspace.revision = result.revision;
+      state.workspace.views = state.workspace.views.filter((entry) => entry.id !== view.id).concat([view]);
+      setStatus("Saved view revision " + result.revision);
+    }
+
+    function queueViewSave() {
+      viewSaveQueue = viewSaveQueue.then(saveView, saveView);
+      return viewSaveQueue;
+    }
+
     function makeGateId() {
       return "gate_" + Date.now().toString(36);
     }
@@ -1316,96 +1520,26 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       ];
     }
 
-    function quadrantBounds(pivot) {
-      const bounds = state.viewport || state.bounds || computeVisualBounds();
-      const lowerLeft = inverseTransformPoint([bounds.xMin, bounds.yMin]);
-      const upperRight = inverseTransformPoint([bounds.xMax, bounds.yMax]);
-      return {
-        xMin: Math.min(lowerLeft[0], upperRight[0], pivot[0]),
-        xMax: Math.max(lowerLeft[0], upperRight[0], pivot[0]),
-        yMin: Math.min(lowerLeft[1], upperRight[1], pivot[1]),
-        yMax: Math.max(lowerLeft[1], upperRight[1], pivot[1])
-      };
-    }
-
-    function quadrantGates(pivot) {
+    function quadrantGate(pivot) {
       const baseName = gateName.value || "Quadrant";
       const baseId = makeGateId();
-      const bounds = quadrantBounds(pivot);
-      return [
-        {
-          id: baseId + "_q1",
-          name: baseName + " Q1",
-          sample: state.sampleId,
-          parent: state.parent,
-          type: "rect",
-          x: state.x,
-          y: state.y,
-          xMin: Math.min(bounds.xMin, pivot[0]),
-          xMax: pivot[0],
-          yMin: pivot[1],
-          yMax: Math.max(bounds.yMax, pivot[1])
-        },
-        {
-          id: baseId + "_q2",
-          name: baseName + " Q2",
-          sample: state.sampleId,
-          parent: state.parent,
-          type: "rect",
-          x: state.x,
-          y: state.y,
-          xMin: pivot[0],
-          xMax: Math.max(bounds.xMax, pivot[0]),
-          yMin: pivot[1],
-          yMax: Math.max(bounds.yMax, pivot[1])
-        },
-        {
-          id: baseId + "_q3",
-          name: baseName + " Q3",
-          sample: state.sampleId,
-          parent: state.parent,
-          type: "rect",
-          x: state.x,
-          y: state.y,
-          xMin: Math.min(bounds.xMin, pivot[0]),
-          xMax: pivot[0],
-          yMin: Math.min(bounds.yMin, pivot[1]),
-          yMax: pivot[1]
-        },
-        {
-          id: baseId + "_q4",
-          name: baseName + " Q4",
-          sample: state.sampleId,
-          parent: state.parent,
-          type: "rect",
-          x: state.x,
-          y: state.y,
-          xMin: pivot[0],
-          xMax: Math.max(bounds.xMax, pivot[0]),
-          yMin: Math.min(bounds.yMin, pivot[1]),
-          yMax: pivot[1]
-        }
-      ];
-    }
-
-    async function saveQuadrants(pivot) {
-      if (!state.workspace) return;
-      state.savePending = true;
-      const result = await api("/api/gates/upsert-many", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ gates: quadrantGates(pivot), expectedRevision: state.workspace.revision })
-      });
-      state.savePending = false;
-      if (result.ok) {
-        state.draft = null;
-        state.localDirty = false;
-        state.gateTrayUserClosed = false;
-        await loadState("save");
-      } else {
-        setErrors(result.errors);
-        setStatus("Write rejected", true);
-      }
+      return {
+        id: baseId,
+        name: baseName,
+        sample: state.sampleId,
+        parent: state.parent,
+        type: "quadrant",
+        x: state.x,
+        y: state.y,
+        xThreshold: pivot[0],
+        yThreshold: pivot[1],
+        quadrants: [
+          { id: baseId + "_q1", name: baseName + " Q1", x: "-", y: "+" },
+          { id: baseId + "_q2", name: baseName + " Q2", x: "+", y: "+" },
+          { id: baseId + "_q3", name: baseName + " Q3", x: "-", y: "-" },
+          { id: baseId + "_q4", name: baseName + " Q4", x: "+", y: "-" }
+        ]
+      };
     }
 
     async function saveGate() {
@@ -1436,6 +1570,8 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
           yMin: Math.min(state.draft.yMin, state.draft.yMax),
           yMax: Math.max(state.draft.yMin, state.draft.yMax)
         };
+      } else if (state.draft && state.draft.type === "quadrant") {
+        gate = quadrantGate([state.draft.xThreshold, state.draft.yThreshold]);
       } else if (selectedGate()) {
         gate = selectedGate();
         gate.name = gateName.value || gate.name || gate.id;
@@ -1444,6 +1580,7 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
         setStatus("No gate to save", true);
         return;
       }
+      await viewSaveQueue;
       state.savePending = true;
       const result = await api("/api/gates/upsert", {
         method: "POST",
@@ -1466,6 +1603,7 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
 
     async function deleteSelectedGate() {
       if (!state.workspace || !state.selectedGateId) return;
+      await viewSaveQueue;
       state.savePending = true;
       const result = await api("/api/gates/delete", {
         method: "POST",
@@ -1535,6 +1673,10 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
         gate.yMin = original.yMin + dy;
         gate.yMax = original.yMax + dy;
       }
+      if (gate.type === "quadrant" && original.type === "quadrant") {
+        gate.xThreshold = original.xThreshold + dx;
+        gate.yThreshold = original.yThreshold + dy;
+      }
     }
 
     function hitVertex(screenPoint) {
@@ -1550,6 +1692,12 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
           for (let index = 0; index < handles.length; index += 1) {
             if (distance(screenPoint, dataToCanvas(handles[index])) <= 9) return { gateId: gate.id, type: "rect", index };
           }
+        }
+        if (gate.type === "quadrant") {
+          const pivot = dataToCanvas([gate.xThreshold, gate.yThreshold]);
+          if (distance(screenPoint, pivot) <= 10) return { gateId: gate.id, type: "quadrantBoth" };
+          if (Math.abs(screenPoint[0] - pivot[0]) <= 7) return { gateId: gate.id, type: "quadrantX" };
+          if (Math.abs(screenPoint[1] - pivot[1]) <= 7) return { gateId: gate.id, type: "quadrantY" };
         }
       }
       return null;
@@ -1567,7 +1715,16 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
         return;
       }
       if (state.mode === "quadrant") {
-        saveQuadrants(data);
+        if (state.draft && state.draft.type === "quadrant") {
+          const pivot = dataToCanvas([state.draft.xThreshold, state.draft.yThreshold]);
+          if (distance(point, pivot) <= 10) state.drag = { type: "draftQuadrantBoth" };
+          else if (Math.abs(point[0] - pivot[0]) <= 7) state.drag = { type: "draftQuadrantX" };
+          else if (Math.abs(point[1] - pivot[1]) <= 7) state.drag = { type: "draftQuadrantY" };
+          if (state.drag) return;
+        }
+        state.draft = { type: "quadrant", xThreshold: data[0], yThreshold: data[1] };
+        state.localDirty = true;
+        draw();
         return;
       }
       if (state.mode === "rect") {
@@ -1617,6 +1774,13 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
         draw();
         return;
       }
+      if (state.draft && state.draft.type === "quadrant" && state.drag.type.startsWith("draftQuadrant")) {
+        if (state.drag.type === "draftQuadrantX" || state.drag.type === "draftQuadrantBoth") state.draft.xThreshold = data[0];
+        if (state.drag.type === "draftQuadrantY" || state.drag.type === "draftQuadrantBoth") state.draft.yThreshold = data[1];
+        state.localDirty = true;
+        draw();
+        return;
+      }
       const gate = selectedGate();
       if (!gate) return;
       if (state.drag.type === "translate") {
@@ -1633,6 +1797,12 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
         if (state.drag.index === 2 || state.drag.index === 3) gate.xMax = data[0];
         if (state.drag.index === 0 || state.drag.index === 2) gate.yMin = data[1];
         if (state.drag.index === 1 || state.drag.index === 3) gate.yMax = data[1];
+      }
+      if ((state.drag.type === "quadrantX" || state.drag.type === "quadrantBoth") && gate.type === "quadrant") {
+        gate.xThreshold = data[0];
+      }
+      if ((state.drag.type === "quadrantY" || state.drag.type === "quadrantBoth") && gate.type === "quadrant") {
+        gate.yThreshold = data[1];
       }
       state.localDirty = true;
       draw();
@@ -1668,15 +1838,17 @@ export const GATE_EDITOR_HTML = String.raw`<!doctype html>
       state.renderMode = renderModeSelect.value;
       draw();
     });
-    xScaleSelect.addEventListener("change", () => {
+    xScaleSelect.addEventListener("change", async () => {
       state.scale.x = xScaleSelect.value;
       state.viewport = null;
       draw();
+      await queueViewSave();
     });
-    yScaleSelect.addEventListener("change", () => {
+    yScaleSelect.addEventListener("change", async () => {
       state.scale.y = yScaleSelect.value;
       state.viewport = null;
       draw();
+      await queueViewSave();
     });
     gateTrayToggle.addEventListener("click", () => userSetGateTrayOpen(gateTray.hidden));
     closeGateTray.addEventListener("click", () => userSetGateTrayOpen(false));

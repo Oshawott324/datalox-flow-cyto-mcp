@@ -1,12 +1,14 @@
 import path from "node:path";
 
 import { readPreviewColumns } from "./fcs.js";
+import { resolveParentGateChain } from "./gate-model.js";
 import {
   FlowcytoError,
   type AppliedCompensation,
   type CompensationMatrix,
+  type EvaluableGate,
   type FlowcytoWorkspace,
-  type WorkspaceGate,
+  type QuadrantGate,
 } from "./types.js";
 import { readWorkspace, resolveSamplePath } from "./workspace.js";
 
@@ -64,7 +66,7 @@ export type SuggestApoptosisQuadrantsResult = {
     yMin: number;
     yMax: number;
   };
-  gates: WorkspaceGate[];
+  gate: QuadrantGate;
   summary: {
     viable: PopulationSummary;
     earlyApoptotic: PopulationSummary;
@@ -84,11 +86,11 @@ export type SuggestApoptosisQuadrantsResult = {
     warnings: string[];
   };
   nextAction: {
-    tool: "upsert_gates";
+    tool: "upsert_gate";
     arguments: {
       workspace_path: string;
       expected_revision: number;
-      gates: WorkspaceGate[];
+      gate: QuadrantGate;
     };
   };
 };
@@ -99,37 +101,6 @@ type XYValues = {
   filteredEvents: number;
   compensation?: AppliedCompensation;
 };
-
-function gateChannels(gate: WorkspaceGate): string[] {
-  if (gate.type === "range") return [gate.x];
-  return [gate.x, gate.y];
-}
-
-function parentGateChain(workspace: FlowcytoWorkspace, input: { sampleId: string; parent: string }): WorkspaceGate[] {
-  if (input.parent === "root") return [];
-  const byId = new Map(workspace.gates.map((gate) => [gate.id, gate]));
-  const chain: WorkspaceGate[] = [];
-  const seen = new Set<string>();
-  let cursor = input.parent;
-  while (cursor !== "root") {
-    if (seen.has(cursor)) {
-      throw new FlowcytoError("parent_ancestry_broken", `Parent gate ancestry contains a cycle at ${cursor}.`, "/parent_gate_id");
-    }
-    seen.add(cursor);
-    const gate = byId.get(cursor);
-    if (!gate) throw new FlowcytoError("unknown_parent_gate", `Parent gate ${cursor} is not present.`, "/parent_gate_id");
-    if (gate.sample !== input.sampleId) {
-      throw new FlowcytoError(
-        "parent_ancestry_broken",
-        `Parent gate ${cursor} belongs to sample ${gate.sample}, not ${input.sampleId}.`,
-        "/parent_gate_id",
-      );
-    }
-    chain.push(gate);
-    cursor = gate.parent;
-  }
-  return chain.reverse();
-}
 
 function resolveCompensation(workspace: FlowcytoWorkspace, compensationId?: string): CompensationMatrix | undefined {
   if (!compensationId) return undefined;
@@ -156,7 +127,7 @@ async function readXY(input: {
   path: string;
   x: string;
   y: string;
-  parentGateChain?: WorkspaceGate[];
+  parentGateChain?: EvaluableGate[];
   compensation?: CompensationMatrix;
 }): Promise<XYValues> {
   const columns = await readPreviewColumns({
@@ -244,106 +215,65 @@ function countQuadrants(values: XYValues, thresholds: { annexin: number; death: 
   return counts;
 }
 
-function rectGate(input: {
-  id: string;
-  name: string;
-  sampleId: string;
-  parent: string;
-  x: string;
-  y: string;
-  xMin: number;
-  xMax: number;
-  yMin: number;
-  yMax: number;
-}): WorkspaceGate {
-  return {
-    id: input.id,
-    name: input.name,
-    sample: input.sampleId,
-    parent: input.parent,
-    type: "rect",
-    x: input.x,
-    y: input.y,
-    xMin: input.xMin,
-    xMax: input.xMax,
-    yMin: input.yMin,
-    yMax: input.yMax,
-  };
-}
-
-function buildQuadrantGates(input: {
+function buildQuadrantGate(input: {
   sampleId: string;
   parent: string;
   x: string;
   y: string;
   thresholds: { annexin: number; death: number };
-  bounds: { xMin: number; xMax: number; yMin: number; yMax: number };
-}): WorkspaceGate[] {
+}): QuadrantGate {
   const prefix = sanitizeId(`apoptosis_${input.sampleId}_${input.parent}_${input.x}_${input.y}`);
-  return [
-    rectGate({
-      id: `${prefix}_viable`,
+  return {
+    id: prefix,
+    name: "Annexin / death dye quadrants",
+    sample: input.sampleId,
+    parent: input.parent,
+    type: "quadrant",
+    x: input.x,
+    y: input.y,
+    xThreshold: input.thresholds.annexin,
+    yThreshold: input.thresholds.death,
+    quadrants: [
+      {
+        id: `${prefix}_viable`,
       name: "Viable (Annexin-/Death dye-)",
-      sampleId: input.sampleId,
-      parent: input.parent,
-      x: input.x,
-      y: input.y,
-      xMin: input.bounds.xMin,
-      xMax: input.thresholds.annexin,
-      yMin: input.bounds.yMin,
-      yMax: input.thresholds.death,
-    }),
-    rectGate({
-      id: `${prefix}_early_apoptotic`,
+        x: "-",
+        y: "-",
+      },
+      {
+        id: `${prefix}_early_apoptotic`,
       name: "Early apoptotic (Annexin+/Death dye-)",
-      sampleId: input.sampleId,
-      parent: input.parent,
-      x: input.x,
-      y: input.y,
-      xMin: input.thresholds.annexin,
-      xMax: input.bounds.xMax,
-      yMin: input.bounds.yMin,
-      yMax: input.thresholds.death,
-    }),
-    rectGate({
-      id: `${prefix}_late_apoptotic_dead`,
+        x: "+",
+        y: "-",
+      },
+      {
+        id: `${prefix}_late_apoptotic_dead`,
       name: "Late apoptotic/dead (Annexin+/Death dye+)",
-      sampleId: input.sampleId,
-      parent: input.parent,
-      x: input.x,
-      y: input.y,
-      xMin: input.thresholds.annexin,
-      xMax: input.bounds.xMax,
-      yMin: input.thresholds.death,
-      yMax: input.bounds.yMax,
-    }),
-    rectGate({
-      id: `${prefix}_necrotic_or_membrane_damaged`,
+        x: "+",
+        y: "+",
+      },
+      {
+        id: `${prefix}_necrotic_or_membrane_damaged`,
       name: "Necrotic/membrane damaged (Annexin-/Death dye+)",
-      sampleId: input.sampleId,
-      parent: input.parent,
-      x: input.x,
-      y: input.y,
-      xMin: input.bounds.xMin,
-      xMax: input.thresholds.annexin,
-      yMin: input.thresholds.death,
-      yMax: input.bounds.yMax,
-    }),
-  ];
+        x: "-",
+        y: "+",
+      },
+    ],
+  };
 }
 
-function summary(gate: WorkspaceGate, label: string, count: number, denominator: number): PopulationSummary {
+function summary(gateId: string, label: string, count: number, denominator: number): PopulationSummary {
   return {
-    gateId: gate.id,
+    gateId,
     label,
     count,
     percentOfParent: pct(count, denominator),
   };
 }
 
-function parentChainForControl(workspace: FlowcytoWorkspace, control: ApoptosisControlInput | undefined): WorkspaceGate[] {
+function parentChainForControl(workspace: FlowcytoWorkspace, control: ApoptosisControlInput | undefined): EvaluableGate[] {
   if (!control?.sampleId || !control.parentGateId) return [];
-  return parentGateChain(workspace, { sampleId: control.sampleId, parent: control.parentGateId });
+  return resolveParentGateChain(workspace, { sampleId: control.sampleId, parent: control.parentGateId });
 }
 
 export async function suggestApoptosisQuadrants(input: SuggestApoptosisQuadrantsInput): Promise<SuggestApoptosisQuadrantsResult> {
@@ -354,7 +284,7 @@ export async function suggestApoptosisQuadrants(input: SuggestApoptosisQuadrants
     path: samplePath(input.workspacePath, workspace, input.sampleId),
     x: input.annexinChannel,
     y: input.deathChannel,
-    parentGateChain: parentGateChain(workspace, { sampleId: input.sampleId, parent }),
+    parentGateChain: resolveParentGateChain(workspace, { sampleId: input.sampleId, parent }),
     compensation,
   });
   if (sampleValues.x.length === 0) {
@@ -460,13 +390,12 @@ export async function suggestApoptosisQuadrants(input: SuggestApoptosisQuadrants
     yMin: yBounds.min,
     yMax: yBounds.max,
   };
-  const gates = buildQuadrantGates({
+  const gate = buildQuadrantGate({
     sampleId: input.sampleId,
     parent,
     x: input.annexinChannel,
     y: input.deathChannel,
     thresholds,
-    bounds,
   });
   const counts = countQuadrants(sampleValues, thresholds);
   const denominator = sampleValues.x.length;
@@ -487,12 +416,12 @@ export async function suggestApoptosisQuadrants(input: SuggestApoptosisQuadrants
     },
     thresholds,
     bounds,
-    gates,
+    gate,
     summary: {
-      viable: summary(gates[0], "Viable", counts.viable, denominator),
-      earlyApoptotic: summary(gates[1], "Early apoptotic", counts.earlyApoptotic, denominator),
-      lateApoptoticDead: summary(gates[2], "Late apoptotic/dead", counts.lateApoptoticDead, denominator),
-      necroticOrMembraneDamaged: summary(gates[3], "Necrotic/membrane damaged", counts.necroticOrMembraneDamaged, denominator),
+      viable: summary(gate.quadrants[0].id, "Viable", counts.viable, denominator),
+      earlyApoptotic: summary(gate.quadrants[1].id, "Early apoptotic", counts.earlyApoptotic, denominator),
+      lateApoptoticDead: summary(gate.quadrants[2].id, "Late apoptotic/dead", counts.lateApoptoticDead, denominator),
+      necroticOrMembraneDamaged: summary(gate.quadrants[3].id, "Necrotic/membrane damaged", counts.necroticOrMembraneDamaged, denominator),
     },
     diagnostics: {
       confidence,
@@ -502,11 +431,11 @@ export async function suggestApoptosisQuadrants(input: SuggestApoptosisQuadrants
       warnings,
     },
     nextAction: {
-      tool: "upsert_gates",
+      tool: "upsert_gate",
       arguments: {
         workspace_path: path.resolve(input.workspacePath),
         expected_revision: workspace.revision,
-        gates,
+        gate,
       },
     },
   };

@@ -3,9 +3,9 @@ import path from "node:path";
 
 import { XMLBuilder } from "fast-xml-parser";
 
-import { buildBiexTransform, type BiexParams } from "./biex-transform.js";
+import { readFcsMetadata } from "./fcs.js";
 import { readWorkspace, resolveSamplePath, validateWorkspace } from "./workspace.js";
-import { FlowcytoError, type AxisScale, type FlowcytoSample, type FlowcytoWorkspace, type WorkspaceGate } from "./types.js";
+import { FlowcytoError, type AxisScale, type FlowcytoSample, type FlowcytoWorkspace, type SampleMetadata, type WorkspaceGate } from "./types.js";
 
 export type ExportFlowJoWorkspaceInput = {
   workspacePath: string;
@@ -26,28 +26,15 @@ export type ExportFlowJoWorkspaceResult = {
 
 type XmlElement = Record<string, unknown>;
 
-type ExportTransform =
-  | { kind: "log"; t: number; m: number }
-  | { kind: "fasinh"; t: number; m: number; a: number; length: number }
-  | ({ kind: "biex" } & BiexParams);
-
 type ExportTransformContext = {
-  transformsByChannel: Map<string, ExportTransform>;
+  parameterBySampleChannel: Map<string, string>;
+  scaleBySampleParameter: Map<string, AxisScale>;
 };
 
-const FLOWCYTO_LOG_T = 10;
-const FLOWCYTO_LOG_M = 1;
 const FLOWCYTO_ARCSINH_M = 1 / Math.LN10;
 const FLOWCYTO_ARCSINH_A = 0;
 const FLOWCYTO_ARCSINH_LENGTH = 1;
 const FLOWCYTO_ARCSINH_T = 150 * Math.sinh(1);
-const FLOWJO_BIEX_DEFAULT: BiexParams = {
-  length: 256,
-  maxRange: 262144,
-  pos: 4.5,
-  neg: 0,
-  width: -10,
-};
 
 function sampleName(sample: FlowcytoSample): string {
   return path.basename(sample.path) || sample.id;
@@ -55,7 +42,7 @@ function sampleName(sample: FlowcytoSample): string {
 
 function fileUri(filePath: string): string {
   const normalized = path.resolve(filePath).replaceAll("\\", "/");
-  if (/^[A-Za-z]:\//.test(normalized)) return `file:///${encodeURI(normalized).replaceAll("%2F", "/")}`;
+  if (/^[A-Za-z]:\//.test(normalized)) return `file:/${encodeURI(normalized).replaceAll("%2F", "/")}`;
   return `file://${encodeURI(normalized).replaceAll("%2F", "/")}`;
 }
 
@@ -63,23 +50,7 @@ function gateName(gate: WorkspaceGate): string {
   return gate.name || gate.id;
 }
 
-function flowJoTransformForScale(scale: AxisScale): ExportTransform | null {
-  if (scale === "log") return { kind: "log", t: FLOWCYTO_LOG_T, m: FLOWCYTO_LOG_M };
-  if (scale === "arcsinh") {
-    return {
-      kind: "fasinh",
-      t: FLOWCYTO_ARCSINH_T,
-      m: FLOWCYTO_ARCSINH_M,
-      a: FLOWCYTO_ARCSINH_A,
-      length: FLOWCYTO_ARCSINH_LENGTH,
-    };
-  }
-  if (scale === "biex") return { kind: "biex", ...FLOWJO_BIEX_DEFAULT };
-  return null;
-}
-
 function addChannelScale(scales: Map<string, AxisScale>, channel: string, scale: AxisScale): void {
-  if (scale === "linear") return;
   const existing = scales.get(channel);
   if (existing && existing !== scale) {
     throw new FlowcytoError("ambiguous_flowjo_transform", `Channel ${channel} has conflicting view scales: ${existing} and ${scale}.`, "/views");
@@ -92,32 +63,53 @@ function gateChannels(gate: WorkspaceGate): string[] {
   return [gate.x, gate.y];
 }
 
-function buildTransformContext(workspace: FlowcytoWorkspace): ExportTransformContext {
-  const channelScales = new Map<string, AxisScale>();
-  for (const view of workspace.views) {
-    addChannelScale(channelScales, view.x, view.scale.x);
-    addChannelScale(channelScales, view.y, view.scale.y);
-  }
+function sampleChannelKey(sampleId: string, channel: string): string {
+  return `${sampleId}\0${channel}`;
+}
 
-  const exportedGateChannels = new Set(workspace.gates.flatMap(gateChannels));
-  const transformsByChannel = new Map<string, ExportTransform>();
-  for (const channel of exportedGateChannels) {
-    const scale = channelScales.get(channel);
-    if (!scale || scale === "linear") continue;
-    const transform = flowJoTransformForScale(scale);
-    if (transform) transformsByChannel.set(channel, transform);
+function flowJoParameter(metadata: SampleMetadata, channel: string): string {
+  const parameter = metadata.parameters.find((entry) =>
+    entry.name === channel || entry.detector === channel || entry.marker === channel
+  );
+  if (!parameter) {
+    throw new FlowcytoError("unknown_flowjo_parameter", `Channel ${channel} is not present in sample ${metadata.sampleId}.`, "/gates");
   }
-  return { transformsByChannel };
+  return parameter.detector || parameter.name;
+}
+
+function buildTransformContext(workspace: FlowcytoWorkspace, metadataBySample: Map<string, SampleMetadata>): ExportTransformContext {
+  const parameterBySampleChannel = new Map<string, string>();
+  for (const gate of workspace.gates) {
+    const metadata = metadataBySample.get(gate.sample);
+    if (!metadata) throw new FlowcytoError("missing_sample_metadata", `Metadata for sample ${gate.sample} is unavailable.`, "/samples");
+    for (const channel of gateChannels(gate)) {
+      const parameter = flowJoParameter(metadata, channel);
+      parameterBySampleChannel.set(sampleChannelKey(gate.sample, channel), parameter);
+    }
+  }
+  const scaleBySampleParameter = new Map<string, AxisScale>();
+  for (const view of workspace.views) {
+    const metadata = metadataBySample.get(view.sample);
+    if (!metadata) throw new FlowcytoError("missing_sample_metadata", `Metadata for sample ${view.sample} is unavailable.`, "/views");
+    for (const [channel, scale] of [[view.x, view.scale.x], [view.y, view.scale.y]] as const) {
+      const parameter = flowJoParameter(metadata, channel);
+      parameterBySampleChannel.set(sampleChannelKey(view.sample, channel), parameter);
+      addChannelScale(scaleBySampleParameter, sampleChannelKey(view.sample, parameter), scale);
+    }
+  }
+  return { parameterBySampleChannel, scaleBySampleParameter };
+}
+
+function gateParameter(context: ExportTransformContext, sampleId: string, channel: string): string {
+  const parameter = context.parameterBySampleChannel.get(sampleChannelKey(sampleId, channel));
+  if (!parameter) throw new FlowcytoError("unknown_flowjo_parameter", `Channel ${channel} is not mapped for sample ${sampleId}.`, "/gates");
+  return parameter;
 }
 
 function exportCoordinate(value: number, channel: string, context: ExportTransformContext): number {
-  const transform = context.transformsByChannel.get(channel);
-  if (!transform) return value;
-  if (transform.kind === "log") return (Math.log10(value / transform.t) / transform.m) + 1;
-  if (transform.kind === "fasinh") return transform.length
-    * (Math.asinh(value * Math.sinh(transform.m * Math.LN10) / transform.t) + (transform.a * Math.LN10))
-    / ((transform.m + transform.a) * Math.LN10);
-  return buildBiexTransform(transform).forward(value);
+  void channel;
+  void context;
+  return value;
 }
 
 function formatNumber(value: number): string {
@@ -127,68 +119,73 @@ function formatNumber(value: number): string {
   return String(value);
 }
 
-function transformStore(context: ExportTransformContext): XmlElement | null {
-  const transforms: XmlElement = {};
-  for (const [channel, transform] of Array.from(context.transformsByChannel.entries()).sort(([left], [right]) => left.localeCompare(right))) {
-    const key = transform.kind === "log"
-      ? "transforms:log"
-      : transform.kind === "fasinh" ? "transforms:fasinh" : "transforms:biex";
+function sampleTransformations(metadata: SampleMetadata, context: ExportTransformContext): XmlElement {
+  const transformations: XmlElement = {};
+  for (const parameter of metadata.parameters) {
+    const parameterName = parameter.detector || parameter.name;
+    const range = parameter.range ?? 262144;
+    const scale = context.scaleBySampleParameter.get(sampleChannelKey(metadata.sampleId, parameterName)) ?? "linear";
+    const key = scale === "arcsinh" ? "transforms:fasinh" : `transforms:${scale}`;
     const entry = (() => {
-      if (transform.kind === "log") return {
-        "@_transforms:T": String(transform.t),
-        "@_transforms:M": String(transform.m),
-        "data-type:parameter": { "@_data-type:name": channel },
+      if (scale === "log") return {
+        "@_transforms:offset": "1",
+        "@_transforms:decades": String(Math.log10(range)),
+        "data-type:parameter": { "@_data-type:name": parameterName },
       };
-      if (transform.kind === "fasinh") return {
-        "@_transforms:T": String(transform.t),
-        "@_transforms:M": String(transform.m),
-        "@_transforms:A": String(transform.a),
-        "@_transforms:length": String(transform.length),
-        "data-type:parameter": { "@_data-type:name": channel },
+      if (scale === "arcsinh") return {
+        "@_transforms:T": String(FLOWCYTO_ARCSINH_T),
+        "@_transforms:M": String(FLOWCYTO_ARCSINH_M),
+        "@_transforms:A": String(FLOWCYTO_ARCSINH_A),
+        "@_transforms:length": String(FLOWCYTO_ARCSINH_LENGTH),
+        "data-type:parameter": { "@_data-type:name": parameterName },
+      };
+      if (scale === "biex") return {
+        "@_transforms:length": "256",
+        "@_transforms:maxRange": String(range),
+        "@_transforms:neg": "0",
+        "@_transforms:width": "-10",
+        "@_transforms:pos": String(Math.max(1, Math.log10(range) - 1)),
+        "data-type:parameter": { "@_data-type:name": parameterName },
       };
       return {
-        "@_transforms:length": String(transform.length),
-        "@_transforms:maxRange": String(transform.maxRange),
-        "@_transforms:neg": String(transform.neg),
-        "@_transforms:width": String(transform.width),
-        "@_transforms:pos": String(transform.pos),
-        "data-type:parameter": { "@_data-type:name": channel },
+        "@_transforms:minRange": "0",
+        "@_transforms:maxRange": String(range),
+        "@_gain": "1",
+        "data-type:parameter": { "@_data-type:name": parameterName },
       };
     })();
-    const current = transforms[key];
-    transforms[key] = current === undefined ? entry : [...(Array.isArray(current) ? current : [current]), entry];
+    const current = transformations[key];
+    transformations[key] = current === undefined ? entry : [...(Array.isArray(current) ? current : [current]), entry];
   }
-  if (Object.keys(transforms).length === 0) return null;
+  return transformations;
+}
+
+function sampleKeywords(metadata: SampleMetadata): XmlElement {
   return {
-    Cytometer: {
-      "@_name": "Flowcyto",
-      "@_linearRescale": "1",
-      TransformStore: {
-        MatrixID: {
-          "@_matrixId": "uncompensated",
-          Transforms: transforms,
-        },
-      },
-    },
+    Keyword: Object.entries(metadata.keywords)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, value]) => ({ "@_name": name, "@_value": value })),
   };
 }
 
-function dimension(context: ExportTransformContext, parameterName: string, min?: number, max?: number): XmlElement {
+function dimension(context: ExportTransformContext, sampleId: string, channel: string, min?: number, max?: number): XmlElement {
   return {
-    "@_gating:compensation-ref": "uncompensated",
-    ...(min !== undefined ? { "@_gating:min": formatNumber(exportCoordinate(min, parameterName, context)) } : {}),
-    ...(max !== undefined ? { "@_gating:max": formatNumber(exportCoordinate(max, parameterName, context)) } : {}),
-    "data-type:parameter": { "@_data-type:name": parameterName },
+    // Do NOT include gating:compensation-ref — real FlowJo WSP files omit it on uncompensated
+    // scatter gates. Including "uncompensated" causes FlowJo to look up the channel in that
+    // matrix's transform list; scatter channels are not in the transform store → "parameter missing".
+    ...(min !== undefined ? { "@_gating:min": formatNumber(exportCoordinate(min, channel, context)) } : {}),
+    ...(max !== undefined ? { "@_gating:max": formatNumber(exportCoordinate(max, channel, context)) } : {}),
+    "data-type:fcs-dimension": { "@_data-type:name": gateParameter(context, sampleId, channel) },
   };
 }
 
 function gateBody(gate: WorkspaceGate, context: ExportTransformContext): XmlElement {
   if (gate.type === "polygon") {
     return {
+      // gating:id and gating:parent_id are omitted here — real FlowJo puts them only on <Gate>,
+      // not on the geometry element. Duplicating them confuses FlowJo's gate parser.
       "gating:PolygonGate": {
-        "@_gating:id": gate.id,
-        "@_gating:parent_id": gate.parent === "root" ? "" : gate.parent,
-        "gating:dimension": [dimension(context, gate.x), dimension(context, gate.y)],
+        "gating:dimension": [dimension(context, gate.sample, gate.x), dimension(context, gate.sample, gate.y)],
         "gating:vertex": gate.vertices.map((vertex) => ({
           "gating:coordinate": [
             { "@_data-type:value": formatNumber(exportCoordinate(vertex[0], gate.x, context)) },
@@ -201,20 +198,17 @@ function gateBody(gate: WorkspaceGate, context: ExportTransformContext): XmlElem
   if (gate.type === "rect") {
     return {
       "gating:RectangleGate": {
-        "@_gating:id": gate.id,
-        "@_gating:parent_id": gate.parent === "root" ? "" : gate.parent,
         "gating:dimension": [
-          dimension(context, gate.x, gate.xMin, gate.xMax),
-          dimension(context, gate.y, gate.yMin, gate.yMax),
+          dimension(context, gate.sample, gate.x, gate.xMin, gate.xMax),
+          dimension(context, gate.sample, gate.y, gate.yMin, gate.yMax),
         ],
       },
     };
   }
+  if (gate.type === "quadrant") throw new FlowcytoError("invalid_flowjo_gate", "Quadrant gates must be expanded into FlowJo populations.", "/gates");
   return {
     "gating:RangeGate": {
-      "@_gating:id": gate.id,
-      "@_gating:parent_id": gate.parent === "root" ? "" : gate.parent,
-      "gating:dimension": dimension(context, gate.x, gate.min, gate.max),
+      "gating:dimension": dimension(context, gate.sample, gate.x, gate.min, gate.max),
     },
   };
 }
@@ -223,39 +217,117 @@ function buildGateTree(gates: WorkspaceGate[], parent: string, context: ExportTr
   return gates
     .filter((gate) => gate.parent === parent)
     .sort((left, right) => left.id.localeCompare(right.id))
-    .map((gate) => ({
-      "@_name": gateName(gate),
-      "@_owningGroup": "",
-      "@_gating:id": gate.id,
-      "@_gating:parent_id": gate.parent === "root" ? "" : gate.parent,
-      ...gateBody(gate, context),
-      Subpopulations: {
-        Gate: buildGateTree(gates, gate.id, context),
-      },
-    }));
+    .flatMap((gate) => {
+      if (gate.type === "quadrant") {
+        return gate.quadrants.map((population) => ({
+          "@_name": population.name || population.id,
+          "@_owningGroup": "Samples",
+          "@_expanded": "1",
+          Gate: {
+            "@_gating:id": population.id,
+            ...(gate.parent === "root" ? {} : { "@_gating:parent_id": gate.parent }),
+            "gating:RectangleGate": {
+              "@_eventsInside": "1",
+              "@_userDefined": "1",
+              "gating:dimension": [
+                dimension(
+                  context,
+                  gate.sample,
+                  gate.x,
+                  population.x === "+" ? gate.xThreshold : undefined,
+                  population.x === "-" ? gate.xThreshold : undefined,
+                ),
+                dimension(
+                  context,
+                  gate.sample,
+                  gate.y,
+                  population.y === "+" ? gate.yThreshold : undefined,
+                  population.y === "-" ? gate.yThreshold : undefined,
+                ),
+              ],
+            },
+          },
+          Subpopulations: {
+            Population: buildGateTree(gates, population.id, context),
+          },
+        }));
+      }
+      return {
+        "@_name": gateName(gate),
+        "@_owningGroup": "Samples",
+        "@_expanded": "1",
+        Gate: {
+          "@_gating:id": gate.id,
+          ...(gate.parent === "root" ? {} : { "@_gating:parent_id": gate.parent }),
+          ...gateBody(gate, context),
+        },
+        Subpopulations: {
+          Population: buildGateTree(gates, gate.id, context),
+        },
+      };
+    });
 }
 
-function sampleElement(workspacePath: string, workspace: FlowcytoWorkspace, sample: FlowcytoSample, context: ExportTransformContext): XmlElement {
+function sampleElement(workspacePath: string, workspace: FlowcytoWorkspace, sample: FlowcytoSample, metadata: SampleMetadata, context: ExportTransformContext, sampleId: number): XmlElement {
   const gates = workspace.gates.filter((gate) => gate.sample === sample.id);
   const rootGates = buildGateTree(gates, "root", context);
+  // Use $FIL keyword (the name the cytometer wrote) as the SampleNode name, matching FlowJo's
+  // convention. Falls back to the disk filename if $FIL is absent.
+  const nodeName = (metadata.keywords["$FIL"] ?? "").trim() || sampleName(sample);
   return {
     DataSet: {
       "@_uri": fileUri(resolveSamplePath(workspacePath, sample.path)),
-      "@_keyword": "$CYT",
+      "@_sampleID": String(sampleId),
     },
+    Transformations: sampleTransformations(metadata, context),
+    Keywords: sampleKeywords(metadata),
     SampleNode: {
-      "@_name": sampleName(sample),
+      "@_name": nodeName,
       "@_owningGroup": "",
+      "@_expanded": "1",
+      "@_sortPriority": "10",
+      ...(metadata.eventCount === null ? {} : { "@_count": String(metadata.eventCount) }),
+      "@_sampleID": String(sampleId),
       Subpopulations: {
-        Gate: rootGates,
+        Population: rootGates,
       },
     },
   };
 }
 
-function buildFlowJoXml(workspacePath: string, workspace: FlowcytoWorkspace): string {
-  const context = buildTransformContext(workspace);
-  const cytometers = transformStore(context);
+function allSamplesGroup(sampleCount: number): XmlElement {
+  return {
+    GroupNode: {
+      "@_name": "All Samples",
+      "@_annotation": "",
+      "@_owningGroup": "All Samples",
+      "@_expanded": "1",
+      "@_sortPriority": "10",
+      "@_count": "-1",
+      Group: {
+        "@_name": "All Samples",
+        "@_live": "1",
+        "@_role": "ws.group.dlog.test",
+        "@_key": "",
+        "@_synchronized": "0",
+        Criteria: {},
+        SampleRefs: {
+          SampleRef: Array.from({ length: sampleCount }, (_, index) => ({ "@_sampleID": String(index + 1) })),
+        },
+        Keywords: {},
+      },
+    },
+  };
+}
+
+function buildFlowJoXml(workspacePath: string, workspace: FlowcytoWorkspace, metadataBySample: Map<string, SampleMetadata>): string {
+  const context = buildTransformContext(workspace, metadataBySample);
+  const cytometers = {
+    Cytometer: {
+      "@_name": "Flowcyto",
+      "@_linearRescale": "1",
+    },
+  };
   const builder = new XMLBuilder({
     ignoreAttributes: false,
     attributeNamePrefix: "@_",
@@ -267,12 +339,19 @@ function buildFlowJoXml(workspacePath: string, workspace: FlowcytoWorkspace): st
     Workspace: {
       "@_version": "20.0",
       "@_creator": "Flowcyto",
+      "@_flowJoVersion": "10.10.0",
+      "@_curGroup": "All Samples",
       "@_xmlns:gating": "http://www.isac-net.org/std/Gating-ML/v2.0/gating",
       "@_xmlns:data-type": "http://www.isac-net.org/std/Gating-ML/v2.0/datatypes",
       "@_xmlns:transforms": "http://www.isac-net.org/std/Gating-ML/v2.0/transformations",
-      ...(cytometers ? { Cytometers: cytometers } : {}),
+      Cytometers: cytometers,
+      Groups: allSamplesGroup(workspace.samples.length),
       SampleList: {
-        Sample: workspace.samples.map((sample) => sampleElement(workspacePath, workspace, sample, context)),
+        Sample: workspace.samples.map((sample, index) => {
+          const metadata = metadataBySample.get(sample.id);
+          if (!metadata) throw new FlowcytoError("missing_sample_metadata", `Metadata for sample ${sample.id} is unavailable.`, "/samples");
+          return sampleElement(workspacePath, workspace, sample, metadata, context, index + 1);
+        }),
       },
     },
   };
@@ -294,8 +373,18 @@ export async function exportFlowJoWorkspace(input: ExportFlowJoWorkspaceInput): 
   if (input.compensationId && !workspace.compensations?.some((matrix) => matrix.id === input.compensationId)) {
     throw new FlowcytoError("unknown_compensation", `Compensation ${input.compensationId} is not present.`, "/compensation_id");
   }
+  const metadataBySample = new Map<string, SampleMetadata>();
+  for (const sample of workspace.samples) {
+    metadataBySample.set(sample.id, await readFcsMetadata(resolveSamplePath(workspacePath, sample.path), sample.id));
+  }
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
-  await fs.writeFile(outputPath, buildFlowJoXml(workspacePath, workspace), "utf8");
+  await fs.writeFile(outputPath, buildFlowJoXml(workspacePath, workspace, metadataBySample), "utf8");
+  const warnings = input.compensationId
+    ? ["Compensation matrix export is not implemented in this initial FlowJo export path."]
+    : [];
+  if (workspace.views.length > 0) {
+    warnings.push("Saved Flowcyto views contribute transform metadata, but FlowJo LayoutEditor layouts are not exported.");
+  }
   return {
     ok: true,
     wspPath: outputPath,
@@ -303,6 +392,6 @@ export async function exportFlowJoWorkspace(input: ExportFlowJoWorkspaceInput): 
     samplesExported: workspace.samples.length,
     gatesExported: workspace.gates.length,
     compensationExported: false,
-    warnings: input.compensationId ? ["Compensation matrix export is not implemented in this initial FlowJo export path."] : [],
+    warnings,
   };
 }
