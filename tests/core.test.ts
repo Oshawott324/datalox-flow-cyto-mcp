@@ -959,6 +959,8 @@ describe("flowcyto core", () => {
     expect(xml).toContain('sampleID="1"');
     expect(xml).toContain('<Population name="Lymphocytes"');
     expect(xml).toMatch(/<Population name="Lymphocytes"[\s\S]*?<Gate gating:id="lymph"[\s\S]*?<gating:PolygonGate/);
+    expect(xml).toMatch(/<SampleNode name="sample\.fcs"[\s\S]*?<Graph[^>]*>[\s\S]*?<Axis dimension="x" name="FSC-A"[\s\S]*?<Axis dimension="y" name="SSC-A"/);
+    expect(xml).toMatch(/<Population name="Lymphocytes"[\s\S]*?<Graph[^>]*>[\s\S]*?<Axis dimension="x" name="FSC-A"[\s\S]*?<Axis dimension="y" name="SSC-A"/);
     // Gate dimensions must use fcs-dimension (raw $PnN lookup), not data-type:parameter,
     // because compensation-ref="uncompensated" requires direct FCS channel references.
     // (data-type:parameter is still correct inside <transforms:*> entries.)
@@ -1060,7 +1062,7 @@ describe("flowcyto core", () => {
     expect(result.gatesExported).toBe(1);
     const xml = await fs.readFile(outputPath, "utf8");
     expect(xml).toContain("<transforms:biex");
-    expect(xml).toContain('transforms:width="-10"');
+    expect(xml).toContain('transforms:width="-1000"');
     expect(xml).toMatch(/<gating:dimension gating:min="300" gating:max="900">/);
 
     const importedDir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-export-biex-roundtrip-"));
@@ -1149,7 +1151,7 @@ describe("flowcyto core", () => {
     })).rejects.toMatchObject({ code: "unknown_compensation" });
   });
 
-  it("exportFlowJoWorkspace warns when compensationId is provided but not exported", async () => {
+  it("exportFlowJoWorkspace writes the selected compensation matrix", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-export-compwarn-"));
     const samplePath = path.join(dir, "sample.fcs");
     await writeTinyIntegerFcs({
@@ -1170,9 +1172,13 @@ describe("flowcyto core", () => {
     });
     const outputPath = path.join(dir, "out.wsp");
     const result = await exportFlowJoWorkspace({ workspacePath, outputPath, compensationId: "my_comp" });
-    expect(result).toMatchObject({ ok: true, compensationExported: false });
-    expect(result.warnings.length).toBeGreaterThan(0);
-    expect(result.warnings[0]).toMatch(/compensation/i);
+    expect(result).toMatchObject({ ok: true, compensationExported: true, warnings: [] });
+    const xml = await fs.readFile(outputPath, "utf8");
+    expect(xml).toContain('<Matrices>');
+    expect(xml).toContain('<transforms:spilloverMatrix');
+    expect(xml).toContain('transforms:id="my_comp"');
+    expect(xml).toContain('data-type:name="Comp-FSC-A"');
+    expect(xml).toContain('data-type:name="Comp-SSC-A"');
   });
 
   it("reads metadata without requiring event data in the workspace", async () => {
@@ -2354,6 +2360,94 @@ describe("flowcyto core", () => {
     const roundTrip = await readWorkspace(imported.workspacePath);
     const quadrant = roundTrip.gates.find((gate) => gate.type === "quadrant");
     expect(quadrant).toMatchObject({ x: "Annexin X-FITC-A", y: "PI-PerCP-Cy5.5-A" });
+  });
+
+  it("exports compensated fluorescence graphs and quadrant dimensions on matching Comp channels", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-compensated-quadrant-"));
+    const samplePath = path.join(dir, "sample.fcs");
+    await writeTinyIntegerFcs({
+      fcsPath: samplePath,
+      channels: ["FSC-A", "SSC-A", "FSC-H", "BL1-A", "BL3-A"],
+      markers: ["", "", "", "Annexin X-FITC-A", "PI-PerCP-Cy5.5-A"],
+      rows: [[100, 100, 95, 10, 10], [100, 100, 95, 80, 10], [100, 100, 95, 80, 90], [100, 100, 95, 10, 90]],
+    });
+    const { workspacePath } = await initWorkspace({ rootDir: dir, samplePath, sampleId: "sample" });
+    const hierarchy: WorkspaceGate[] = [
+        {
+          id: "main",
+          name: "Main cells",
+          sample: "sample",
+          parent: "root",
+          type: "rect",
+          x: "FSC-A",
+          y: "SSC-A",
+          xMin: 0,
+          xMax: 200,
+          yMin: 0,
+          yMax: 200,
+        },
+        {
+          id: "singlets",
+          name: "Suggested Singlets",
+          sample: "sample",
+          parent: "main",
+          type: "rect",
+          x: "FSC-A",
+          y: "FSC-H",
+          xMin: 0,
+          xMax: 200,
+          yMin: 0,
+          yMax: 200,
+        },
+        {
+        id: "apoptosis",
+        name: "Apoptosis",
+        sample: "sample",
+        parent: "singlets",
+        type: "quadrant",
+        x: "BL1-A",
+        y: "BL3-A",
+        xThreshold: 50,
+        yThreshold: 60,
+        quadrants: [
+          { id: "viable", name: "Viable", x: "-", y: "-" },
+          { id: "early", name: "Early", x: "+", y: "-" },
+          { id: "late", name: "Late", x: "+", y: "+" },
+          { id: "damaged", name: "Damaged", x: "-", y: "+" },
+        ],
+      }];
+    for (const [index, gate] of hierarchy.entries()) {
+      const written = await upsertGate({ workspacePath, expectedRevision: index, gate });
+      expect(written.ok, JSON.stringify(written)).toBe(true);
+    }
+    await upsertCompensationMatrix({
+      workspacePath,
+      expectedRevision: 3,
+      compensation: {
+        id: "derived_comp",
+        name: "Derived compensation",
+        source: "controls",
+        channels: ["Annexin X-FITC-A", "PI-PerCP-Cy5.5-A"],
+        matrix: [[1, 0.1], [0.001, 1]],
+      },
+    });
+    const outputPath = path.join(dir, "compensated.wsp");
+    const result = await exportFlowJoWorkspace({ workspacePath, outputPath, compensationId: "derived_comp" });
+    expect(result.compensationExported).toBe(true);
+    const xml = await fs.readFile(outputPath, "utf8");
+    expect(xml).toContain('<data-type:parameter data-type:name="BL1-A" userProvidedCompInfix="Comp-BL1-A"');
+    expect(xml).toContain('<transforms:coefficient data-type:parameter="BL3-A" transforms:value="0.1"');
+    expect(xml).toMatch(/<SampleNode[^>]*>[\s\S]*?<Graph[^>]*>[\s\S]*?<Axis dimension="x" name="FSC-A"[\s\S]*?<Axis dimension="y" name="SSC-A"/);
+    expect(xml).toMatch(/<Population name="Main cells"[\s\S]*?<Graph[^>]*>[\s\S]*?<Axis dimension="x" name="FSC-A"[\s\S]*?<Axis dimension="y" name="FSC-H"/);
+    expect(xml).toMatch(/<Population name="Suggested Singlets"[\s\S]*?<Graph[^>]*>[\s\S]*?<Axis dimension="x" name="Comp-BL1-A"[\s\S]*?<Axis dimension="y" name="Comp-BL3-A"/);
+    expect(xml).toContain('backColor="#ffffff"');
+    expect(xml).toContain('foreColor="#000000"');
+    expect(xml).toContain('heatMapStatParameter="Comp-BL1-A"');
+    expect(xml).toContain('<GraphSettings level="5%"');
+    expect(xml).toContain('showUncomped="0"');
+    expect(xml).toMatch(/<Population name="Viable"[\s\S]*?<Graph[^>]*>[\s\S]*?<Axis dimension="x" name="Comp-BL1-A"[\s\S]*?<Axis dimension="y" name="Comp-BL3-A"/);
+    expect(xml).toMatch(/<gating:dimension gating:max="50">\s*<data-type:fcs-dimension data-type:name="Comp-BL1-A"/);
+    expect(xml).toMatch(/<gating:dimension gating:max="60">\s*<data-type:fcs-dimension data-type:name="Comp-BL3-A"/);
   });
 
   it("exportFlowJoWorkspace assigns distinct sequential sampleIDs for multi-sample workspaces", async () => {
