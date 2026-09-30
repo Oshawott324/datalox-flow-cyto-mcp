@@ -28,6 +28,11 @@ import {
   getPopulationGraph,
   getPopulationTable,
   importFlowJoWorkspace,
+  estimateCompensationFromGatedControls,
+  getChannelHistogram,
+  getPopulationDensity,
+  getPopulationEvents,
+  getPopulationStats,
   getSampleMetadata,
   listSamples,
   openFcsArtifact,
@@ -46,6 +51,25 @@ import {
   type FlowcytoView,
   type WorkspaceGate,
 } from "../core/index.js";
+
+// Headless mode is for hosts with no screen at all, such as containers and batch
+// runs. It leaves out the gate-editor tools, makes open_fcs default to
+// surface=none, and drops the editor-oriented agentContract from tool results,
+// so that nothing tells the caller to open a window that cannot exist.
+const HEADLESS = process.env.FLOWCYTO_HEADLESS === "1" || process.argv.includes("--headless");
+const HEADLESS_HIDDEN_TOOLS = new Set([
+  "open_gate_editor",
+  "render_gate_editor",
+  "close_gate_editor",
+  "get_gate_editor_state",
+  "probe_inline_image",
+]);
+const HEADLESS_DESCRIPTIONS: Record<string, string> = {
+  open_fcs: "Open an .fcs file or flowcyto.workspace.json workspace, create or reuse a Flowcyto workspace, and parse FCS metadata.",
+  get_event_preview: "Preview of two sample channels for plotting: points or bins, inside an optional parent gate. Previews are sized for drawing and stride-sample large populations; use get_population_stats, get_channel_histogram or get_population_events for exact, unsampled measurements.",
+  get_plot_context: "Return revision, axes, bounds and a preview for two channels of a sample. Use the returned expected_revision for gate writes.",
+  render_plot: "Return plot data (points or bins) for two channels of a sample, inside an optional parent gate.",
+};
 
 const GATE_EDITOR_RESOURCE_URI = "ui://flowcyto/gate-editor-v1.html";
 const CAPABILITIES_RESOURCE_URI = "flowcyto://capabilities";
@@ -100,7 +124,7 @@ const FlowcytoCapabilities = {
   canWriteStructuredGates: true,
   liveRefreshAfterUpsertGate: true,
   canonicalArtifact: "flowcyto.workspace.json",
-  primaryTools: ["open_fcs", "import_flowjo_workspace", "export_flowjo_workspace", "list_compensations", "get_compensation_matrix", "estimate_compensation_from_controls", "upsert_compensation_matrix", "suggest_singlet_gate", "suggest_apoptosis_quadrants", "get_population_graph", "get_population_table", "propagate_gates", "render_plot", "render_plot_image", "open_gate_editor", "get_plot_context", "upsert_gate", "upsert_gates"],
+  primaryTools: ["open_fcs", "import_flowjo_workspace", "export_flowjo_workspace", "list_compensations", "get_compensation_matrix", "estimate_compensation_from_controls", "upsert_compensation_matrix", "suggest_singlet_gate", "suggest_apoptosis_quadrants", "get_population_graph", "get_population_table", "get_population_stats", "get_channel_histogram", "get_population_density", "get_population_events", "estimate_compensation_from_gated_controls", "propagate_gates", "render_plot", "render_plot_image", "open_gate_editor", "get_plot_context", "upsert_gate", "upsert_gates"],
   preferredWorkflowResource: OPEN_FCS_WORKFLOW_RESOURCE_URI,
   compactGateEditor: {
     entryTool: "open_gate_editor",
@@ -134,7 +158,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function resultContent(result: unknown, meta?: Record<string, unknown>) {
+function withoutEditorGuidance(result: unknown): unknown {
+  if (!HEADLESS || !isRecord(result)) return result;
+  const { agentContract: _agentContract, gateEditorPolicy: _gateEditorPolicy, ...rest } = result;
+  return rest;
+}
+
+function resultContent(rawResult: unknown, meta?: Record<string, unknown>) {
+  const result = withoutEditorGuidance(rawResult);
   return {
     content: [{ type: "text" as const, text: JSON.stringify({ result }, null, 2) }],
     structuredContent: { result },
@@ -170,6 +201,12 @@ function errorResult(error: unknown) {
     ok: false,
     errors: [{ path: "/", code: "tool_failed", message }],
   };
+}
+
+function requireWorkspaceLocation(pathValue?: string, workspacePath?: string): string {
+  const location = pathValue ?? workspacePath;
+  if (!location) throw new FlowcytoError("missing_workspace_path", "Pass the workspace location as path.", "/path");
+  return location;
 }
 
 function flowcytoAgentContract(extra?: Record<string, unknown>) {
@@ -562,6 +599,14 @@ function createFlowcytoMcpServer(): McpServer {
     version: "0.1.4",
   });
   const gateEditorSessions = new Map<string, GateEditorSession>();
+  if (HEADLESS) {
+    const register = server.registerTool.bind(server) as (...args: unknown[]) => unknown;
+    (server as unknown as { registerTool: (...args: unknown[]) => unknown }).registerTool = (name, config, handler) => {
+      if (HEADLESS_HIDDEN_TOOLS.has(name as string)) return undefined;
+      const description = HEADLESS_DESCRIPTIONS[name as string];
+      return register(name, description ? { ...(config as Record<string, unknown>), description } : config, handler);
+    };
+  }
 
 server.registerResource(
   "flowcyto_gate_editor",
@@ -708,7 +753,7 @@ server.registerTool(
       workspaceDir: workspace_dir,
       sampleId: sample_id,
     });
-    const selectedSurface = surface ?? "native_window";
+    const selectedSurface = surface ?? (HEADLESS ? "none" : "native_window");
     return {
       ...result,
       agentContract: flowcytoAgentContract({
@@ -788,11 +833,11 @@ server.registerTool(
 server.registerTool(
   "read_workspace",
   {
-    description: "Read the canonical flowcyto.workspace.json artifact.",
-    inputSchema: { path: z.string() },
+    description: "Read the canonical flowcyto.workspace.json artifact. Pass its location as path (workspace_path is accepted as an alias).",
+    inputSchema: { path: z.string().optional(), workspace_path: z.string().optional() },
     outputSchema: JsonResultSchema,
   },
-  async ({ path }) => toolContent(() => readWorkspace(path)),
+  async ({ path, workspace_path }) => toolContent(() => readWorkspace(requireWorkspaceLocation(path, workspace_path))),
 );
 
 server.registerTool(
@@ -818,11 +863,11 @@ server.registerTool(
 server.registerTool(
   "validate_workspace",
   {
-    description: "Validate a flowcyto.workspace.json artifact.",
-    inputSchema: { path: z.string() },
+    description: "Validate a flowcyto.workspace.json artifact. Pass its location as path (workspace_path is accepted as an alias).",
+    inputSchema: { path: z.string().optional(), workspace_path: z.string().optional() },
     outputSchema: JsonResultSchema,
   },
-  async ({ path }) => toolContent(() => validateWorkspace(path)),
+  async ({ path, workspace_path }) => toolContent(() => validateWorkspace(requireWorkspaceLocation(path, workspace_path))),
 );
 
 server.registerTool(
@@ -889,7 +934,7 @@ server.registerTool(
 server.registerTool(
   "get_compensation_matrix",
   {
-    description: "Inspect a stored conventional spillover compensation matrix. Matrix orientation is detector rows by fluorochrome columns; applying requires passing this compensation_id to preview/render tools.",
+    description: "Inspect a stored conventional spillover compensation matrix. Matrix orientation is one row per source fluorochrome and one column per receiving detector, as in the FCS $SPILLOVER keyword; applying requires passing this compensation_id to preview/render tools.",
     inputSchema: {
       workspace_path: z.string(),
       compensation_id: z.string(),
@@ -907,7 +952,7 @@ server.registerTool(
       ok: true,
       workspacePath: workspace_path,
       compensation: matrix,
-      orientation: "matrix[i][j] = fraction of fluorochrome j spilling into detector i; apply as Xcomp = Xraw @ inv(S), implemented by solve(S.T, Xraw.T).T.",
+      orientation: "matrix[i][j] = fraction of fluorochrome i's signal appearing in detector j (row = source fluorochrome, column = receiving detector); apply as Xcomp = Xraw @ inv(S), implemented by solve(S.T, Xraw.T).T.",
       nextAction: {
         tool: "render_plot",
         arguments: {
@@ -923,7 +968,7 @@ server.registerTool(
 server.registerTool(
   "estimate_compensation_from_controls",
   {
-    description: "Estimate a conventional spillover compensation matrix from explicit single-stain control mappings using deterministic median ratios. This does not write the workspace and never infers mappings from filenames.",
+    description: "Estimate a conventional spillover compensation matrix from explicit single-stain control mappings using deterministic median ratios. This does not write the workspace and never infers mappings from filenames. It takes medians over whole files, or over the brightest events with event_selection, which suits bead controls; for cell controls, gate the stained and unstained cells and use estimate_compensation_from_gated_controls.",
     inputSchema: {
       id: z.string().optional(),
       name: z.string().optional(),
@@ -1398,6 +1443,165 @@ server.registerTool(
       workspacePath: workspace_path,
       sampleId: sample_id,
       compensationId: compensation_id,
+    }),
+  ),
+);
+
+server.registerTool(
+  "get_population_stats",
+  {
+    description: "Exact statistics of one or more channels over every event of a population: count, min, max, mean, median, robust standard deviation and percentiles. Nothing is sampled. parent_gate_id names the population (omit for all events); its full gate chain is applied. Pass compensation_id to measure compensated values.",
+    inputSchema: {
+      workspace_path: z.string(),
+      sample_id: z.string(),
+      channels: z.array(z.string()).min(1).describe("Parameter names or detector ids."),
+      parent_gate_id: z.string().optional(),
+      compensation_id: z.string().optional(),
+      percentiles: z.array(z.number()).optional().describe("Defaults to 1, 5, 25, 50, 75, 95, 99."),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, sample_id, channels, parent_gate_id, compensation_id, percentiles }) => toolContent(() =>
+    getPopulationStats({
+      workspacePath: workspace_path,
+      sampleId: sample_id,
+      channels,
+      parent: parent_gate_id,
+      compensationId: compensation_id,
+      percentiles,
+    }),
+  ),
+);
+
+server.registerTool(
+  "get_channel_histogram",
+  {
+    description: "Histogram of one channel over every event of a population, on a linear, log, arcsinh or biex scale. Nothing is sampled. Returns counts and bin edges in raw units, so an edge can be used directly as a gate boundary. min and max are in raw units and default to the population's own range; cofactor sets where the arcsinh and biex scales turn from linear to logarithmic.",
+    inputSchema: {
+      workspace_path: z.string(),
+      sample_id: z.string(),
+      channel: z.string().describe("Parameter name or detector id."),
+      parent_gate_id: z.string().optional(),
+      compensation_id: z.string().optional(),
+      scale: z.enum(["linear", "log", "arcsinh", "biex"]).optional(),
+      bins: z.number().int().positive().optional(),
+      min: z.number().optional(),
+      max: z.number().optional(),
+      cofactor: z.number().positive().optional(),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, sample_id, channel, parent_gate_id, compensation_id, scale, bins, min, max, cofactor }) => toolContent(() =>
+    getChannelHistogram({
+      workspacePath: workspace_path,
+      sampleId: sample_id,
+      channel,
+      parent: parent_gate_id,
+      compensationId: compensation_id,
+      scale,
+      bins,
+      min,
+      max,
+      cofactor,
+    }),
+  ),
+);
+
+server.registerTool(
+  "get_population_density",
+  {
+    description: "Two-dimensional histogram of two channels over every event of a population. Nothing is sampled. Returns counts[row][column] (row = y bin, column = x bin) with bin edges in raw units. Each axis takes its own scale (linear, log, arcsinh, biex), optional raw-unit range and cofactor.",
+    inputSchema: {
+      workspace_path: z.string(),
+      sample_id: z.string(),
+      x: z.string().describe("Parameter name or detector id."),
+      y: z.string().describe("Parameter name or detector id."),
+      parent_gate_id: z.string().optional(),
+      compensation_id: z.string().optional(),
+      bins: z.number().int().positive().optional().describe("Bins per axis, at most 128. Defaults to 32."),
+      x_axis: z.object({ scale: z.enum(["linear", "log", "arcsinh", "biex"]).optional(), min: z.number().optional(), max: z.number().optional(), cofactor: z.number().positive().optional() }).optional(),
+      y_axis: z.object({ scale: z.enum(["linear", "log", "arcsinh", "biex"]).optional(), min: z.number().optional(), max: z.number().optional(), cofactor: z.number().positive().optional() }).optional(),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, sample_id, x, y, parent_gate_id, compensation_id, bins, x_axis, y_axis }) => toolContent(() =>
+    getPopulationDensity({
+      workspacePath: workspace_path,
+      sampleId: sample_id,
+      x,
+      y,
+      parent: parent_gate_id,
+      compensationId: compensation_id,
+      bins,
+      xAxis: x_axis,
+      yAxis: y_axis,
+    }),
+  ),
+);
+
+server.registerTool(
+  "get_population_events",
+  {
+    description: "Page through the exact events of a population: event indexes (zero-based positions in the FCS data) and the values of the requested channels. Nothing is sampled; use offset and limit and follow nextOffset until it is null. A page holds at most 50000 events and at most 100000 values (events times channels), so request fewer channels or a smaller limit for wide pages.",
+    inputSchema: {
+      workspace_path: z.string(),
+      sample_id: z.string(),
+      channels: z.array(z.string()).min(1).describe("Parameter names or detector ids."),
+      parent_gate_id: z.string().optional(),
+      compensation_id: z.string().optional(),
+      offset: z.number().int().nonnegative().optional(),
+      limit: z.number().int().positive().optional(),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, sample_id, channels, parent_gate_id, compensation_id, offset, limit }) => toolContent(() =>
+    getPopulationEvents({
+      workspacePath: workspace_path,
+      sampleId: sample_id,
+      channels,
+      parent: parent_gate_id,
+      compensationId: compensation_id,
+      offset,
+      limit,
+    }),
+  ),
+);
+
+server.registerTool(
+  "estimate_compensation_from_gated_controls",
+  {
+    description: "Estimate a spillover matrix from single-stain controls using populations you have gated: for each control, median of the positive gate minus median of the negative gate in every detector, divided by the same difference in the control's own detector. Use this for cell controls, where stained cells are a minority of the tube; estimate_compensation_from_controls takes medians over whole files or the brightest events and is meant for bead controls. The negative gate should hold unstained cells of the same kind as the positive ones. This does not write the workspace; store the result with upsert_compensation_matrix.",
+    inputSchema: {
+      workspace_path: z.string(),
+      id: z.string().optional(),
+      name: z.string().optional(),
+      controls: z.array(z.object({
+        sample_id: z.string(),
+        channel: z.string().describe("The control's own detector, by parameter name or detector id."),
+        positive_gate_id: z.string(),
+        negative_gate_id: z.string(),
+        negative_sample_id: z.string().optional().describe("Sample holding the negative gate when it is not the control itself, for example an unstained tube."),
+      })).min(1),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, id, name, controls }) => toolContent(() =>
+    estimateCompensationFromGatedControls({
+      workspacePath: workspace_path,
+      id,
+      name,
+      controls: controls.map((control) => ({
+        sampleId: control.sample_id,
+        channel: control.channel,
+        positiveGateId: control.positive_gate_id,
+        negativeGateId: control.negative_gate_id,
+        negativeSampleId: control.negative_sample_id,
+      })),
     }),
   ),
 );

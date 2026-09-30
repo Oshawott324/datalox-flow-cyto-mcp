@@ -264,7 +264,7 @@ function gateParameterNames(gate: EvaluableGate): string[] {
   return [gate.x, gate.y];
 }
 
-function gateContainsEvent(gate: EvaluableGate, values: Map<string, number>): boolean {
+export function gateContainsEvent(gate: EvaluableGate, values: Map<string, number>): boolean {
   if (gate.type === "range") {
     const value = values.get(gate.x);
     return value !== undefined && value >= gate.min && value <= gate.max;

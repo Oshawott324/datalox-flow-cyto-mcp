@@ -247,3 +247,61 @@ Do not make `AGENTS.md` required for product correctness. It is optional conveni
 
 Do not tell the user to install FlowJo for the MCP workflow unless they
 explicitly need FlowJo-specific export/import behavior outside Flowcyto.
+
+## Measuring Populations Exactly
+
+Previews (`render_plot`, `get_event_preview`, `get_plot_context`) are sized for
+drawing: point previews are capped and large populations are stride-sampled.
+Use these tools when a number matters. Each reads every event, applies the
+gate chain of `parent_gate_id` and the optional `compensation_id`, and samples
+nothing:
+
+- `get_population_stats`: count, min, max, mean, median, robust standard
+  deviation and percentiles of one or more channels.
+- `get_channel_histogram`: counts on a linear, log, arcsinh or biex scale, with
+  bin edges in raw units that can be used directly as gate boundaries.
+- `get_population_density`: a two-dimensional histogram of two channels, each
+  on its own scale.
+- `get_population_events`: the event indexes and channel values themselves,
+  paged with `offset` and `limit`.
+
+These tools accept a channel by parameter name or by detector id. Gates and
+views are stored with parameter names.
+
+## Compensation From Cell Controls
+
+`estimate_compensation_from_controls` takes medians over whole files or over
+the brightest events. That suits bead controls. For cell controls, where the
+stained cells are a minority of the tube and autofluorescence differs between
+cell types, gate the stained cells and matching unstained cells in each
+control and call `estimate_compensation_from_gated_controls`. Choosing those
+two populations is the analyst's decision; the tool only does the arithmetic.
+Review the matrix, then store it with `upsert_compensation_matrix`.
+
+## Headless Hosts
+
+Start the server with `FLOWCYTO_HEADLESS=1` (or `--headless`) on hosts with no
+screen, such as containers and batch runs. The gate-editor tools are not
+offered, `open_fcs` defaults to `surface="none"`, and tool results carry no
+editor guidance.
+
+## Gate Objects
+
+`upsert_gate` and `upsert_gates` take gate objects. Every gate has `id`,
+`sample` (a sample id), `parent` (`"root"` or the id of another gate or
+quadrant population of the same sample), and optionally `name` and `enabled`.
+Coordinates are raw, untransformed values; `x` and `y` are parameter names.
+
+- Range: `{ "type": "range", "x": "...", "min": 0, "max": 1000 }`. Both ends
+  are included.
+- Rectangle: `{ "type": "rect", "x": "...", "y": "...", "xMin": 0, "xMax": 1,
+  "yMin": 0, "yMax": 1 }`. All four edges are included.
+- Polygon: `{ "type": "polygon", "x": "...", "y": "...", "vertices": [[x, y],
+  ...] }`, with at least three vertices.
+- Quadrant: `{ "type": "quadrant", "x": "...", "y": "...", "xThreshold": 0,
+  "yThreshold": 0, "quadrants": [{ "id": "...", "name": "...", "x": "+",
+  "y": "-" }, ...] }`. Each quadrant is a population of its own, addressed by
+  its `id`; `+` includes the threshold. The quadrant gate itself is a
+  container and cannot be used as a parent.
+
+A population is the events that pass a gate and every gate above it.
