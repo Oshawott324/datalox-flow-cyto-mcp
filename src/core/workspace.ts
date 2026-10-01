@@ -22,6 +22,7 @@ import {
   type WorkspaceGate,
   type WorkspaceSummary,
 } from "./types.js";
+import { detectorAliasHint } from "./parameter-names.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -616,15 +617,15 @@ export async function validateWorkspaceObject(workspacePath: string, workspace: 
     const metadata = metadataBySample.get(gate.sample);
     const parameters = new Set(metadata?.parameters.map((parameter) => parameter.name) ?? []);
     if (gate.type === "polygon") {
-      if (!parameters.has(gate.x)) errors.push(validationError(`/gates/${index}/x`, "unknown_parameter", `Parameter ${gate.x} is not present in sample ${gate.sample}.`));
-      if (!parameters.has(gate.y)) errors.push(validationError(`/gates/${index}/y`, "unknown_parameter", `Parameter ${gate.y} is not present in sample ${gate.sample}.`));
+      if (!parameters.has(gate.x)) errors.push(validationError(`/gates/${index}/x`, "unknown_parameter", `Parameter ${gate.x} is not present in sample ${gate.sample}.${detectorAliasHint(metadata?.parameters ?? [], gate.x)}`));
+      if (!parameters.has(gate.y)) errors.push(validationError(`/gates/${index}/y`, "unknown_parameter", `Parameter ${gate.y} is not present in sample ${gate.sample}.${detectorAliasHint(metadata?.parameters ?? [], gate.y)}`));
       if (!Array.isArray(gate.vertices) || gate.vertices.length < 3) {
         errors.push(validationError(`/gates/${index}/vertices`, "invalid_polygon_vertices", "Polygon gates require at least three vertices."));
       }
     }
     if (gate.type === "rect") {
-      if (!parameters.has(gate.x)) errors.push(validationError(`/gates/${index}/x`, "unknown_parameter", `Parameter ${gate.x} is not present in sample ${gate.sample}.`));
-      if (!parameters.has(gate.y)) errors.push(validationError(`/gates/${index}/y`, "unknown_parameter", `Parameter ${gate.y} is not present in sample ${gate.sample}.`));
+      if (!parameters.has(gate.x)) errors.push(validationError(`/gates/${index}/x`, "unknown_parameter", `Parameter ${gate.x} is not present in sample ${gate.sample}.${detectorAliasHint(metadata?.parameters ?? [], gate.x)}`));
+      if (!parameters.has(gate.y)) errors.push(validationError(`/gates/${index}/y`, "unknown_parameter", `Parameter ${gate.y} is not present in sample ${gate.sample}.${detectorAliasHint(metadata?.parameters ?? [], gate.y)}`));
       if (!isFiniteNumber(gate.xMin) || !isFiniteNumber(gate.xMax) || gate.xMax <= gate.xMin) {
         errors.push(validationError(`/gates/${index}/xMax`, "invalid_rect_bounds", "Rect gate xMax must be greater than xMin."));
       }
@@ -633,14 +634,14 @@ export async function validateWorkspaceObject(workspacePath: string, workspace: 
       }
     }
     if (gate.type === "range") {
-      if (!parameters.has(gate.x)) errors.push(validationError(`/gates/${index}/x`, "unknown_parameter", `Parameter ${gate.x} is not present in sample ${gate.sample}.`));
+      if (!parameters.has(gate.x)) errors.push(validationError(`/gates/${index}/x`, "unknown_parameter", `Parameter ${gate.x} is not present in sample ${gate.sample}.${detectorAliasHint(metadata?.parameters ?? [], gate.x)}`));
       if (!isFiniteNumber(gate.min) || !isFiniteNumber(gate.max) || gate.max <= gate.min) {
         errors.push(validationError(`/gates/${index}/max`, "invalid_range_bounds", "Range gate max must be greater than min."));
       }
     }
     if (gate.type === "quadrant") {
-      if (!parameters.has(gate.x)) errors.push(validationError(`/gates/${index}/x`, "unknown_parameter", `Parameter ${gate.x} is not present in sample ${gate.sample}.`));
-      if (!parameters.has(gate.y)) errors.push(validationError(`/gates/${index}/y`, "unknown_parameter", `Parameter ${gate.y} is not present in sample ${gate.sample}.`));
+      if (!parameters.has(gate.x)) errors.push(validationError(`/gates/${index}/x`, "unknown_parameter", `Parameter ${gate.x} is not present in sample ${gate.sample}.${detectorAliasHint(metadata?.parameters ?? [], gate.x)}`));
+      if (!parameters.has(gate.y)) errors.push(validationError(`/gates/${index}/y`, "unknown_parameter", `Parameter ${gate.y} is not present in sample ${gate.sample}.${detectorAliasHint(metadata?.parameters ?? [], gate.y)}`));
       if (!isFiniteNumber(gate.xThreshold)) {
         errors.push(validationError(`/gates/${index}/xThreshold`, "invalid_quadrant_threshold", "Quadrant xThreshold must be finite."));
       }

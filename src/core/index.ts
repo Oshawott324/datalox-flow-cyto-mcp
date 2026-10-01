@@ -9,6 +9,8 @@ export * from "./flowjo-import.js";
 export * from "./preview.js";
 export * from "./population-graph.js";
 export * from "./population-table.js";
+export * from "./population-events.js";
+export * from "./parameter-names.js";
 export * from "./scale.js";
 export * from "./colormap.js";
 export * from "./singlet.js";
