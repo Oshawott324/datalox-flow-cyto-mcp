@@ -506,6 +506,95 @@ function validateShape(workspace: unknown): ValidationError[] {
   return errors;
 }
 
+const VALID_SCALES = new Set(["linear", "log", "arcsinh", "biex"]);
+
+/** Groups, per-sample compensation and axis settings: the parts of a workspace the workstation keeps. */
+function validateWorkstationState(
+  candidate: FlowcytoWorkspace,
+  sampleIds: Set<string>,
+  compensations: unknown[],
+): ValidationError[] {
+  const errors: ValidationError[] = [];
+  const raw = candidate as unknown as Record<string, unknown>;
+  if (raw.groups !== undefined) {
+    if (!Array.isArray(raw.groups)) {
+      errors.push(validationError("/groups", "invalid_array", "groups must be an array when present."));
+    } else {
+      const groupIds = new Set<string>();
+      raw.groups.forEach((group, index) => {
+        if (!isRecord(group)) {
+          errors.push(validationError(`/groups/${index}`, "invalid_group", "Group must be an object."));
+          return;
+        }
+        const id = asString(group.id);
+        if (!id) errors.push(validationError(`/groups/${index}/id`, "missing_group_id", "Group id is required."));
+        else if (groupIds.has(id)) errors.push(validationError(`/groups/${index}/id`, "duplicate_group_id", `Duplicate group id ${id}.`));
+        else groupIds.add(id);
+        if (!asString(group.name)) errors.push(validationError(`/groups/${index}/name`, "missing_group_name", "Group name is required."));
+        if (group.role !== undefined && !["test", "compensation", "control"].includes(String(group.role))) {
+          errors.push(validationError(`/groups/${index}/role`, "invalid_group_role", "Group role must be test, compensation or control."));
+        }
+        if (!Array.isArray(group.samples)) {
+          errors.push(validationError(`/groups/${index}/samples`, "invalid_array", "Group samples must be an array."));
+          return;
+        }
+        group.samples.forEach((sample, sampleIndex) => {
+          if (typeof sample !== "string" || !sampleIds.has(sample)) {
+            errors.push(validationError(`/groups/${index}/samples/${sampleIndex}`, "unknown_sample", `Sample ${String(sample)} is not present.`));
+          }
+        });
+      });
+    }
+  }
+  if (raw.sampleCompensation !== undefined) {
+    if (!isRecord(raw.sampleCompensation)) {
+      errors.push(validationError("/sampleCompensation", "invalid_object", "sampleCompensation must be an object when present."));
+    } else {
+      const matrixSample = new Map<string, string | null | undefined>();
+      for (const matrix of compensations) {
+        if (isRecord(matrix) && asString(matrix.id)) matrixSample.set(asString(matrix.id) as string, asString(matrix.sample));
+      }
+      for (const [sample, compensationId] of Object.entries(raw.sampleCompensation)) {
+        const path = `/sampleCompensation/${sample}`;
+        if (!sampleIds.has(sample)) errors.push(validationError(path, "unknown_sample", `Sample ${sample} is not present.`));
+        if (typeof compensationId !== "string" || !matrixSample.has(compensationId)) {
+          errors.push(validationError(path, "unknown_compensation", `Compensation ${String(compensationId)} is not present.`));
+          continue;
+        }
+        const owner = matrixSample.get(compensationId);
+        if (owner && owner !== sample) {
+          errors.push(validationError(path, "compensation_sample_mismatch", `Compensation ${compensationId} belongs to sample ${owner}.`));
+        }
+      }
+    }
+  }
+  if (raw.axes !== undefined) {
+    if (!isRecord(raw.axes)) {
+      errors.push(validationError("/axes", "invalid_object", "axes must be an object when present."));
+    } else {
+      for (const [parameter, setting] of Object.entries(raw.axes)) {
+        const path = `/axes/${parameter}`;
+        if (!isRecord(setting) || !VALID_SCALES.has(String(setting.scale))) {
+          errors.push(validationError(path, "invalid_scale", `Axis setting for ${parameter} needs a scale of linear, log, arcsinh or biex.`));
+          continue;
+        }
+        for (const key of ["min", "max", "width"]) {
+          if (setting[key] !== undefined && (typeof setting[key] !== "number" || !Number.isFinite(setting[key]))) {
+            errors.push(validationError(`${path}/${key}`, "invalid_number", `${key} must be a finite number.`));
+          }
+        }
+        if (typeof setting.min === "number" && typeof setting.max === "number" && setting.min >= setting.max) {
+          errors.push(validationError(path, "invalid_axis_range", "Axis minimum must be below its maximum."));
+        }
+        if (typeof setting.width === "number" && setting.width <= 0) {
+          errors.push(validationError(`${path}/width`, "invalid_axis_width", "Biex width must be positive."));
+        }
+      }
+    }
+  }
+  return errors;
+}
+
 function validateGateShape(gate: unknown, index: number): WorkspaceGate | null {
   if (!isRecord(gate)) return null;
   const type = gate.type;
@@ -714,6 +803,8 @@ export async function validateWorkspaceObject(workspacePath: string, workspace: 
       cursor = quadrantParent ? { id: cursorParent, parent: quadrantParent } : undefined;
     }
   }
+
+  errors.push(...validateWorkstationState(candidate, sampleIds, compensations));
 
   views.forEach((view, index) => {
     if (!isRecord(view)) {

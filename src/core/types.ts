@@ -125,6 +125,25 @@ export type QuadrantRegionGate = GateBase & {
 export type WorkspaceGate = PolygonGate | RectGate | RangeGate | QuadrantGate;
 export type EvaluableGate = PolygonGate | RectGate | RangeGate | QuadrantRegionGate;
 
+export type WorkspaceGroupRole = "test" | "compensation" | "control";
+
+/** A named set of samples, as in a FlowJo workspace's Groups pane. "All Samples" is implicit. */
+export type WorkspaceGroup = {
+  id: string;
+  name: string;
+  role?: WorkspaceGroupRole;
+  samples: string[];
+};
+
+/** Display settings for one parameter's axis. They change how plots are drawn, never which events a gate holds. */
+export type AxisSetting = {
+  scale: AxisScale;
+  min?: number;
+  max?: number;
+  /** Half-width of the linear region of a biex axis, in data units. */
+  width?: number;
+};
+
 export type FlowcytoWorkspace = {
   version: 1;
   revision: number;
@@ -133,6 +152,11 @@ export type FlowcytoWorkspace = {
   gates: WorkspaceGate[];
   compensations?: CompensationMatrix[];
   compensationStatus?: Record<string, CompensationStatus>;
+  groups?: WorkspaceGroup[];
+  /** Compensation matrix applied to each sample, by sample id. Samples not listed are shown uncompensated. */
+  sampleCompensation?: Record<string, string>;
+  /** Axis display settings by parameter name. */
+  axes?: Record<string, AxisSetting>;
 };
 
 export type ValidationError = {

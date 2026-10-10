@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { launchNativeGateEditorWindow, nativeGateEditorReadiness } from "../app/gate-editor/native-window.js";
 import { startGateEditorServer } from "../app/gate-editor/server.js";
+import { startWorkstation } from "../app/workstation/server.js";
 import {
   FlowcytoError,
   getEventPreview,
@@ -359,6 +360,26 @@ program
       await server.close();
     } catch (error) {
       await server.close().catch(() => undefined);
+      handleError(error);
+    }
+  });
+
+program
+  .command("workstation")
+  .description("Open a workspace in Flowcyto Workstation, the FlowJo-style desktop, served to a browser.")
+  .argument("<workspace-path>")
+  .option("--host <host>", "Host to listen on", "127.0.0.1")
+  .option("--port <n>", "Port to listen on (0 picks a free one)", (value) => Number.parseInt(value, 10), 0)
+  .action(async (workspacePath: string, options: { host: string; port: number }) => {
+    try {
+      const server = await startWorkstation({ workspacePath, host: options.host, port: options.port });
+      printJson({ ok: true, url: server.url, host: server.host, port: server.port });
+      process.stderr.write(`flowcyto workstation listening at ${server.url}\n`);
+      for (const signal of ["SIGINT", "SIGTERM"] as const) {
+        process.once(signal, () => { void server.close().finally(() => process.exit(0)); });
+      }
+      await new Promise<void>(() => undefined);
+    } catch (error) {
       handleError(error);
     }
   });
