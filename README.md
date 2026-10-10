@@ -170,6 +170,18 @@ flowcyto open-gate-editor /path/to/my-cytometry-run/flowcyto.workspace.json
 The browser route is for debugging and Playwright coverage. The intended user
 surface is the MCP embedded app or the compact native preview.
 
+Open the whole workspace in Flowcyto Workstation, the FlowJo-style desktop
+(workspace window with groups and population trees, graph windows with gate
+tools, manual gate entry, compensation from single-stain controls and a matrix
+editor):
+
+```bash
+flowcyto workstation /path/to/my-cytometry-run/flowcyto.workspace.json
+```
+
+Every change it makes is written to the workspace and recorded in a journal
+beside it. See [docs/workstation.md](docs/workstation.md).
+
 ## Agent Discovery
 
 No `AGENTS.md` file is required for the product path. Agents should discover the

@@ -19,6 +19,7 @@
   "files": [
     "dist/src/**/*",
     "dist/native/windows/**/*",
+    "web/workstation/**/*",
     "native/windows/**/*",
     "docs/**/*.md",
     "skills/flowcyto/SKILL.md",

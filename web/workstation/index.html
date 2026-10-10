@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flowcyto Workstation</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app" class="app">
+    <header class="titlebar">
+      <span class="app-name">Flowcyto Workstation</span>
+      <span class="doc-name" id="docName"></span>
+      <span class="save-state" id="saveState" role="status"></span>
+    </header>
+
+    <nav class="ribbon-tabs" role="tablist" aria-label="Ribbon">
+      <button role="tab" data-tab="file">File</button>
+      <button role="tab" data-tab="edit">Edit</button>
+      <button role="tab" data-tab="workspace" aria-selected="true">Workspace</button>
+      <button role="tab" data-tab="tools">Tools</button>
+    </nav>
+    <section class="ribbon" id="ribbon" aria-label="Ribbon commands"></section>
+
+    <section class="pane groups-pane" aria-label="Groups">
+      <div class="table-head groups-grid">
+        <span>Group</span><span>Size</span><span>Role</span>
+      </div>
+      <div class="table-body" id="groupList" role="listbox" aria-label="Groups"></div>
+    </section>
+
+    <section class="pane samples-pane" aria-label="Samples">
+      <div class="table-head samples-grid">
+        <span>Name</span><span>Statistic</span><span>#Cells</span><span>Compensation</span>
+      </div>
+      <div class="table-body" id="sampleTree" role="tree" aria-label="Samples and populations" tabindex="0"></div>
+    </section>
+
+    <footer class="statusbar" id="statusbar" role="status"></footer>
+  </div>
+  <div id="windows" class="windows"></div>
+  <div id="overlays"></div>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
