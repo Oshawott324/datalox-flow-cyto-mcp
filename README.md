@@ -350,4 +350,11 @@ not the downloaded FCS binaries.
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE).
+Flowcyto MCP is licensed under the GNU Affero General Public License v3.0 or
+later (AGPL-3.0-or-later); see [LICENSE](LICENSE). To use it without the
+AGPL's obligations, for example inside a proprietary product or service, a
+commercial license is available from Complexity AI: contact@complexity-ai.com.
+
+From 4 September 2026 until the return to AGPL-3.0-or-later, this repository's
+source was published under the MIT License; copies obtained in that period
+remain available under it. See [NOTICE](NOTICE).
