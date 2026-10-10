@@ -253,7 +253,7 @@ describe.skipIf(!chromiumInstalled)("workstation in a browser", () => {
     browser = await chromium.launch();
     page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     await page.goto(server.url);
-    await page.getByRole("treeitem", { name: "Sample tube_a.fcs" }).waitFor();
+    await page.getByRole("treeitem", { name: /^Sample tube_a\.fcs/ }).waitFor();
   }, 60_000);
   afterAll(async () => {
     await browser?.close();
@@ -261,7 +261,7 @@ describe.skipIf(!chromiumInstalled)("workstation in a browser", () => {
   });
 
   it("draws, names, copies and compensates through the interface alone", async () => {
-    await page.getByRole("treeitem", { name: "Sample tube_a.fcs" }).dblclick();
+    await page.getByRole("treeitem", { name: /^Sample tube_a\.fcs/ }).dblclick();
     const graph = page.getByRole("dialog", { name: /tube_a\.fcs/ });
     await graph.getByRole("button", { name: "Rectangle gate" }).click();
     const canvas = graph.locator("canvas");
@@ -278,9 +278,9 @@ describe.skipIf(!chromiumInstalled)("workstation in a browser", () => {
 
     // a child gate typed into Manual Gate Definition (Ctrl+G) on a histogram
     await page.getByRole("button", { name: /^Close tube_a\.fcs — All events/ }).click();
-    await page.getByRole("treeitem", { name: "Sample tube_a.fcs" }).click();
+    await page.getByRole("treeitem", { name: /^Sample tube_a\.fcs/ }).click();
     await page.keyboard.press("ArrowRight");
-    await page.getByRole("treeitem", { name: "Population Cells" }).dblclick();
+    await page.getByRole("treeitem", { name: /^Population Cells/ }).dblclick();
     const child = page.getByRole("dialog", { name: /tube_a\.fcs — Cells/ });
     await child.getByRole("button", { name: /^Y axis:/ }).click();
     await page.getByRole("menuitemcheckbox", { name: "Histogram" }).click();
@@ -297,9 +297,9 @@ describe.skipIf(!chromiumInstalled)("workstation in a browser", () => {
 
     // copy the tree to every sample from the population's context menu
     await page.getByRole("button", { name: /^Close tube_a\.fcs — Cells/ }).click();
-    await page.getByRole("treeitem", { name: "Population Cells" }).click();
+    await page.getByRole("treeitem", { name: /^Population Cells/ }).click();
     await page.keyboard.press("ArrowRight");
-    await page.getByRole("treeitem", { name: "Population FL1+" }).click({ button: "right" });
+    await page.getByRole("treeitem", { name: /^Population FL1\+/ }).click({ button: "right" });
     await page.getByRole("menuitem", { name: "Copy to Group" }).hover();
     await page.getByRole("menuitem", { name: "All Samples (3)" }).click();
     await expect.poll(async () => (await readWorkspace(run.workspacePath)).gates.length).toBe(6);

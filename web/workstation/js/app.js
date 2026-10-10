@@ -264,7 +264,7 @@ function renderTree() {
       "aria-level": String(entry.depth + 1),
       "aria-expanded": expandable ? String(expanded) : undefined,
       "aria-selected": String(ui.selected.has(entry.key)),
-      "aria-label": isSample ? `Sample ${label}` : `Population ${label}`,
+      "aria-label": rowLabel(isSample, label, count, statistic, compensation),
       "data-key": entry.key,
     },
     el("span", { class: "name-cell", style: { paddingLeft: `${entry.depth * 18}px` } },
@@ -285,6 +285,15 @@ function renderTree() {
     row.addEventListener("contextmenu", (event) => onRowContextMenu(event, entry));
     return row;
   }));
+}
+
+/** What a screen reader hears for a row: its name, then its numbers. */
+function rowLabel(isSample, label, count, statistic, compensation) {
+  const parts = [];
+  if (count) parts.push(`${formatCount(count.count)} ${isSample ? "events" : "cells"}`);
+  if (!isSample && statistic) parts.push(`${statistic}% of parent`);
+  if (compensation) parts.push(`compensation ${compensationLabel(compensation)}`);
+  return `${isSample ? "Sample" : "Population"} ${label}${parts.length ? ` — ${parts.join(", ")}` : ""}`;
 }
 
 function toggle(key) {
