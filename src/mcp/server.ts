@@ -22,9 +22,14 @@ import { getGateEditorState, getPlotContext, recommendedAxes, startGateEditorSer
 import {
   FlowcytoError,
   deleteGate,
+  deleteLayout,
   estimateCompensationFromControls,
   exportFlowJoWorkspace,
   getEventPreview,
+  getLayout,
+  listLayouts,
+  upsertLayout,
+  validateLayout,
   getPopulationGraph,
   getPopulationTable,
   importFlowJoWorkspace,
@@ -44,6 +49,7 @@ import {
   writeWorkspace,
   type FlowcytoWorkspace,
   type FlowcytoView,
+  type FlowcytoLayout,
   type WorkspaceGate,
 } from "../core/index.js";
 
@@ -1473,6 +1479,94 @@ server.registerTool(
       view: view as FlowcytoView,
       expectedRevision: expected_revision,
     })),
+);
+
+server.registerTool(
+  "list_layouts",
+  {
+    description: "List layouts stored in the workspace with per-layout panel counts, including how many panels are unresolved and why. A layout arranges plot panels (gating strategy, sample comparison, or freeform); it does not apply compensation.",
+    inputSchema: {
+      workspace_path: z.string(),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path }) => toolContent(() => listLayouts(workspace_path)),
+);
+
+server.registerTool(
+  "get_layout",
+  {
+    description: "Return one stored layout in full, including every panel and its resolved or unresolved status. Unresolved panels are retained with a typed reason rather than dropped, so a partial import reports as partial.",
+    inputSchema: {
+      workspace_path: z.string(),
+      layout_id: z.string(),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, layout_id }) => toolContent(() => getLayout(workspace_path, layout_id)),
+);
+
+server.registerTool(
+  "validate_layout",
+  {
+    description: "Validate a candidate layout against the current workspace without writing it. Checks panel sources against known samples, populations and compensation ids, and checks that every axis in a bounds group matches that group's channel and scale. Use before upsert_layout to see errors without consuming a revision.",
+    inputSchema: {
+      workspace_path: z.string(),
+      layout: JsonObject,
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, layout }) => toolContent(() =>
+    validateLayout({ workspacePath: workspace_path, layout: layout as FlowcytoLayout })),
+);
+
+server.registerTool(
+  "upsert_layout",
+  {
+    description: "Create or update a layout in the canonical workspace artifact using revision-safe writes. Use expected_revision from get_workspace_revision or list_layouts. Panels carry compensation per source, never per panel, and nothing is applied without an explicit compensation id. Do not patch workspace JSON directly.",
+    inputSchema: {
+      workspace_path: z.string(),
+      layout: JsonObject,
+      expected_revision: z.number().int(),
+    },
+    outputSchema: JsonResultSchema,
+  },
+  async ({ workspace_path, layout, expected_revision }) => toolContent(() =>
+    upsertLayout({
+      workspacePath: workspace_path,
+      layout: layout as FlowcytoLayout,
+      expectedRevision: expected_revision,
+    }).then((result) => ({
+      ...result,
+      nextAction: result.ok ? workspaceRevisionNextAction(workspace_path) : null,
+    })),
+  ),
+);
+
+server.registerTool(
+  "delete_layout",
+  {
+    description: "Delete a layout from the canonical workspace artifact using revision-safe writes. This removes only the layout; gates, samples and compensation are untouched.",
+    inputSchema: {
+      workspace_path: z.string(),
+      layout_id: z.string(),
+      expected_revision: z.number().int(),
+    },
+    outputSchema: JsonResultSchema,
+  },
+  async ({ workspace_path, layout_id, expected_revision }) => toolContent(() =>
+    deleteLayout({
+      workspacePath: workspace_path,
+      layoutId: layout_id,
+      expectedRevision: expected_revision,
+    }).then((result) => ({
+      ...result,
+      nextAction: result.ok ? workspaceRevisionNextAction(workspace_path) : null,
+    })),
+  ),
 );
 
 server.registerTool(

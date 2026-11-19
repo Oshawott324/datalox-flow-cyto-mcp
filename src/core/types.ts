@@ -125,6 +125,123 @@ export type QuadrantRegionGate = GateBase & {
 export type WorkspaceGate = PolygonGate | RectGate | RangeGate | QuadrantGate;
 export type EvaluableGate = PolygonGate | RectGate | RangeGate | QuadrantRegionGate;
 
+// Explicit axis range in data space. Scale type alone does not make two panels
+// comparable, so panels carry bounds and may share them through an AxisBoundsGroup.
+export type AxisBounds = {
+  min: number;
+  max: number;
+};
+
+// Parameters for a parameterized scale. A matching AxisScale name is not enough:
+// two "biex" axes with different parameters are different transforms, so axes
+// joining a bounds group under biex or arcsinh must state these and agree.
+export type AxisTransformParams = {
+  cofactor?: number;                 // arcsinh
+  maxRange?: number;                 // biex
+  pos?: number;
+  neg?: number;
+  width?: number;
+  length?: number;
+};
+
+export type PanelAxis = {
+  channel: string;
+  scale?: AxisScale;
+  transform?: AxisTransformParams;
+  bounds?: AxisBounds;
+  // Id of an AxisBoundsGroup on the owning layout. The group supplies the bounds
+  // and constrains every member to one parameter and one transform. Channel
+  // identity is checked against FCS metadata, so a detector name and its marker
+  // alias for the same parameter may share a group.
+  boundsGroup?: string;
+};
+
+// A panel may plot several sources at once (overlay). Comparison layouts instead
+// use one source per panel across several panels; both are the same primitive.
+export type LayoutPanelSource = {
+  sample: string;
+  // Population plotted: a gate id, a quadrant population id, or "root".
+  parent: string;
+  // Optional child gate drawn on top of that population.
+  gate?: string;
+  // Compensation is per source, not per panel: overlaid samples can carry
+  // different sample-specific matrices. Nothing is applied without an explicit id.
+  compensationId?: string;
+  legend?: { color?: string; label?: string };
+};
+
+export type PanelUnresolvedReason =
+  | "ambiguous_path"
+  | "unknown_path"
+  | "unknown_sample"
+  | "unsupported_name"
+  | "unsupported_feature";
+
+// A panel that cannot be bound stays in the layout and stays visibly unresolved.
+// Nothing is dropped silently, so a partial import reports as partial.
+export type PanelStatus =
+  | { state: "resolved" }
+  | {
+    state: "unresolved";
+    reason: PanelUnresolvedReason;
+    detail: string;
+    candidates?: string[];
+  };
+
+export type LayoutPlotType = "pseudocolor" | "dot" | "contour" | "histogram";
+
+export type LayoutPanelPosition = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type LayoutPanel = {
+  id: string;
+  sources: LayoutPanelSource[];
+  x: PanelAxis;
+  // Omit for a histogram.
+  y?: PanelAxis;
+  plotType?: LayoutPlotType;
+  position: LayoutPanelPosition;
+  title?: string;
+  show?: {
+    sampleName?: boolean;
+    populationName?: boolean;
+    count?: boolean;
+    freq?: boolean;
+  };
+  status: PanelStatus;
+  // Presentation-only state preserved from an imported file. Never a source of
+  // truth: live sample mappings, population references, axes and geometry always
+  // override it on export.
+  _flowjo?: Record<string, unknown>;
+};
+
+export type AxisBoundsGroup = {
+  id: string;
+  // Every member axis must resolve, in its own sample's FCS metadata, to the same
+  // parameter this channel resolves to, and must use this scale and transform.
+  channel: string;
+  scale: AxisScale;
+  transform?: AxisTransformParams;
+  bounds: AxisBounds;
+};
+
+export type LayoutKind = "gating_strategy" | "comparison" | "freeform";
+
+export type FlowcytoLayout = {
+  id: string;
+  name: string;
+  kind: LayoutKind;
+  canvas: { width: number; height: number };
+  panels: LayoutPanel[];
+  boundsGroups?: AxisBoundsGroup[];
+  source?: "generated" | "flowjo_wsp" | "manual";
+  _flowjo?: Record<string, unknown>;
+};
+
 export type FlowcytoWorkspace = {
   version: 1;
   revision: number;
@@ -133,6 +250,7 @@ export type FlowcytoWorkspace = {
   gates: WorkspaceGate[];
   compensations?: CompensationMatrix[];
   compensationStatus?: Record<string, CompensationStatus>;
+  layouts?: FlowcytoLayout[];
 };
 
 export type ValidationError = {

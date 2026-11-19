@@ -14,4 +14,6 @@ export * from "./colormap.js";
 export * from "./singlet.js";
 export * from "./workspace.js";
 export * from "./gates.js";
+export * from "./gate-path.js";
+export * from "./layouts.js";
 export * from "./watch.js";
