@@ -155,8 +155,10 @@ describe("layout storage", () => {
     expect(stored.summary).toEqual({
       total: 3,
       resolved: 1,
+      partial: 0,
       unresolved: 2,
       unresolvedByReason: { unknown_sample: 1, ambiguous_path: 1 },
+      blockedByReason: {},
     });
 
     const fetched = await getLayout(workspacePath, "layout_1");
@@ -363,6 +365,56 @@ describe("layout validation", () => {
       }),
     });
     expect(codesOf(result)).toEqual(["invalid_panel_status_reason", "missing_panel_status_detail"]);
+  });
+
+  it("requires a partial panel to say why it cannot be rendered", async () => {
+    // A partial panel is bound but not renderable, so it must carry blockers.
+    const missing = await validateLayout({
+      workspacePath: sharedWorkspacePath,
+      layout: layout({
+        panels: [panel({ status: { state: "partial", blockers: [] } })],
+      }),
+    });
+    expect(codesOf(missing)).toEqual(["missing_panel_blockers"]);
+
+    const malformed = await validateLayout({
+      workspacePath: sharedWorkspacePath,
+      layout: layout({
+        panels: [panel({
+          status: { state: "partial", blockers: [{ reason: "nope", detail: "" }] },
+        } as unknown as Partial<LayoutPanel>)],
+      }),
+    });
+    expect(codesOf(malformed)).toEqual(["invalid_panel_blocker_reason", "missing_panel_blocker_detail"]);
+
+    const ok = await validateLayout({
+      workspacePath: sharedWorkspacePath,
+      layout: layout({
+        panels: [panel({
+          status: {
+            state: "partial",
+            blockers: [{ reason: "unresolved_compensation", detail: "Matrix not imported." }],
+          },
+        })],
+      }),
+    });
+    expect(ok).toEqual({ ok: true, errors: [] });
+  });
+
+  it("still requires sources and geometry on a partial panel, since it is bound", async () => {
+    const result = await validateLayout({
+      workspacePath: sharedWorkspacePath,
+      layout: layout({
+        panels: [panel({
+          sources: [],
+          status: {
+            state: "partial",
+            blockers: [{ reason: "unresolved_transform", detail: "No transform." }],
+          },
+        })],
+      }),
+    });
+    expect(codesOf(result)).toContain("missing_panel_sources");
   });
 
   it("rejects a histogram panel that also defines a y axis", async () => {

@@ -6,8 +6,13 @@ import { XMLParser } from "fast-xml-parser";
 import { buildBiexTransform } from "./biex-transform.js";
 import { readFcsMetadata } from "./fcs.js";
 import { validateWorkspaceObject, writeWorkspace } from "./workspace.js";
-import { FlowcytoError, type FlowcytoSample, type FlowcytoWorkspace, type SampleMetadata, type WorkspaceGate } from "./types.js";
+import { FlowcytoError, type CompensationMatrix, type FlowcytoSample, type FlowcytoWorkspace, type SampleMetadata, type WorkspaceGate } from "./types.js";
 
+import {
+  importSampleTransforms,
+  importSpilloverMatrix,
+  type ImportedFlowJoMatrix,
+} from "./flowjo-compensation-import.js";
 import { importFlowJoLayouts, type FlowJoLayoutSample } from "./flowjo-layout-import.js";
 
 type XmlNode = Record<string, unknown>;
@@ -68,16 +73,20 @@ export type ImportFlowJoWorkspaceResult = {
   layoutsImported: number;
   layoutPanels: {
     total: number;
+    /** Bound and renderable. */
     resolved: number;
+    /** Bound, but blocked by an unresolved compensation reference or transform. */
+    partial: number;
     unresolved: number;
     unresolvedByReason: Record<string, number>;
+    blockedByReason: Record<string, number>;
   };
   /**
-   * Explicit compensation references found on layout axes. `unresolved` counts
-   * prefixed references that could not be bound to a workspace matrix; `absent`
-   * counts axes carrying no reference, which is not a claim that they are raw.
+   * Explicit compensation references found on layout axes. `resolved` bound to an
+   * imported matrix, `unresolved` could not be bound, and `absent` counts axes
+   * carrying no reference, which is not a claim that they are raw.
    */
-  layoutCompensationReferences: { unresolved: number; absent: number };
+  layoutCompensationReferences: { resolved: number; unresolved: number; absent: number };
   dryRun: boolean;
   warnings: string[];
 };
@@ -600,11 +609,13 @@ async function readFlowJoSamples(input: ImportFlowJoWorkspaceInput, workspace: X
   gates: WorkspaceGate[];
   warnings: string[];
   samplesByFlowJoId: Map<string, FlowJoLayoutSample>;
+  compensations: CompensationMatrix[];
 }> {
   const sampleNodes = arrayOf(asRecord(workspace.SampleList)?.Sample).map(asRecord).filter((entry): entry is XmlNode => entry !== null);
   const warnings: string[] = [];
   const samples: FlowcytoSample[] = [];
   const gates: WorkspaceGate[] = [];
+  const compensations: CompensationMatrix[] = [];
   const samplesByFlowJoId = new Map<string, FlowJoLayoutSample>();
   const rootDir = path.resolve(input.workspaceDir);
 
@@ -621,14 +632,44 @@ async function readFlowJoSamples(input: ImportFlowJoWorkspaceInput, workspace: X
     const resolveChannel = channelResolver(metadata);
     const transformContext = flowJoTransformContext(workspace, resolveChannel);
     samples.push({ id: sampleId, path: pathForWorkspace(rootDir, samplePath) });
+
+    // Compensation matrices and transforms are per sample in .wsp: the file has
+    // one <Transformations> and one <spilloverMatrix> inside each <Sample>.
+    // Reading them from a workspace-wide map would bind the wrong context.
+    const matricesByPrefix = new Map<string, ImportedFlowJoMatrix>();
+    arrayOf(sample.spilloverMatrix).map(asRecord).forEach((node, matrixIndex) => {
+      if (!node) return;
+      const imported = importSpilloverMatrix({ node, sampleId, resolveChannel, index: matrixIndex });
+      if ("error" in imported) {
+        warnings.push(imported.error);
+        return;
+      }
+      const prefix = imported.matrix.prefix;
+      if (prefix && matricesByPrefix.has(prefix)) {
+        warnings.push(`Sample ${sampleId} defines more than one compensation matrix with prefix "${prefix}"; axes using it cannot be bound unambiguously.`);
+        matricesByPrefix.delete(prefix);
+        return;
+      }
+      if (prefix) matricesByPrefix.set(prefix, imported.matrix);
+      compensations.push(imported.matrix.compensation);
+    });
+
     const flowjoSampleId = stringAttr(sampleNode, "sampleID");
-    if (flowjoSampleId) samplesByFlowJoId.set(flowjoSampleId, { sampleId, metadata, resolveChannel });
+    if (flowjoSampleId) {
+      samplesByFlowJoId.set(flowjoSampleId, {
+        sampleId,
+        metadata,
+        resolveChannel,
+        matricesByPrefix,
+        transforms: importSampleTransforms(sample),
+      });
+    }
     appendNestedGates(collectGateWrappers(sampleNode?.Subpopulations), sampleId, "root", gates, warnings, resolveChannel, coordinateConverter(transformContext, warnings));
   }
   if (samples.length === 0) {
     throw new FlowcytoError("flowjo_sample_filter_no_match", "No FlowJo samples matched sampleNames/sampleIds filter.", "/sampleNames");
   }
-  return { samples, gates, warnings, samplesByFlowJoId };
+  return { samples, gates, warnings, samplesByFlowJoId, compensations };
 }
 
 function mergeById<T extends { id: string }>(existing: T[], imported: T[], overwrite: boolean): T[] {
@@ -673,6 +714,9 @@ export async function importFlowJoWorkspace(input: ImportFlowJoWorkspaceInput): 
     ...current,
     samples: mergeById(current.samples, imported.samples, input.overwriteSamples ?? false),
     gates: mergeById(current.gates, importedGates, input.overwriteGates ?? false),
+    ...(imported.compensations.length > 0
+      ? { compensations: mergeById(current.compensations ?? [], imported.compensations, true) }
+      : {}),
   };
 
   // Layouts resolve population name paths against the merged gates, so they are
@@ -711,15 +755,18 @@ export async function importFlowJoWorkspace(input: ImportFlowJoWorkspaceInput): 
     workspacePath,
     samplesImported: imported.samples.length,
     gatesImported: importedGates.length,
-    compensationsImported: 0,
+    compensationsImported: imported.compensations.length,
     layoutsImported: layoutImport?.layouts.length ?? 0,
     layoutPanels: {
       total: layoutImport?.panelsTotal ?? 0,
       resolved: layoutImport?.panelsResolved ?? 0,
+      partial: layoutImport?.panelsPartial ?? 0,
       unresolved: layoutImport?.panelsUnresolved ?? 0,
       unresolvedByReason: layoutImport?.unresolvedByReason ?? {},
+      blockedByReason: layoutImport?.blockedByReason ?? {},
     },
-    layoutCompensationReferences: layoutImport?.compensationReferences ?? { unresolved: 0, absent: 0 },
+    layoutCompensationReferences: layoutImport?.compensationReferences
+      ?? { resolved: 0, unresolved: 0, absent: 0 },
     dryRun,
     warnings: [...imported.warnings, ...(layoutImport?.warnings ?? [])],
   };

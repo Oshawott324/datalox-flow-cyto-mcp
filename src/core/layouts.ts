@@ -10,9 +10,14 @@ import { readWorkspace, validateWorkspaceObject, writeWorkspace } from "./worksp
 
 export type LayoutPanelSummary = {
   total: number;
+  /** Bound and renderable. */
   resolved: number;
+  /** Bound, but not faithfully renderable; see blockedByReason. */
+  partial: number;
+  /** Not bound to a sample and population. */
   unresolved: number;
   unresolvedByReason: Partial<Record<PanelUnresolvedReason, number>>;
+  blockedByReason: Record<string, number>;
 };
 
 export type LayoutSummary = {
@@ -42,11 +47,18 @@ function requireExpectedRevision(expectedRevision: number | undefined): number {
 
 export function summarizeLayoutPanels(panels: LayoutPanel[]): LayoutPanelSummary {
   const unresolvedByReason: Partial<Record<PanelUnresolvedReason, number>> = {};
+  const blockedByReason: Record<string, number> = {};
   let resolved = 0;
+  let partial = 0;
   for (const panel of panels) {
     if (panel.status?.state === "unresolved") {
       const reason = panel.status.reason;
       unresolvedByReason[reason] = (unresolvedByReason[reason] ?? 0) + 1;
+    } else if (panel.status?.state === "partial") {
+      partial += 1;
+      for (const blocker of panel.status.blockers) {
+        blockedByReason[blocker.reason] = (blockedByReason[blocker.reason] ?? 0) + 1;
+      }
     } else {
       resolved += 1;
     }
@@ -54,8 +66,10 @@ export function summarizeLayoutPanels(panels: LayoutPanel[]): LayoutPanelSummary
   return {
     total: panels.length,
     resolved,
-    unresolved: panels.length - resolved,
+    partial,
+    unresolved: panels.length - resolved - partial,
     unresolvedByReason,
+    blockedByReason,
   };
 }
 

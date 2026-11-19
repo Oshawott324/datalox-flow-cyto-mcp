@@ -1,3 +1,4 @@
+import type { ImportedAxisTransform, ImportedFlowJoMatrix } from "./flowjo-compensation-import.js";
 import { namePathToGateId } from "./gate-path.js";
 import type {
   FlowcytoLayout,
@@ -6,6 +7,7 @@ import type {
   LayoutPanelSource,
   LayoutPlotType,
   PanelAxis,
+  PanelBlocker,
   PanelStatus,
   SampleMetadata,
 } from "./types.js";
@@ -17,6 +19,10 @@ export type FlowJoLayoutSample = {
   sampleId: string;
   metadata: SampleMetadata;
   resolveChannel: (channel: string) => string;
+  /** This sample's own spillover matrices, keyed by the prefix each declares. */
+  matricesByPrefix: Map<string, ImportedFlowJoMatrix>;
+  /** This sample's own transforms, keyed by the raw FlowJo parameter name. */
+  transforms: Map<string, ImportedAxisTransform>;
 };
 
 export type FlowJoLayoutImportInput = {
@@ -32,11 +38,17 @@ export type FlowJoLayoutImportResult = {
   layouts: FlowcytoLayout[];
   warnings: string[];
   panelsTotal: number;
+  /** Bound and renderable. */
   panelsResolved: number;
+  /** Bound, but carrying an unresolved compensation reference or transform. */
+  panelsPartial: number;
   panelsUnresolved: number;
   unresolvedByReason: Record<string, number>;
+  blockedByReason: Record<string, number>;
   compensationReferences: {
-    /** Explicit prefixed references that could not be bound to a workspace matrix. */
+    /** Explicit prefixed references bound to an imported matrix. */
+    resolved: number;
+    /** Explicit prefixed references that could not be bound to a matrix. */
     unresolved: number;
     /** Axes carrying no compensation reference at all. Not a claim of raw data. */
     absent: number;
@@ -113,14 +125,29 @@ function plotTypeFor(graph: XmlNode | null): LayoutPlotType | undefined {
 }
 
 type AxisRead =
-  | { ok: true; axis: PanelAxis; compensationReference?: { reference: string; detail: string } }
+  | {
+    ok: true;
+    axis: PanelAxis;
+    /** A bound matrix id, when the axis named a prefix this sample defines. */
+    compensationId?: string;
+    /** An explicit reference that could not be bound to a matrix. */
+    compensationReference?: { reference: string; detail: string };
+    /** Set when this sample defines no transform for the raw axis name. */
+    transformMissing?: string;
+  }
   | { ok: false; reason: "unknown_parameter"; detail: string };
 
 /**
  * Reads one <Axis> and checks it against both the XML definition and the source
- * sample's FCS parameters. A Comp-style prefix declared by the file's spillover
- * matrices is an explicit compensation reference; its absence is reported as
- * absent, never as a claim that the data is uncompensated.
+ * sample's FCS parameters, compensation matrices and transforms.
+ *
+ * A prefix declared by a spillover matrix is an explicit compensation reference.
+ * It binds only to a matrix this sample actually defines; absence of a prefix
+ * records nothing, and is never a claim that the data is uncompensated.
+ *
+ * The transform is looked up by the RAW axis name against this sample's own
+ * transforms, because FlowJo defines separate transforms for "FL03-A" and
+ * "Comp-FL03-A" and they need not agree.
  */
 function readAxis(
   graph: XmlNode | null,
@@ -135,17 +162,13 @@ function readAxis(
   if (!rawName) return null;
 
   let bare = rawName;
-  let compensationReference: { reference: string; detail: string } | undefined;
-  for (const [prefix, matrixName] of prefixes) {
-    if (rawName.toLowerCase().startsWith(prefix.toLowerCase())) {
+  let matchedPrefix: string | undefined;
+  let matrixName: string | undefined;
+  for (const [prefix, name] of prefixes) {
+    if (prefix && rawName.toLowerCase().startsWith(prefix.toLowerCase())) {
       bare = rawName.slice(prefix.length);
-      compensationReference = {
-        reference: rawName,
-        // No compensation matrix is imported from .wsp yet, so this explicit
-        // reference cannot be bound. Recording it keeps the panel from reading
-        // as uncompensated.
-        detail: `Axis ${rawName} references FlowJo compensation matrix "${matrixName}" (prefix "${prefix}") for sample ${sample.sampleId}, but no matching matrix was imported into the workspace, so the compensation state is unknown.`,
-      };
+      matchedPrefix = prefix;
+      matrixName = name;
       break;
     }
   }
@@ -159,7 +182,36 @@ function readAxis(
       detail: `Axis ${dimension}="${rawName}" resolves to ${resolved}, which is not a parameter of sample ${sample.sampleId}.`,
     };
   }
-  return { ok: true, axis: { channel: resolved }, ...(compensationReference ? { compensationReference } : {}) };
+
+  let compensationId: string | undefined;
+  let compensationReference: { reference: string; detail: string } | undefined;
+  if (matchedPrefix) {
+    const bound = sample.matricesByPrefix.get(matchedPrefix);
+    if (bound && bound.compensation.channels.includes(resolved)) {
+      compensationId = bound.compensation.id;
+    } else {
+      compensationReference = {
+        reference: rawName,
+        detail: bound
+          ? `Axis ${rawName} references FlowJo matrix "${bound.flowjoName}" (prefix "${matchedPrefix}") for sample ${sample.sampleId}, but ${resolved} is not one of that matrix's channels (${bound.compensation.channels.join(", ")}), so the compensation state is unknown.`
+          : `Axis ${rawName} references FlowJo compensation matrix "${matrixName ?? matchedPrefix}" (prefix "${matchedPrefix}"), but sample ${sample.sampleId} defines no matrix with that prefix, so the compensation state is unknown.`,
+      };
+    }
+  }
+
+  const transform = sample.transforms.get(rawName);
+  const axis: PanelAxis = {
+    channel: resolved,
+    ...(transform ? { scale: transform.scale } : {}),
+    ...(transform?.params ? { transform: transform.params } : {}),
+  };
+  return {
+    ok: true,
+    axis,
+    ...(compensationId ? { compensationId } : {}),
+    ...(compensationReference ? { compensationReference } : {}),
+    ...(transform ? {} : { transformMissing: rawName }),
+  };
 }
 
 /** ChartData attributes Flowcyto models itself; everything else is preserved. */
@@ -193,7 +245,7 @@ type SourceRead =
 function readSource(
   layer: XmlNode,
   input: FlowJoLayoutImportInput,
-  axisReferences: Array<{ reference: string; detail: string }>,
+  compensation: { id?: string; unresolved?: { reference: string; detail: string } },
 ): SourceRead {
   const flowjoSampleId = stringAttr(layer, "sampleID") ?? "";
   const sample = input.samplesByFlowJoId.get(flowjoSampleId);
@@ -245,13 +297,15 @@ function readSource(
   }
 
   const legendColor = stringAttr(asRecord(layer.LegendSpec), "color");
-  const reference = axisReferences[0];
   return {
     ok: true,
     source: {
       sample: sample.sampleId,
       parent: resolution.gateId,
-      ...(reference ? { unresolvedCompensation: reference } : {}),
+      // Importing a reference is not permission to apply it: a renderer still has
+      // to pass the id explicitly, exactly as for any other compensation.
+      ...(compensation.id ? { compensationId: compensation.id } : {}),
+      ...(compensation.unresolved ? { unresolvedCompensation: compensation.unresolved } : {}),
       ...(legendColor ? { legend: { color: legendColor } } : {}),
     },
   };
@@ -294,9 +348,12 @@ export function importFlowJoLayouts(input: FlowJoLayoutImportInput): FlowJoLayou
   const warnings: string[] = [];
   const layouts: FlowcytoLayout[] = [];
   const unresolvedByReason: Record<string, number> = {};
+  const blockedByReason: Record<string, number> = {};
   let panelsTotal = 0;
   let panelsResolved = 0;
+  let panelsPartial = 0;
   let unresolvedCompensation = 0;
+  let resolvedCompensation = 0;
   let absentCompensation = 0;
 
   layoutNodes.forEach((layoutNode, layoutIndex) => {
@@ -373,7 +430,7 @@ export function importFlowJoLayouts(input: FlowJoLayoutImportInput): FlowJoLayou
         .map((layer) => input.samplesByFlowJoId.get(stringAttr(layer, "sampleID") ?? ""))
         .find((sample): sample is FlowJoLayoutSample => sample !== undefined);
       if (!firstBindable) {
-        const read = readSource(layers[0], input, []);
+        const read = readSource(layers[0], input, {});
         unresolve(read.ok
           ? { state: "unresolved", reason: "unknown_sample", detail: "No DataLayer references a loaded sample." }
           : read.status);
@@ -395,22 +452,61 @@ export function importFlowJoLayouts(input: FlowJoLayoutImportInput): FlowJoLayou
         return;
       }
 
-      const references = [xRead.compensationReference, yRead?.ok ? yRead.compensationReference : undefined]
+      const axisReads = [xRead, ...(yRead?.ok ? [yRead] : [])];
+      const references = axisReads
+        .map((read) => read.compensationReference)
         .filter((entry): entry is { reference: string; detail: string } => entry !== undefined);
-      if (references.length > 0) unresolvedCompensation += references.length;
-      absentCompensation += (xRead.compensationReference ? 0 : 1)
-        + (yRead?.ok ? (yRead.compensationReference ? 0 : 1) : 0);
+      const boundIds = [...new Set(axisReads.map((read) => read.compensationId).filter(Boolean))] as string[];
+      unresolvedCompensation += references.length;
+      absentCompensation += axisReads
+        .filter((read) => !read.compensationReference && !read.compensationId).length;
+      resolvedCompensation += axisReads.filter((read) => read.compensationId).length;
 
+      const blockers: PanelBlocker[] = references.map((entry) => ({
+        reason: "unresolved_compensation" as const,
+        detail: entry.detail,
+      }));
+      if (boundIds.length > 1) {
+        blockers.push({
+          reason: "unresolved_compensation",
+          detail: `Panel axes bind to different compensation matrices (${boundIds.join(", ")}), so no single compensation state applies to this panel.`,
+        });
+      }
+      for (const read of axisReads) {
+        if (!read.transformMissing) continue;
+        blockers.push({
+          reason: "unresolved_transform",
+          detail: `Sample ${firstBindable.sampleId} defines no transform for "${read.transformMissing}", so the axis scale and its parameters are unknown.`,
+        });
+      }
+
+      const compensation = {
+        ...(boundIds.length === 1 ? { id: boundIds[0] } : {}),
+        ...(references[0] ? { unresolved: references[0] } : {}),
+      };
       const sources: LayoutPanelSource[] = [];
       let failure: PanelStatus | null = null;
       for (const layer of layers) {
-        const read = readSource(layer, input, references);
+        const read = readSource(layer, input, compensation);
         if (read.ok) sources.push(read.source);
         else if (!failure) failure = read.status;
       }
       if (failure || sources.length === 0) {
         unresolve(failure ?? { state: "unresolved", reason: "unknown_sample", detail: "No DataLayer could be bound." });
         return;
+      }
+
+      // Binding a sample and a population is not enough to draw the data: a panel
+      // with an unbound compensation reference or an unknown transform is kept as
+      // partial so a renderer shows a labelled placeholder instead of a plot.
+      const status: PanelStatus = blockers.length > 0
+        ? { state: "partial", blockers }
+        : { state: "resolved" };
+      if (blockers.length > 0) {
+        for (const blocker of blockers) {
+          blockedByReason[blocker.reason] = (blockedByReason[blocker.reason] ?? 0) + 1;
+        }
+        warnings.push(`Layout "${name}" panel ${panelId}: ${blockers.map((entry) => entry.detail).join(" ")}`);
       }
 
       const plotType = plotTypeFor(graph);
@@ -420,13 +516,15 @@ export function importFlowJoLayouts(input: FlowJoLayoutImportInput): FlowJoLayou
         x: xRead.axis,
         ...(yRead?.ok && plotType !== "histogram" ? { y: yRead.axis } : {}),
         ...(plotType ? { plotType } : {}),
-        status: { state: "resolved" },
+        status,
       });
+      if (status.state === "partial") panelsPartial += 1;
+      else panelsResolved += 1;
+      // Partial panels are bound, so they still inform layout classification.
       resolvedDescriptors.push({
         samples: sources.map((source) => source.sample),
         paths: layers.map((layer) => stringAttr(layer, "path") ?? ""),
       });
-      panelsResolved += 1;
     });
 
     layouts.push({
@@ -452,8 +550,14 @@ export function importFlowJoLayouts(input: FlowJoLayoutImportInput): FlowJoLayou
     warnings,
     panelsTotal,
     panelsResolved,
-    panelsUnresolved: panelsTotal - panelsResolved,
+    panelsPartial,
+    panelsUnresolved: panelsTotal - panelsResolved - panelsPartial,
     unresolvedByReason,
-    compensationReferences: { unresolved: unresolvedCompensation, absent: absentCompensation },
+    blockedByReason,
+    compensationReferences: {
+      resolved: resolvedCompensation,
+      unresolved: unresolvedCompensation,
+      absent: absentCompensation,
+    },
   };
 }

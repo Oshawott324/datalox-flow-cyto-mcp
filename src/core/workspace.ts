@@ -522,8 +522,8 @@ function validateCompensationShape(matrix: unknown, index: number): ValidationEr
   const id = asString(matrix.id);
   if (!id) errors.push(validationError(`/compensations/${index}/id`, "missing_compensation_id", "Compensation id is required."));
   const source = asString(matrix.source);
-  if (source !== "fcs_keyword" && source !== "controls" && source !== "manual") {
-    errors.push(validationError(`/compensations/${index}/source`, "invalid_compensation_source", "Compensation source must be fcs_keyword, controls, or manual."));
+  if (source !== "fcs_keyword" && source !== "controls" && source !== "manual" && source !== "flowjo_wsp") {
+    errors.push(validationError(`/compensations/${index}/source`, "invalid_compensation_source", "Compensation source must be fcs_keyword, controls, manual, or flowjo_wsp."));
   }
   const channels = Array.isArray(matrix.channels) ? matrix.channels : [];
   if (channels.length === 0 || channels.some((channel) => typeof channel !== "string" || channel.length === 0)) {
@@ -732,14 +732,45 @@ function validateLayoutChannels(
   return errors;
 }
 
+const PANEL_BLOCKER_REASONS = new Set(["unresolved_compensation", "unresolved_transform"]);
+
 function validatePanelStatus(status: unknown, basePath: string): ValidationError[] {
   if (!isRecord(status)) {
     return [validationError(basePath, "missing_panel_status", "Panel status is required and must be an object.")];
   }
   const state = asString(status.state);
   if (state === "resolved") return [];
+  if (state === "partial") {
+    const blockers = Array.isArray(status.blockers) ? status.blockers : null;
+    if (!blockers || blockers.length === 0) {
+      return [validationError(
+        `${basePath}/blockers`,
+        "missing_panel_blockers",
+        "A partial panel requires at least one blocker explaining why it cannot be rendered faithfully.",
+      )];
+    }
+    return blockers.flatMap((blocker, blockerIndex) => {
+      const blockerPath = `${basePath}/blockers/${blockerIndex}`;
+      if (!isRecord(blocker)) {
+        return [validationError(blockerPath, "invalid_panel_blocker", "Panel blocker must be an object.")];
+      }
+      const reason = asString(blocker.reason);
+      const errors: ValidationError[] = [];
+      if (!reason || !PANEL_BLOCKER_REASONS.has(reason)) {
+        errors.push(validationError(
+          `${blockerPath}/reason`,
+          "invalid_panel_blocker_reason",
+          `Panel blocker reason must be one of ${[...PANEL_BLOCKER_REASONS].join(", ")}.`,
+        ));
+      }
+      if (!asString(blocker.detail)) {
+        errors.push(validationError(`${blockerPath}/detail`, "missing_panel_blocker_detail", "Panel blocker requires a detail message."));
+      }
+      return errors;
+    });
+  }
   if (state !== "unresolved") {
-    return [validationError(`${basePath}/state`, "invalid_panel_status", "Panel status state must be resolved or unresolved.")];
+    return [validationError(`${basePath}/state`, "invalid_panel_status", "Panel status state must be resolved, partial, or unresolved.")];
   }
   const errors: ValidationError[] = [];
   const reason = asString(status.reason);

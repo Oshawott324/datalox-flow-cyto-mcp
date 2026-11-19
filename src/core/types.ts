@@ -10,7 +10,7 @@ export type CompensationKeyword = "$SPILLOVER" | "SPILLOVER" | "$COMP" | "COMP" 
 export type CompensationMatrix = {
   id: string;
   name?: string;
-  source: "fcs_keyword" | "controls" | "manual";
+  source: "fcs_keyword" | "controls" | "manual" | "flowjo_wsp";
   sample?: string;
   keyword?: CompensationKeyword;
   channels: string[];
@@ -184,10 +184,24 @@ export type PanelUnresolvedReason =
   | "unsupported_name"
   | "unsupported_feature";
 
-// A panel that cannot be bound stays in the layout and stays visibly unresolved.
-// Nothing is dropped silently, so a partial import reports as partial.
+// Why a bound panel still cannot be rendered faithfully.
+export type PanelBlocker = {
+  reason: "unresolved_compensation" | "unresolved_transform";
+  detail: string;
+};
+
+/**
+ * A panel that cannot be bound stays in the layout and stays visibly unresolved;
+ * nothing is dropped silently.
+ *
+ * "resolved" means bound AND renderable. "partial" means the sample and
+ * population bound but something needed to draw the data faithfully did not, so
+ * a renderer must show a labelled placeholder rather than a plot. Resolving a
+ * sample and a population is not on its own enough to render.
+ */
 export type PanelStatus =
   | { state: "resolved" }
+  | { state: "partial"; blockers: PanelBlocker[] }
   | {
     state: "unresolved";
     reason: PanelUnresolvedReason;

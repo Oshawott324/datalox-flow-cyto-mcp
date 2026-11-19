@@ -8,15 +8,21 @@
    - a ChartData whose width/height are 0, with the real size on WindowPosition
    - a Multigraph grid, which is not modelled
 
+  Deliberately conflicting definitions across samples:
+   - alpha and beta both carry a matrix with transforms:id="shared-matrix-id",
+     as FlowJo does, but with DIFFERENT coefficients. Keying only on the FlowJo
+     id collapses them and compensates every panel with one sample's matrix.
+   - alpha and beta define DIFFERENT biex parameters for Comp-FL03-A, so a
+     workspace-wide transform map returns the wrong parameters for one of them.
+   - Comp-SSC-A names a real prefix but a channel the matrix does not carry.
+   - FL13-A has no transform in alpha at all.
+
   NOT validated by opening in FlowJo. See testdata/fixtures/flowjo/README.md.
 -->
 <Workspace version="20.0" creator="FlowJo-hand-crafted-fixture"
   xmlns:gating="http://www.isac-net.org/std/Gating-ML/v2.0/gating"
   xmlns:data-type="http://www.isac-net.org/std/Gating-ML/v2.0/datatypes"
   xmlns:transforms="http://www.isac-net.org/std/Gating-ML/v2.0/transformations">
-  <Matrices>
-    <transforms:spilloverMatrix prefix="Comp-" name="Acquisition-defined" suffix=""/>
-  </Matrices>
   <Groups>
     <GroupNode name="All Samples">
       <Group name="All Samples">
@@ -31,15 +37,47 @@
   <SampleList>
     <Sample>
       <DataSet uri="file:///alpha.fcs"/>
+      <Transformations>
+        <transforms:linear transforms:minRange="0" transforms:maxRange="262144" gain="1">
+          <data-type:parameter data-type:name="FSC-A"/>
+        </transforms:linear>
+        <transforms:linear transforms:minRange="0" transforms:maxRange="262144" gain="1">
+          <data-type:parameter data-type:name="SSC-A"/>
+        </transforms:linear>
+        <transforms:biex transforms:length="256" transforms:maxRange="262144"
+          transforms:neg="0" transforms:width="-10" transforms:pos="4.3">
+          <data-type:parameter data-type:name="Comp-FL03-A"/>
+        </transforms:biex>
+        <transforms:biex transforms:length="256" transforms:maxRange="262144"
+          transforms:neg="0" transforms:width="-10" transforms:pos="4.3">
+          <data-type:parameter data-type:name="Comp-SSC-A"/>
+        </transforms:biex>
+        <!-- No transform for FL13-A, so a panel using it cannot state a scale. -->
+      </Transformations>
+      <transforms:spilloverMatrix prefix="Comp-" name="Compensation" suffix=""
+        transforms:id="shared-matrix-id">
+        <data-type:parameters>
+          <data-type:parameter data-type:name="FL03-A"/>
+          <data-type:parameter data-type:name="FL13-A"/>
+        </data-type:parameters>
+        <transforms:spillover data-type:parameter="FL03-A">
+          <transforms:coefficient data-type:parameter="FL03-A" transforms:value="1"/>
+          <transforms:coefficient data-type:parameter="FL13-A" transforms:value="0.1"/>
+        </transforms:spillover>
+        <transforms:spillover data-type:parameter="FL13-A">
+          <transforms:coefficient data-type:parameter="FL03-A" transforms:value="0.02"/>
+          <transforms:coefficient data-type:parameter="FL13-A" transforms:value="1"/>
+        </transforms:spillover>
+      </transforms:spilloverMatrix>
       <SampleNode name="alpha.fcs" sampleID="1" count="3">
         <Subpopulations>
           <Population name="Live" count="2">
             <Gate gating:id="live-alpha">
               <gating:RectangleGate gating:id="live-alpha">
-                <gating:dimension gating:compensation-ref="uncompensated" gating:min="10" gating:max="900">
+                <gating:dimension gating:min="10" gating:max="900">
                   <data-type:parameter data-type:name="FSC-A"/>
                 </gating:dimension>
-                <gating:dimension gating:compensation-ref="uncompensated" gating:min="10" gating:max="900">
+                <gating:dimension gating:min="10" gating:max="900">
                   <data-type:parameter data-type:name="SSC-A"/>
                 </gating:dimension>
               </gating:RectangleGate>
@@ -50,15 +88,44 @@
     </Sample>
     <Sample>
       <DataSet uri="file:///beta.fcs"/>
+      <Transformations>
+        <transforms:linear transforms:minRange="0" transforms:maxRange="262144" gain="1">
+          <data-type:parameter data-type:name="FSC-A"/>
+        </transforms:linear>
+        <transforms:linear transforms:minRange="0" transforms:maxRange="262144" gain="1">
+          <data-type:parameter data-type:name="SSC-A"/>
+        </transforms:linear>
+        <!-- Same parameter, different biex parameters from alpha. -->
+        <transforms:biex transforms:length="256" transforms:maxRange="262144"
+          transforms:neg="0" transforms:width="-5" transforms:pos="4.9">
+          <data-type:parameter data-type:name="Comp-FL03-A"/>
+        </transforms:biex>
+      </Transformations>
+      <!-- Same transforms:id as alpha, different coefficients. -->
+      <transforms:spilloverMatrix prefix="Comp-" name="Compensation" suffix=""
+        transforms:id="shared-matrix-id">
+        <data-type:parameters>
+          <data-type:parameter data-type:name="FL03-A"/>
+          <data-type:parameter data-type:name="FL13-A"/>
+        </data-type:parameters>
+        <transforms:spillover data-type:parameter="FL03-A">
+          <transforms:coefficient data-type:parameter="FL03-A" transforms:value="1"/>
+          <transforms:coefficient data-type:parameter="FL13-A" transforms:value="0.5"/>
+        </transforms:spillover>
+        <transforms:spillover data-type:parameter="FL13-A">
+          <transforms:coefficient data-type:parameter="FL03-A" transforms:value="0.07"/>
+          <transforms:coefficient data-type:parameter="FL13-A" transforms:value="1"/>
+        </transforms:spillover>
+      </transforms:spilloverMatrix>
       <SampleNode name="beta.fcs" sampleID="2" count="3">
         <Subpopulations>
           <Population name="Live" count="2">
             <Gate gating:id="live-beta">
               <gating:RectangleGate gating:id="live-beta">
-                <gating:dimension gating:compensation-ref="uncompensated" gating:min="10" gating:max="900">
+                <gating:dimension gating:min="10" gating:max="900">
                   <data-type:parameter data-type:name="FSC-A"/>
                 </gating:dimension>
-                <gating:dimension gating:compensation-ref="uncompensated" gating:min="10" gating:max="900">
+                <gating:dimension gating:min="10" gating:max="900">
                   <data-type:parameter data-type:name="SSC-A"/>
                 </gating:dimension>
               </gating:RectangleGate>
@@ -105,7 +172,7 @@
       <FigList>
         <ChartData x="10" y="400" width="256" height="256">
           <Graph type="DotPlot">
-            <Axis dimension="x" name="FSC-A" auto="auto"/>
+            <Axis dimension="x" name="Comp-FL03-A" auto="auto"/>
             <Axis dimension="y" name="SSC-A" auto="auto"/>
           </Graph>
           <PopModelList>
@@ -115,7 +182,7 @@
         </ChartData>
         <ChartData x="300" y="400" width="256" height="256">
           <Graph type="DotPlot">
-            <Axis dimension="x" name="FSC-A" auto="auto"/>
+            <Axis dimension="x" name="Comp-FL03-A" auto="auto"/>
             <Axis dimension="y" name="SSC-A" auto="auto"/>
           </Graph>
           <PopModelList>
@@ -145,6 +212,28 @@
             <DataLayer path="Live" sampleID="1" sampleGMID="0"/>
           </PopModelList>
           <WindowPosition x="880" y="400" width="256" height="256" displayed="1"/>
+        </ChartData>
+        <!-- Comp- prefix on a channel the matrix does not carry. -->
+        <ChartData x="10" y="700" width="256" height="256">
+          <Graph type="DotPlot">
+            <Axis dimension="x" name="Comp-SSC-A" auto="auto"/>
+            <Axis dimension="y" name="FSC-A" auto="auto"/>
+          </Graph>
+          <PopModelList>
+            <DataLayer path="Live" sampleID="1" sampleGMID="0"/>
+          </PopModelList>
+          <WindowPosition x="10" y="700" width="256" height="256" displayed="1"/>
+        </ChartData>
+        <!-- alpha defines no transform for FL13-A. -->
+        <ChartData x="300" y="700" width="256" height="256">
+          <Graph type="DotPlot">
+            <Axis dimension="x" name="FL13-A" auto="auto"/>
+            <Axis dimension="y" name="FSC-A" auto="auto"/>
+          </Graph>
+          <PopModelList>
+            <DataLayer path="Live" sampleID="1" sampleGMID="0"/>
+          </PopModelList>
+          <WindowPosition x="300" y="700" width="256" height="256" displayed="1"/>
         </ChartData>
       </FigList>
     </Layout>
