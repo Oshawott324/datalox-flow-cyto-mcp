@@ -23,6 +23,29 @@
   xmlns:gating="http://www.isac-net.org/std/Gating-ML/v2.0/gating"
   xmlns:data-type="http://www.isac-net.org/std/Gating-ML/v2.0/datatypes"
   xmlns:transforms="http://www.isac-net.org/std/Gating-ML/v2.0/transformations">
+  <!--
+    A global matrix, declaring its own prefix and deliberately reusing the same
+    transforms:id as the per-sample matrices. A panel axis naming "Acq-" must not
+    bind a per-sample matrix just because the ids match; global-matrix import is
+    out of scope, so such an axis has to report rather than render.
+  -->
+  <Matrices>
+    <transforms:spilloverMatrix prefix="Acq-" name="Acquisition-defined" suffix=""
+      transforms:id="shared-matrix-id">
+      <data-type:parameters>
+        <data-type:parameter data-type:name="FL03-A"/>
+        <data-type:parameter data-type:name="FL13-A"/>
+      </data-type:parameters>
+      <transforms:spillover data-type:parameter="FL03-A">
+        <transforms:coefficient data-type:parameter="FL03-A" transforms:value="1"/>
+        <transforms:coefficient data-type:parameter="FL13-A" transforms:value="0.99"/>
+      </transforms:spillover>
+      <transforms:spillover data-type:parameter="FL13-A">
+        <transforms:coefficient data-type:parameter="FL03-A" transforms:value="0.99"/>
+        <transforms:coefficient data-type:parameter="FL13-A" transforms:value="1"/>
+      </transforms:spillover>
+    </transforms:spilloverMatrix>
+  </Matrices>
   <Groups>
     <GroupNode name="All Samples">
       <Group name="All Samples">
@@ -234,6 +257,17 @@
             <DataLayer path="Live" sampleID="1" sampleGMID="0"/>
           </PopModelList>
           <WindowPosition x="300" y="700" width="256" height="256" displayed="1"/>
+        </ChartData>
+        <!-- References the global matrix's prefix, which no sample defines. -->
+        <ChartData x="590" y="700" width="256" height="256">
+          <Graph type="DotPlot">
+            <Axis dimension="x" name="Acq-FL03-A" auto="auto"/>
+            <Axis dimension="y" name="SSC-A" auto="auto"/>
+          </Graph>
+          <PopModelList>
+            <DataLayer path="Live" sampleID="1" sampleGMID="0"/>
+          </PopModelList>
+          <WindowPosition x="590" y="700" width="256" height="256" displayed="1"/>
         </ChartData>
       </FigList>
     </Layout>

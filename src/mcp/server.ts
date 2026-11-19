@@ -17,6 +17,7 @@ import {
   type NativeGateEditorWindow,
 } from "../app/gate-editor/native-window.js";
 import { renderPlotImage } from "../app/gate-editor/plot-image.js";
+import { renderLayout } from "../app/gate-editor/layout-image.js";
 import { GATE_EDITOR_HTML } from "../app/gate-editor/ui.js";
 import { getGateEditorState, getPlotContext, recommendedAxes, startGateEditorServer, type GateEditorServer } from "../app/gate-editor/server.js";
 import {
@@ -1482,6 +1483,71 @@ server.registerTool(
       workspacePath: workspace_path,
       view: view as FlowcytoView,
       expectedRevision: expected_revision,
+    })),
+);
+
+server.registerTool(
+  "render_layout",
+  {
+    description: "Return agent-readable results for every panel in a layout: what was drawn, what was skipped and why, and the compensation actually applied to each source. compensation=\"as_recorded\" (the default) applies exactly the compensation_id each panel source stores, and \"none\" renders every source raw; the choice is always explicit and the result always reports what was applied. Panels that are unresolved or partial are reported as placeholders, never drawn.",
+    inputSchema: {
+      workspace_path: z.string(),
+      layout_id: z.string(),
+      compensation: z.enum(["as_recorded", "none"]).optional(),
+      max_events: z.number().int().positive().optional(),
+      format: z.enum(["auto", "points", "bins"]).optional(),
+      bin_width: z.number().int().positive().optional(),
+      bin_height: z.number().int().positive().optional(),
+      max_panels: z.number().int().positive().optional(),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, layout_id, compensation, max_events, format, bin_width, bin_height, max_panels }) => toolContent(() =>
+    renderLayout({
+      workspacePath: workspace_path,
+      layoutId: layout_id,
+      compensation,
+      maxEvents: max_events,
+      format,
+      binWidth: bin_width,
+      binHeight: bin_height,
+      maxPanels: max_panels,
+      withoutImage: true,
+    })),
+);
+
+server.registerTool(
+  "render_layout_image",
+  {
+    description: "Render a whole layout as one deterministic SVG, compositing each panel with the same renderer render_plot_image uses. compensation=\"as_recorded\" (the default) applies exactly the compensation_id each panel source stores, and \"none\" renders every source raw; the result reports the compensation actually applied per source either way. Unresolved and partial panels are drawn as labelled NOT RENDERED placeholders carrying their reason, never as plots. By default the SVG is also written under .datalox/cache/layouts/ so hosts that do not display images inline still get a file path.",
+    inputSchema: {
+      workspace_path: z.string(),
+      layout_id: z.string(),
+      compensation: z.enum(["as_recorded", "none"]).optional(),
+      max_events: z.number().int().positive().optional(),
+      format: z.enum(["auto", "points", "bins"]).optional(),
+      bin_width: z.number().int().positive().optional(),
+      bin_height: z.number().int().positive().optional(),
+      max_panels: z.number().int().positive().optional(),
+      output: z.enum(["content", "file", "both"]).optional(),
+      output_path: z.string().optional(),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, layout_id, compensation, max_events, format, bin_width, bin_height, max_panels, output, output_path }) => toolContent(() =>
+    renderLayout({
+      workspacePath: workspace_path,
+      layoutId: layout_id,
+      compensation,
+      maxEvents: max_events,
+      format,
+      binWidth: bin_width,
+      binHeight: bin_height,
+      maxPanels: max_panels,
+      output,
+      outputPath: output_path,
     })),
 );
 

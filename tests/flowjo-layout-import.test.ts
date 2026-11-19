@@ -87,14 +87,16 @@ const panelById = (id: string) => panels.find((panel) => panel.id.includes(id));
 describe("FlowJo layout import", () => {
   it("preserves every layout and every panel, resolving only what binds", () => {
     expect(layouts).toHaveLength(2);
-    expect(panels).toHaveLength(8);
+    expect(panels).toHaveLength(9);
     expect(importResult.layoutPanels).toEqual({
-      total: 8,
+      total: 9,
       resolved: 4,
-      partial: 2,
+      partial: 3,
       unresolved: 2,
       unresolvedByReason: { unknown_sample: 1, unsupported_feature: 1 },
-      blockedByReason: { unresolved_compensation: 1, unresolved_transform: 1 },
+      // The global-matrix panel is blocked twice: alpha defines neither a matrix
+      // with the "Acq-" prefix nor a transform for the raw name "Acq-FL03-A".
+      blockedByReason: { unresolved_compensation: 2, unresolved_transform: 2 },
     });
   });
 
@@ -144,6 +146,32 @@ describe("FlowJo layout import", () => {
     expect(panel.sources[0].unresolvedCompensation?.reference).toBe("Comp-SSC-A");
     // Sample and population bound, but the panel is not renderable.
     expect(panel.sources[0].sample).toBe("alpha");
+  });
+
+  it("refuses to bind a global-matrix reference, even when ids collide", async () => {
+    const panel = panelById("compare_panel_7");
+    if (panel?.status.state !== "partial") throw new Error(`expected partial, got ${panel?.status.state}`);
+
+    const blocker = panel.status.blockers.find((entry) => entry.reason === "unresolved_compensation");
+    expect(blocker).toBeDefined();
+    expect(blocker?.detail).toContain("Acq-");
+    expect(blocker?.detail).toContain("alpha");
+
+    const source = panel.sources[0];
+    // The global matrix shares transforms:id with alpha's per-sample matrix. A
+    // reference to a prefix no sample defines must not bind that matrix.
+    expect(source.compensationId).toBeUndefined();
+    expect(source.unresolvedCompensation?.reference).toBe("Acq-FL03-A");
+
+    const workspace = await readWorkspace(importResult.workspacePath);
+    // The global matrix itself is not imported; only per-sample ones are.
+    expect((workspace.compensations ?? []).every((entry) => entry.name?.includes("Compensation"))).toBe(true);
+    expect((workspace.compensations ?? []).some((entry) => entry.name?.includes("Acquisition-defined"))).toBe(false);
+
+    // Partial, so a renderer cannot draw it; and the state is recorded as
+    // unknown rather than as uncompensated.
+    expect(source.unresolvedCompensation?.detail).not.toMatch(/uncompensated/i);
+    expect(source.unresolvedCompensation?.detail).toMatch(/unknown/i);
   });
 
   it("marks a bound panel partial when the sample defines no transform", () => {
@@ -209,7 +237,7 @@ describe("FlowJo layout import", () => {
     expect(plain?.compensationId).toBeUndefined();
 
     expect(importResult.layoutCompensationReferences).toEqual({
-      resolved: 3, unresolved: 1, absent: 8,
+      resolved: 3, unresolved: 2, absent: 9,
     });
   });
 
