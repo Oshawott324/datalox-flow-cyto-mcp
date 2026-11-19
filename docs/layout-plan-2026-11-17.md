@@ -115,7 +115,7 @@ therefore **unknown**, not merely unmodelled.
 | Whether `figID` format matters to FlowJo on read | **[hypothesis]** — format observed, requirement untested |
 | How `sampleGMID` is assigned, and whether it is required | **[hypothesis]** — values observed, rule unknown |
 | Units and origin of `ChartData x/y` vs `PrintLayout` page coords | **[hypothesis]** — pixel-like, untested |
-| Whether `ChartData` and `WindowPosition` must agree | Observed to agree; causality untested |
+| Whether `ChartData` and `WindowPosition` must agree | **Answered during L4: they do not.** In the comparison layout every `ChartData` carries `width="0" height="0"` while its direct-child `WindowPosition` holds the real 256×256 size. `ChartData` width/height are therefore not authoritative; the panel's own `WindowPosition` is the fallback. Nested `WindowPosition` elements belong to `Ancestry`/`Multigraph` and must not be read as panel geometry. E1 should still establish which one FlowJo writes on a move. |
 
 ---
 

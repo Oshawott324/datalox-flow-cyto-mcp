@@ -167,6 +167,12 @@ export type LayoutPanelSource = {
   // Compensation is per source, not per panel: overlaid samples can carry
   // different sample-specific matrices. Nothing is applied without an explicit id.
   compensationId?: string;
+  // An explicit compensation reference found in an imported file that could not be
+  // bound to a workspace matrix. Its presence means the compensation state is
+  // UNKNOWN, which is not the same as uncompensated, so a renderer must not draw
+  // this source as raw data. Absence of both fields means no reference was found,
+  // which is also not a claim that the data is uncompensated.
+  unresolvedCompensation?: { reference: string; detail: string };
   legend?: { color?: string; label?: string };
 };
 
@@ -174,6 +180,7 @@ export type PanelUnresolvedReason =
   | "ambiguous_path"
   | "unknown_path"
   | "unknown_sample"
+  | "unknown_parameter"
   | "unsupported_name"
   | "unsupported_feature";
 
@@ -199,6 +206,10 @@ export type LayoutPanelPosition = {
 
 export type LayoutPanel = {
   id: string;
+  // An unresolved panel carries no sources: a source needs a known sample and a
+  // known population, and inventing either would be a plausible substitute for
+  // evidence. The original reference is kept verbatim in _flowjo and summarized
+  // in status.detail.
   sources: LayoutPanelSource[];
   x: PanelAxis;
   // Omit for a histogram.

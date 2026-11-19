@@ -8,6 +8,8 @@ import { readFcsMetadata } from "./fcs.js";
 import { validateWorkspaceObject, writeWorkspace } from "./workspace.js";
 import { FlowcytoError, type FlowcytoSample, type FlowcytoWorkspace, type SampleMetadata, type WorkspaceGate } from "./types.js";
 
+import { importFlowJoLayouts, type FlowJoLayoutSample } from "./flowjo-layout-import.js";
+
 type XmlNode = Record<string, unknown>;
 type ImportedGateBase = {
   id: string;
@@ -47,6 +49,14 @@ export type ImportFlowJoWorkspaceInput = {
   samplePathMap?: Record<string, string>;
   overwriteSamples?: boolean;
   overwriteGates?: boolean;
+  /** Import <Layout> panels alongside gates. Default true. */
+  importLayouts?: boolean;
+  /**
+   * Parse, resolve and validate without writing flowcyto.workspace.json. The
+   * source .wsp and FCS files are never written in either mode; this controls
+   * only whether the workspace artifact is produced.
+   */
+  dryRun?: boolean;
 };
 
 export type ImportFlowJoWorkspaceResult = {
@@ -55,6 +65,20 @@ export type ImportFlowJoWorkspaceResult = {
   samplesImported: number;
   gatesImported: number;
   compensationsImported: number;
+  layoutsImported: number;
+  layoutPanels: {
+    total: number;
+    resolved: number;
+    unresolved: number;
+    unresolvedByReason: Record<string, number>;
+  };
+  /**
+   * Explicit compensation references found on layout axes. `unresolved` counts
+   * prefixed references that could not be bound to a workspace matrix; `absent`
+   * counts axes carrying no reference, which is not a claim that they are raw.
+   */
+  layoutCompensationReferences: { unresolved: number; absent: number };
+  dryRun: boolean;
   warnings: string[];
 };
 
@@ -555,11 +579,33 @@ function coordinateConverter(context: FlowJoTransformContext, warnings: string[]
   };
 }
 
-async function readFlowJoSamples(input: ImportFlowJoWorkspaceInput, workspace: XmlNode): Promise<{ samples: FlowcytoSample[]; gates: WorkspaceGate[]; warnings: string[] }> {
+/** Numeric sampleIDs named by any <SampleRef>, used as evidence for dangling ids. */
+function collectSampleRefs(value: unknown, found: Set<string> = new Set()): Set<string> {
+  const node = asRecord(value);
+  if (!node) return found;
+  for (const reference of arrayOf(node.SampleRef)) {
+    const id = stringAttr(asRecord(reference), "sampleID");
+    if (id) found.add(id);
+  }
+  for (const [key, child] of Object.entries(node)) {
+    if (key === "SampleRef") continue;
+    if (Array.isArray(child)) child.forEach((entry) => collectSampleRefs(entry, found));
+    else collectSampleRefs(child, found);
+  }
+  return found;
+}
+
+async function readFlowJoSamples(input: ImportFlowJoWorkspaceInput, workspace: XmlNode): Promise<{
+  samples: FlowcytoSample[];
+  gates: WorkspaceGate[];
+  warnings: string[];
+  samplesByFlowJoId: Map<string, FlowJoLayoutSample>;
+}> {
   const sampleNodes = arrayOf(asRecord(workspace.SampleList)?.Sample).map(asRecord).filter((entry): entry is XmlNode => entry !== null);
   const warnings: string[] = [];
   const samples: FlowcytoSample[] = [];
   const gates: WorkspaceGate[] = [];
+  const samplesByFlowJoId = new Map<string, FlowJoLayoutSample>();
   const rootDir = path.resolve(input.workspaceDir);
 
   for (let index = 0; index < sampleNodes.length; index += 1) {
@@ -575,12 +621,14 @@ async function readFlowJoSamples(input: ImportFlowJoWorkspaceInput, workspace: X
     const resolveChannel = channelResolver(metadata);
     const transformContext = flowJoTransformContext(workspace, resolveChannel);
     samples.push({ id: sampleId, path: pathForWorkspace(rootDir, samplePath) });
+    const flowjoSampleId = stringAttr(sampleNode, "sampleID");
+    if (flowjoSampleId) samplesByFlowJoId.set(flowjoSampleId, { sampleId, metadata, resolveChannel });
     appendNestedGates(collectGateWrappers(sampleNode?.Subpopulations), sampleId, "root", gates, warnings, resolveChannel, coordinateConverter(transformContext, warnings));
   }
   if (samples.length === 0) {
     throw new FlowcytoError("flowjo_sample_filter_no_match", "No FlowJo samples matched sampleNames/sampleIds filter.", "/sampleNames");
   }
-  return { samples, gates, warnings };
+  return { samples, gates, warnings, samplesByFlowJoId };
 }
 
 function mergeById<T extends { id: string }>(existing: T[], imported: T[], overwrite: boolean): T[] {
@@ -621,24 +669,42 @@ export async function importFlowJoWorkspace(input: ImportFlowJoWorkspaceInput): 
   const currentState = await existingOrEmptyWorkspace(workspacePath);
   const current = currentState.workspace;
   const importedGates = uniquifyGateIds(imported.gates);
-  const next: FlowcytoWorkspace = {
+  const withGates: FlowcytoWorkspace = {
     ...current,
     samples: mergeById(current.samples, imported.samples, input.overwriteSamples ?? false),
     gates: mergeById(current.gates, importedGates, input.overwriteGates ?? false),
   };
+
+  // Layouts resolve population name paths against the merged gates, so they are
+  // built after gate ids are final.
+  const layoutImport = (input.importLayouts ?? true)
+    ? importFlowJoLayouts({
+      workspaceXml: flowJoWorkspace,
+      samplesByFlowJoId: imported.samplesByFlowJoId,
+      groupReferencedSampleIds: collectSampleRefs(flowJoWorkspace),
+      workspace: withGates,
+    })
+    : null;
+  const next: FlowcytoWorkspace = layoutImport
+    ? { ...withGates, layouts: mergeById(current.layouts ?? [], layoutImport.layouts, true) }
+    : withGates;
+
   const validation = await validateWorkspaceObject(workspacePath, next);
   if (!validation.ok) {
     const first = validation.errors[0];
     throw new FlowcytoError(first?.code ?? "flowjo_import_validation_failed", first?.message ?? "Imported FlowJo workspace is invalid.", first?.path);
   }
-  if (currentState.exists) {
-    const write = await writeWorkspace({ workspacePath, workspace: next, expectedRevision: current.revision });
-    if (!write.ok) {
-      const first = write.errors[0];
-      throw new FlowcytoError(first?.code ?? "flowjo_import_write_failed", first?.message ?? "Unable to write imported FlowJo workspace.", first?.path);
+  const dryRun = input.dryRun ?? false;
+  if (!dryRun) {
+    if (currentState.exists) {
+      const write = await writeWorkspace({ workspacePath, workspace: next, expectedRevision: current.revision });
+      if (!write.ok) {
+        const first = write.errors[0];
+        throw new FlowcytoError(first?.code ?? "flowjo_import_write_failed", first?.message ?? "Unable to write imported FlowJo workspace.", first?.path);
+      }
+    } else {
+      await fs.writeFile(workspacePath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
     }
-  } else {
-    await fs.writeFile(workspacePath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
   }
   return {
     ok: true,
@@ -646,6 +712,15 @@ export async function importFlowJoWorkspace(input: ImportFlowJoWorkspaceInput): 
     samplesImported: imported.samples.length,
     gatesImported: importedGates.length,
     compensationsImported: 0,
-    warnings: imported.warnings,
+    layoutsImported: layoutImport?.layouts.length ?? 0,
+    layoutPanels: {
+      total: layoutImport?.panelsTotal ?? 0,
+      resolved: layoutImport?.panelsResolved ?? 0,
+      unresolved: layoutImport?.panelsUnresolved ?? 0,
+      unresolvedByReason: layoutImport?.unresolvedByReason ?? {},
+    },
+    layoutCompensationReferences: layoutImport?.compensationReferences ?? { unresolved: 0, absent: 0 },
+    dryRun,
+    warnings: [...imported.warnings, ...(layoutImport?.warnings ?? [])],
   };
 }

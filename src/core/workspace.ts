@@ -545,7 +545,8 @@ const AXIS_SCALES = new Set(["linear", "log", "arcsinh", "biex"]);
 const LAYOUT_KINDS = new Set(["gating_strategy", "comparison", "freeform"]);
 const LAYOUT_PLOT_TYPES = new Set(["pseudocolor", "dot", "contour", "histogram"]);
 const PANEL_UNRESOLVED_REASONS = new Set([
-  "ambiguous_path", "unknown_path", "unknown_sample", "unsupported_name", "unsupported_feature",
+  "ambiguous_path", "unknown_path", "unknown_sample", "unknown_parameter",
+  "unsupported_name", "unsupported_feature",
 ]);
 
 function validateAxisBounds(bounds: unknown, basePath: string): ValidationError[] {
@@ -595,13 +596,16 @@ function validatePanelAxis(
   axis: unknown,
   basePath: string,
   groups: Map<string, BoundsGroupSpec>,
+  panelResolved: boolean,
 ): ValidationError[] {
   const errors: ValidationError[] = [];
   if (!isRecord(axis)) {
     return [validationError(basePath, "invalid_panel_axis", "Panel axis must be an object.")];
   }
-  if (!asString(axis.channel)) {
-    errors.push(validationError(`${basePath}/channel`, "missing_panel_axis_channel", "Panel axis channel is required."));
+  // An unresolved panel may have no readable channel; inventing one would assert a
+  // parameter the source file did not supply.
+  if (!asString(axis.channel) && panelResolved) {
+    errors.push(validationError(`${basePath}/channel`, "missing_panel_axis_channel", "A resolved panel axis requires a channel."));
   }
   const scale = axis.scale === undefined ? undefined : asString(axis.scale);
   if (axis.scale !== undefined && (!scale || !AXIS_SCALES.has(scale))) {
@@ -828,15 +832,23 @@ function validateLayoutShape(
     }
     if (panelId) panelIds.add(panelId);
 
+    // An unresolved panel is allowed to carry no sources and no size, since a
+    // source requires a known sample and population, and a size that is absent
+    // from the source file may not be invented to fill the gap.
+    const panelResolved = !(isRecord(panel.status) && asString(panel.status.state) === "unresolved");
     const position = panel.position;
     if (!isRecord(position) || !isFiniteNumber(position.x) || !isFiniteNumber(position.y)
       || !isFiniteNumber(position.width) || !isFiniteNumber(position.height)
-      || Number(position.width) <= 0 || Number(position.height) <= 0) {
-      errors.push(validationError(`${panelPath}/position`, "invalid_panel_position", "Panel position requires finite x and y and positive width and height."));
+      || Number(position.width) < 0 || Number(position.height) < 0
+      || (panelResolved && (Number(position.width) <= 0 || Number(position.height) <= 0))) {
+      errors.push(validationError(
+        `${panelPath}/position`,
+        "invalid_panel_position",
+        "Panel position requires finite x and y and non-negative width and height; a resolved panel requires both to be positive.",
+      ));
     }
-
-    if (!Array.isArray(panel.sources) || panel.sources.length === 0) {
-      errors.push(validationError(`${panelPath}/sources`, "missing_panel_sources", "Panel requires at least one source."));
+    if (!Array.isArray(panel.sources) || (panel.sources.length === 0 && panelResolved)) {
+      errors.push(validationError(`${panelPath}/sources`, "missing_panel_sources", "A resolved panel requires at least one source."));
     } else {
       panel.sources.forEach((source, sourceIndex) => {
         const sourcePath = `${panelPath}/sources/${sourceIndex}`;
@@ -864,11 +876,28 @@ function validateLayoutShape(
         if (source.compensationId !== undefined && (!compensationId || !context.compensationIds.has(compensationId))) {
           errors.push(validationError(`${sourcePath}/compensationId`, "unknown_compensation_id", `Compensation ${String(source.compensationId)} is not present.`));
         }
+        if (source.unresolvedCompensation !== undefined) {
+          const unresolved = isRecord(source.unresolvedCompensation) ? source.unresolvedCompensation : null;
+          if (!unresolved || !asString(unresolved.reference) || !asString(unresolved.detail)) {
+            errors.push(validationError(
+              `${sourcePath}/unresolvedCompensation`,
+              "invalid_unresolved_compensation",
+              "unresolvedCompensation requires a reference and a detail describing why it could not be bound.",
+            ));
+          }
+          if (source.compensationId !== undefined) {
+            errors.push(validationError(
+              `${sourcePath}/unresolvedCompensation`,
+              "conflicting_compensation_state",
+              "A source cannot both resolve a compensationId and carry an unresolved compensation reference.",
+            ));
+          }
+        }
       });
     }
 
-    errors.push(...validatePanelAxis(panel.x, `${panelPath}/x`, groups));
-    if (panel.y !== undefined) errors.push(...validatePanelAxis(panel.y, `${panelPath}/y`, groups));
+    errors.push(...validatePanelAxis(panel.x, `${panelPath}/x`, groups, panelResolved));
+    if (panel.y !== undefined) errors.push(...validatePanelAxis(panel.y, `${panelPath}/y`, groups, panelResolved));
 
     const plotType = panel.plotType === undefined ? undefined : asString(panel.plotType);
     if (panel.plotType !== undefined && (!plotType || !LAYOUT_PLOT_TYPES.has(plotType))) {
