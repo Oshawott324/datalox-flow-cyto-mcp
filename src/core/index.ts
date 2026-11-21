@@ -16,6 +16,7 @@ export * from "./workspace.js";
 export * from "./gates.js";
 export * from "./gate-path.js";
 export * from "./layouts.js";
+export * from "./layout-generators.js";
 export * from "./watch.js";
 export * from "./flowjo-layout-import.js";
 export * from "./flowjo-compensation-import.js";

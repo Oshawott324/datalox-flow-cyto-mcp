@@ -212,7 +212,7 @@ function renderGate(gate: WorkspaceGate, context: RenderablePlotContext, area: P
   return null;
 }
 
-export function renderPlotSvg(context: RenderablePlotContext, width = 760, height = 560): string {
+export function renderPlotSvg(context: RenderablePlotContext, width = 760, height = 560, clipId = "plotClip"): string {
   const safeWidth = Math.max(320, Math.min(2000, Math.floor(width)));
   const safeHeight = Math.max(260, Math.min(1600, Math.floor(height)));
   const area: PlotArea = {
@@ -226,9 +226,9 @@ export function renderPlotSvg(context: RenderablePlotContext, width = 760, heigh
     `<rect width="100%" height="100%" fill="#ffffff"/>`,
     `<text x="${area.left}" y="24" font-size="16" font-weight="600" fill="#1f2933">${escapeXml(context.sampleId)}: ${escapeXml(context.xLabel)} vs ${escapeXml(context.yLabel)}</text>`,
     `<text x="${safeWidth - 18}" y="24" text-anchor="end" font-size="11" fill="#6b7280">events ${context.previewSummary.sampledEvents}/${context.previewSummary.filteredEvents}</text>`,
-    `<defs><clipPath id="plotClip"><rect x="${area.left}" y="${area.top}" width="${area.width}" height="${area.height}"/></clipPath></defs>`,
+    `<defs><clipPath id="${escapeXml(clipId)}"><rect x="${area.left}" y="${area.top}" width="${area.width}" height="${area.height}"/></clipPath></defs>`,
     ...renderGridAndAxes(context, area),
-    `<g clip-path="url(#plotClip)">`,
+    `<g clip-path="url(#${escapeXml(clipId)})">`,
     ...(context.preview.bins ? renderBins(context, area) : renderPoints(context, area)),
     ...context.gates.map((gate) => renderGate(gate, context, area)).filter((value): value is string => value !== null),
     `</g>`,

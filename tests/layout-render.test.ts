@@ -10,6 +10,9 @@ import { getRenderablePlotContext } from "../src/app/gate-editor/server.js";
 import {
   importFlowJoWorkspace,
   readWorkspace,
+  upsertLayout,
+  suggestComparisonLayout,
+  suggestGatingStrategyLayout,
   type FlowcytoLayout,
 } from "../src/core/index.js";
 
@@ -55,6 +58,7 @@ async function writeFcs(fcsPath: string): Promise<void> {
 
 let workspacePath = "";
 let layouts: FlowcytoLayout[] = [];
+let supported: FlowcytoLayout[] = [];
 
 beforeAll(async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-layout-render-"));
@@ -70,12 +74,57 @@ beforeAll(async () => {
   });
   workspacePath = result.workspacePath;
   layouts = (await readWorkspace(workspacePath)).layouts ?? [];
+  // Separate native-layout fixtures use preview-default axes. Imported transform
+  // configurations remain untouched and are tested as unsupported below.
+  supported = layouts.map((layout) => ({ ...layout, id: `${layout.id}_native`, source: "manual" as const,
+    panels: layout.panels.map((panel) => ({ ...panel,
+      x: { channel: panel.x.channel }, y: panel.y ? { channel: panel.y.channel } : undefined,
+    })),
+  }));
+  for (const layout of supported) {
+    const result = await upsertLayout({ workspacePath, layout, expectedRevision: (await readWorkspace(workspacePath)).revision });
+    expect(result.ok).toBe(true);
+  }
 });
 
-const strategy = () => layouts[0];
-const comparison = () => layouts[1];
+const strategy = () => supported[0];
+const comparison = () => supported[1];
 
 describe("layout rendering", () => {
+  it("proposes deterministic ragged comparisons without modifying the workspace", async () => {
+    const before = await fs.readFile(workspacePath, "utf8");
+    const panels = ["alpha", "beta", "alpha"].map((sample) => ({
+      source: { sample, parent: "root" }, x: { channel: "FSC-A" }, y: { channel: "SSC-A" },
+    }));
+    const input = { workspacePath, id: "proposed", name: "Comparison", panels, arrangement: "by_sample" as const };
+    const first = await suggestComparisonLayout(input);
+    expect(first.ok).toBe(true);
+    expect(await suggestComparisonLayout(input)).toEqual(first);
+    expect(first.layout.panels.map((panel) => [panel.position.x, panel.position.y])).toEqual([[0, 0], [0, 304], [344, 0]]);
+    expect(await fs.readFile(workspacePath, "utf8")).toBe(before);
+  });
+
+  it("proposes strategy panels with the gate's actual parent and no inferred compensation", async () => {
+    const before = await fs.readFile(workspacePath, "utf8");
+    const workspace = await readWorkspace(workspacePath);
+    const proposal = await suggestGatingStrategyLayout({ workspacePath, id: "strategy_proposal", name: "Strategy", sampleId: "alpha", arrangement: "tree" });
+    expect(proposal.ok).toBe(true);
+    expect(proposal.layout.panels).toHaveLength(workspace.gates.filter((gate) => gate.sample === "alpha").length);
+    for (const panel of proposal.layout.panels) {
+      const gate = workspace.gates.find((entry) => entry.id === panel.sources[0].gate)!;
+      expect(panel.sources[0].parent).toBe(gate.parent);
+      expect(panel.x.channel).toBe(gate.x);
+      expect(panel.sources[0].compensationId).toBeUndefined();
+    }
+    expect(await fs.readFile(workspacePath, "utf8")).toBe(before);
+  });
+
+  it("rejects invalid generator geometry and reports unknown source references", async () => {
+    await expect(suggestComparisonLayout({ workspacePath, id: "bad", name: "Bad", panels: [], columns: 0 })).rejects.toMatchObject({ code: "invalid_layout_columns" });
+    await expect(suggestComparisonLayout({ workspacePath, id: "bad", name: "Bad", panels: [] })).rejects.toMatchObject({ code: "empty_layout" });
+    const result = await suggestComparisonLayout({ workspacePath, id: "bad", name: "Bad", panels: [{ source: { sample: "missing", parent: "root" }, x: { channel: "FSC-A" } }] });
+    expect(result.ok).toBe(false);
+  });
   it("renders a resolved scatter panel and reports no compensation applied", async () => {
     const result = await renderLayout({ workspacePath, layoutId: strategy().id });
     expect(result.kind).toBe("gating_strategy");
@@ -107,25 +156,26 @@ describe("layout rendering", () => {
     expect(fluorescence.sources?.[0].applied.channels).toContain("FITC-A");
   });
 
-  it("uses the imported biex transform parameters for the panel scale", async () => {
-    const panel = strategy().panels[1];
+  it("blocks imported transform parameters instead of silently using preview defaults", async () => {
+    const panel = layouts[0].panels[1];
     expect(panel.x.scale).toBe("biex");
     expect(panel.x.transform).toMatchObject({ width: -10, pos: 4.3, maxRange: 262144 });
 
-    const result = await renderLayout({ workspacePath, layoutId: strategy().id });
-    expect(result.panels[1].scale?.x).toBeDefined();
+    const result = await renderLayout({ workspacePath, layoutId: layouts[0].id });
+    expect(result.panels[1].reason).toContain("layout_axis_configuration_not_supported");
+    expect(result.panels[1].previewSummary).toBeUndefined();
   });
 
-  it("compensation=\"none\" renders raw and says so, rather than silently differing", async () => {
+  it("compensation=\"none\" blocks recorded compensated gates rather than reporting invalid statistics", async () => {
     const asRecorded = await renderLayout({ workspacePath, layoutId: strategy().id });
     const raw = await renderLayout({ workspacePath, layoutId: strategy().id, compensation: "none" });
 
     expect(asRecorded.compensationMode).toBe("as_recorded");
     expect(raw.compensationMode).toBe("none");
     expect(asRecorded.panels[1].sources?.[0].applied.applied).toBe(true);
-    expect(raw.panels[1].sources?.[0].applied.applied).toBe(false);
-    // The layout still records its configuration; only the render differs.
-    expect(raw.panels[1].sources?.[0].recordedCompensationId).toBe("flowjo_alpha_shared-matrix-id");
+    expect(raw.panels[1].reason).toContain("compensation_space_mismatch");
+    expect(raw.panels[1].previewSummary).toBeUndefined();
+    expect(raw.panels[0].sources?.[0].applied.applied).toBe(false);
     expect(raw.image?.svg).not.toBe(asRecorded.image?.svg);
   });
 
@@ -143,12 +193,40 @@ describe("layout rendering", () => {
       y: panel.y?.channel,
       compensationId: source.compensationId,
     });
-    const standalone = renderPlotSvg(context, panel.position.width, panel.position.height);
+    const standalone = renderPlotSvg(context, panel.position.width, panel.position.height, "layout_clip_1");
 
     // Only the root element's placement attributes differ; every child element
     // is carried over unchanged.
     const innerOf = (svg: string) => svg.slice(svg.indexOf(">") + 1);
     expect(result.image?.svg).toContain(innerOf(standalone));
+    const ids = [...(result.image?.svg ?? "").matchAll(/id="([^"]+)"/g)].map((match) => match[1]);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids).toEqual(["layout_clip_0", "layout_clip_1"]);
+    for (const id of ids) expect(result.image?.svg).toContain(`url(#${id})`);
+  });
+
+  it("expands the viewport for negative and off-page panels without changing the stored page", async () => {
+    const layout = structuredClone(strategy());
+    layout.id = "off_page";
+    layout.canvas = { width: 100, height: 100 };
+    layout.panels[0].position.x = -80;
+    layout.panels[1].position.x = 1287;
+    expect((await upsertLayout({ workspacePath, layout, expectedRevision: (await readWorkspace(workspacePath)).revision })).ok).toBe(true);
+    const before = await fs.readFile(workspacePath, "utf8");
+    const result = await renderLayout({ workspacePath, layoutId: layout.id, output: "content" });
+    expect(result.pageCanvas).toEqual({ width: 100, height: 100 });
+    expect(result.viewport.x).toBe(-80);
+    expect(result.canvas.width).toBeGreaterThan(1287 + 80);
+    expect(await fs.readFile(workspacePath, "utf8")).toBe(before);
+  });
+
+  it("does not silently discard explicit panel bounds", async () => {
+    const layout = structuredClone(strategy());
+    layout.id = "explicit_bounds";
+    layout.panels[0].x.bounds = { min: 1, max: 500 };
+    expect((await upsertLayout({ workspacePath, layout, expectedRevision: (await readWorkspace(workspacePath)).revision })).ok).toBe(true);
+    const result = await renderLayout({ workspacePath, layoutId: layout.id, output: "content" });
+    expect(result.panels[0].reason).toContain("layout_axis_configuration_not_supported");
   });
 
   it("renders the comparison layout as plots plus labelled placeholders", async () => {

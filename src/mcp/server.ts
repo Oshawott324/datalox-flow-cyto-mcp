@@ -31,6 +31,9 @@ import {
   listLayouts,
   upsertLayout,
   validateLayout,
+  suggestComparisonLayout,
+  suggestGatingStrategyLayout,
+  type ComparisonPanelInput,
   getPopulationGraph,
   getPopulationTable,
   importFlowJoWorkspace,
@@ -1487,9 +1490,43 @@ server.registerTool(
 );
 
 server.registerTool(
+  "suggest_comparison_layout",
+  {
+    description: "Propose a layout without writing it. Supply explicit source and axis objects for each panel; different samples may show different populations. grid and ragged by_sample arrangements are supported. Shared bounds are not computed yet; unsupported renderer configurations are reported, never silently substituted.",
+    inputSchema: {
+      workspace_path: z.string(), id: z.string(), name: z.string(),
+      panels: z.array(z.object({
+        source: z.object({ sample: z.string(), parent: z.string(), gate: z.string().optional(), compensationId: z.string().optional() }),
+        x: z.object({ channel: z.string() }).passthrough(),
+        y: z.object({ channel: z.string() }).passthrough().optional(),
+        title: z.string().optional(),
+      })).min(1), arrangement: z.enum(["grid", "by_sample"]).optional(),
+      columns: z.number().int().positive().optional(),
+    },
+    outputSchema: JsonResultSchema, annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, id, name, panels, arrangement, columns }) => toolContent(() =>
+    suggestComparisonLayout({ workspacePath: workspace_path, id, name, panels: panels as ComparisonPanelInput[], arrangement, columns })),
+);
+
+server.registerTool(
+  "suggest_gating_strategy_layout",
+  {
+    description: "Propose one parent-population/child-gate panel per gate without writing. Uses gate axes, preserves branches, and does not infer compensation. linear is a vertical sequence; tree groups panels by depth. Automatic matched bounds and independent FlowJo visual validation remain pending.",
+    inputSchema: {
+      workspace_path: z.string(), id: z.string(), name: z.string(), sample_id: z.string(),
+      arrangement: z.enum(["linear", "tree"]).optional(), compensation_id: z.string().optional(),
+    },
+    outputSchema: JsonResultSchema, annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, id, name, sample_id, arrangement, compensation_id }) => toolContent(() =>
+    suggestGatingStrategyLayout({ workspacePath: workspace_path, id, name, sampleId: sample_id, arrangement, compensationId: compensation_id })),
+);
+
+server.registerTool(
   "render_layout",
   {
-    description: "Return agent-readable results for every panel in a layout: what was drawn, what was skipped and why, and the compensation actually applied to each source. compensation=\"as_recorded\" (the default) applies exactly the compensation_id each panel source stores, and \"none\" renders every source raw; the choice is always explicit and the result always reports what was applied. Panels that are unresolved or partial are reported as placeholders, never drawn.",
+    description: "Return per-panel render results and actual applied compensation. as_recorded applies stored matrix references; none applies no additional compensation and does not undo existing FCS processing. Disabling recorded compensation blocks those panels to avoid invalid gate statistics. Unsupported transforms/bounds and unresolved panels are explicit placeholders.",
     inputSchema: {
       workspace_path: z.string(),
       layout_id: z.string(),
@@ -1520,7 +1557,7 @@ server.registerTool(
 server.registerTool(
   "render_layout_image",
   {
-    description: "Render a whole layout as one deterministic SVG, compositing each panel with the same renderer render_plot_image uses. compensation=\"as_recorded\" (the default) applies exactly the compensation_id each panel source stores, and \"none\" renders every source raw; the result reports the compensation actually applied per source either way. Unresolved and partial panels are drawn as labelled NOT RENDERED placeholders carrying their reason, never as plots. By default the SVG is also written under .datalox/cache/layouts/ so hosts that do not display images inline still get a file path.",
+    description: "Render a layout SVG with per-panel clip IDs and an expanded viewport separate from stored page geometry. as_recorded applies stored compensation; none means no additional compensation, not raw data. Panels requiring disabled compensation, unsupported explicit transforms/bounds, or unresolved references become labelled placeholders. Independent FlowJo visual validation remains pending.",
     inputSchema: {
       workspace_path: z.string(),
       layout_id: z.string(),

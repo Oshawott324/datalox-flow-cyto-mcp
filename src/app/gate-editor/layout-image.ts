@@ -18,7 +18,7 @@ import { renderPlotSvg, type PlotImageOutput } from "./plot-image.js";
  *
  * This is an explicit input, not an inference from whether some argument was
  * passed: "as_recorded" applies exactly the compensationId each source stores,
- * and "none" renders every source raw. Either way the result reports, per
+ * and "none" applies no additional compensation to stored FCS values. Either way the result reports, per
  * source, what was actually applied.
  */
 export type LayoutCompensationMode = "as_recorded" | "none";
@@ -74,6 +74,9 @@ export type RenderedLayout = {
   kind: FlowcytoLayout["kind"];
   compensationMode: LayoutCompensationMode;
   canvas: { width: number; height: number };
+  /** Original page geometry, never replaced by the expanded image viewport. */
+  pageCanvas: FlowcytoLayout["canvas"];
+  viewport: { x: number; y: number; width: number; height: number };
   rendered: number;
   placeholders: number;
   panels: LayoutPanelReport[];
@@ -176,16 +179,20 @@ function placeholderReason(panel: LayoutPanel): string | null {
   return null;
 }
 
-function canvasFor(layout: FlowcytoLayout): { width: number; height: number } {
+function canvasFor(layout: FlowcytoLayout): { x: number; y: number; width: number; height: number } {
   // Panels may sit outside the page box: the reference workspace places them at
   // x up to 1287 inside a 612-wide PrintLayout. Grow the canvas rather than clip.
   let width = layout.canvas.width;
   let height = layout.canvas.height;
+  let x = 0;
+  let y = 0;
   for (const panel of layout.panels) {
+    x = Math.min(x, panel.position.x);
+    y = Math.min(y, panel.position.y);
     width = Math.max(width, panel.position.x + panel.position.width);
     height = Math.max(height, panel.position.y + panel.position.height);
   }
-  return { width: Math.ceil(width) + 16, height: Math.ceil(height) + 16 };
+  return { x, y, width: Math.ceil(width - x) + 16, height: Math.ceil(height - y) + 16 };
 }
 
 async function writeLayoutFile(workspacePath: string, layoutId: string, revision: number, svg: string, outputPath?: string): Promise<string> {
@@ -222,15 +229,23 @@ export async function renderLayout(options: LayoutImageOptions): Promise<Rendere
   const reports: LayoutPanelReport[] = [];
   let rendered = 0;
 
-  for (const panel of layout.panels) {
-    const reason = placeholderReason(panel);
+  for (const [panelIndex, panel] of layout.panels.entries()) {
+    const disabledRecordedCompensation = mode === "none" && panel.sources.some((source) => source.compensationId);
+    const unsupportedAxes = [panel.x, panel.y].some((axis) => axis &&
+      (axis.transform || axis.bounds || axis.boundsGroup));
+    const reason = placeholderReason(panel)
+      ?? (disabledRecordedCompensation
+        ? "compensation_space_mismatch: recorded compensation was disabled; gated populations and overlays cannot be evaluated in a different coordinate space. Use an explicit root-level diagnostic layout without those gates."
+        : unsupportedAxes
+          ? "layout_axis_configuration_not_supported: this renderer does not yet implement explicit layout transforms or bounds."
+          : null);
     if (reason) {
       body.push(renderPlaceholder(panel, panel.id, reason));
       reports.push({ id: panel.id, state: "placeholder", position: panel.position, reason });
       continue;
     }
     const source = panel.sources[0];
-    // "as_recorded" applies exactly what the layout stores; "none" renders raw.
+    // "none" does not undo processing already stored in the FCS file.
     const compensationId = mode === "as_recorded" ? source.compensationId : undefined;
     let context: RenderablePlotContext;
     try {
@@ -254,7 +269,17 @@ export async function renderLayout(options: LayoutImageOptions): Promise<Rendere
       continue;
     }
 
-    const svg = renderPlotSvg(context, panel.position.width, panel.position.height);
+    if (["x", "y"].some((axis) => {
+      const key = axis as "x" | "y";
+      return panel[key]?.scale !== undefined && panel[key]?.scale !== context.scale[key];
+    })) {
+      const reason = "layout_scale_mismatch: preview scale differs from the recorded panel scale.";
+      body.push(renderPlaceholder(panel, panel.id, reason));
+      reports.push({ id: panel.id, state: "placeholder", position: panel.position, reason });
+      continue;
+    }
+    if (source.gate) context = { ...context, gates: context.gates.filter((gate) => gate.id === source.gate) };
+    const svg = renderPlotSvg(context, panel.position.width, panel.position.height, `layout_clip_${panelIndex}`);
     body.push(placePanelSvg(svg, panel));
     rendered += 1;
     reports.push({
@@ -284,7 +309,9 @@ export async function renderLayout(options: LayoutImageOptions): Promise<Rendere
     layoutName: layout.name,
     kind: layout.kind,
     compensationMode: mode,
-    canvas,
+    canvas: { width: canvas.width, height: canvas.height },
+    pageCanvas: { ...layout.canvas },
+    viewport: canvas,
     rendered,
     placeholders: layout.panels.length - rendered,
     panels: reports,
@@ -293,9 +320,9 @@ export async function renderLayout(options: LayoutImageOptions): Promise<Rendere
 
   const svg = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${canvas.width}" height="${canvas.height}"`,
-    ` viewBox="0 0 ${canvas.width} ${canvas.height}" role="img"`,
+    ` viewBox="${canvas.x} ${canvas.y} ${canvas.width} ${canvas.height}" role="img"`,
     ` aria-label="${escapeXml(layout.name)} layout with ${rendered} rendered panels and ${layout.panels.length - rendered} placeholders">`,
-    `<rect width="100%" height="100%" fill="#f4f6f8"/>`,
+    `<rect x="${canvas.x}" y="${canvas.y}" width="${canvas.width}" height="${canvas.height}" fill="#f4f6f8"/>`,
     ...body,
     `</svg>`,
   ].join("");

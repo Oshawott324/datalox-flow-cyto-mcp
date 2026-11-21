@@ -4,6 +4,50 @@ Date: 2026-11-17 (revised 2026-11-18 after review)
 
 Authors: Fang Xie, Yifan Jin
 
+## Renderer review and L3 start (2026-11-21)
+
+Review of `d7e4e865` found a rendering correctness gap, not only pending vendor validation:
+`renderLayout` never passed `PanelAxis.scale`, `transform`, `bounds` or `boundsGroup` to the
+preview pipeline. Its test named for imported biex parameters only checked that a scale existed.
+Standalone equivalence therefore proved agreement between two calls omitting the same settings.
+
+Until parameter-aware rendering is implemented, explicit transforms/bounds produce
+`layout_axis_configuration_not_supported` placeholders, and scale disagreements produce
+`layout_scale_mismatch`. This intentionally withdraws the earlier claim that all nine bound
+reference panels render faithfully.
+
+The live-render acceptance script asserts what the renderer does **today** rather than holding a
+failing 6/6 and 3/5 target, because a permanently red script cannot distinguish a known gap from a
+new regression. The gap is asserted instead of merely aspired to: each panel carrying imported
+transform parameters must be *blocked*, so a silent fallback to preview defaults now fails the
+script in either direction. What remains missing is recorded in its `knownGaps` output:
+
+| Gap | State |
+|---|---|
+| `layout_transform_rendering` | 6 reference panels carry biex parameters the renderer does not apply |
+| `flowjo_equivalence_unverified` | No panel compared against FlowJo's own rendering |
+
+Independent FlowJo screenshots and event-membership validation are also still pending.
+
+Other review fixes:
+
+- Layout panels pass deterministic unique clip IDs to the shared SVG renderer.
+- `compensation="none"` means no additional compensation, not raw data. If a source records a
+  matrix, disabling it produces a `compensation_space_mismatch` placeholder rather than evaluating
+  its gates in a different coordinate space. No invalid counts are returned for that panel.
+- Render results retain `pageCanvas` separately from the expanded image `viewport`, including
+  negative coordinates. Rendering never mutates stored page geometry.
+
+Initial L3 slice: read-only `suggest_gating_strategy_layout` and `suggest_comparison_layout`.
+Strategy panels retain each gate's actual parent and axes; compensation is explicit, never inferred.
+Comparison inputs provide source and axis objects per panel, permitting heterogeneous nodes and
+ragged `by_sample` rows; grid preserves input order. Proposals return validation diagnostics and
+the expected workspace revision for a later explicit `upsert_layout`. They do not save anything.
+`linear` is initially a vertical sequence in workspace gate order; `tree` arranges depth rows.
+Automatic shared bounds, `by_node`, and richer tree placement are deferred, not claimed complete.
+Generators do not infer scale/transform parameters: omitted settings use the existing preview
+defaults; supplied settings are preserved and the renderer reports its current limitations.
+
 ## Goal
 
 Make **layout** a first-class concept in the Flowcyto MCP workspace, covering:

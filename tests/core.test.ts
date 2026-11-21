@@ -5437,6 +5437,8 @@ describe("flowcyto MCP", () => {
         "render_plot",
         "render_plot_image",
         "suggest_apoptosis_quadrants",
+        "suggest_comparison_layout",
+        "suggest_gating_strategy_layout",
         "suggest_singlet_gate",
         "upsert_compensation_matrix",
         "upsert_gate",
