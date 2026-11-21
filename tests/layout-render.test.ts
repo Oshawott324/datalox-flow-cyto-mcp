@@ -6,6 +6,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import { renderLayout } from "../src/app/gate-editor/layout-image.js";
 import { renderPlotSvg } from "../src/app/gate-editor/plot-image.js";
+import { configurePlotAxes, buildPanelAxisMapping } from "../src/app/gate-editor/plot-axis-context.js";
 import { getRenderablePlotContext } from "../src/app/gate-editor/server.js";
 import {
   importFlowJoWorkspace,
@@ -91,6 +92,49 @@ const strategy = () => supported[0];
 const comparison = () => supported[1];
 
 describe("layout rendering", () => {
+  it("maps points and overlays numerically with log/arcsinh parameters and fixed bounds", async () => {
+    const context = await getRenderablePlotContext({ workspacePath, sampleId: "alpha", parent: "root", x: "FITC-A", y: "PE-A", format: "points" });
+    context.preview = { ...context.preview, bins: undefined, points: [[10, 0]], format: "points" };
+    context.gates = [{ id: "check", sample: "alpha", parent: "root", type: "polygon", x: "FITC-A", y: "PE-A", vertices: [[10, 0], [100, 0], [10, 10]] }];
+    const configured = configurePlotAxes(context, {
+      x: { channel: "FITC-A", scale: "log", bounds: { min: 1, max: 100 } },
+      y: { channel: "PE-A", scale: "arcsinh", transform: { cofactor: 10 }, bounds: { min: -10, max: 10 } },
+    });
+    expect(configured.visualBounds.xMin).toBe(0);
+    expect(configured.visualBounds.xMax).toBe(2);
+    expect(configured.visualBounds.yMin).toBeCloseTo(-Math.asinh(1), 12);
+    expect(configured.axisMapping!.y.inverse(Math.asinh(1))).toBeCloseTo(10, 12);
+    const svg = renderPlotSvg(configured, 760, 560);
+    // x=10 is halfway on log10[1,100], y=0 halfway on symmetric arcsinh.
+    expect(svg).toContain('cx="402" cy="276"');
+    expect(svg).toContain('points="402,276');
+    expect(() => configurePlotAxes(context, { x: { channel: "FITC-A", scale: "log", bounds: { min: 0, max: 100 } }, y: { channel: "PE-A" } })).toThrow();
+  });
+
+  it("matches biex reference values and refuses unvalidated parameter sets", async () => {
+    const reference = JSON.parse(await fs.readFile(path.join(process.cwd(), "testdata/fixtures/biex-transform-reference.json"), "utf8"));
+    for (const entry of reference.cases) {
+      const mapping = buildPanelAxisMapping({ channel: "X", scale: "biex", transform: entry.parameters });
+      const spline = entry.forwardSpline;
+      for (const index of [0, Math.floor(spline.x.length / 2), spline.x.length - 1]) {
+        expect(mapping.forward(spline.x[index])).toBeCloseTo(spline.y[index], 9);
+      }
+    }
+    expect(() => buildPanelAxisMapping({ channel: "X", scale: "arcsinh", transform: { cofactor: 0 } })).toThrow();
+    expect(() => buildPanelAxisMapping({ channel: "X", scale: "biex", transform: { maxRange: 123, pos: 4, neg: 0, width: -10, length: 256 } })).toThrow();
+  });
+
+  it("applies shared bounds groups to both panels exactly", async () => {
+    const layout = structuredClone(strategy());
+    layout.id = "group_bounds";
+    layout.panels[1] = structuredClone(layout.panels[0]);
+    layout.panels[1].id = "second";
+    layout.boundsGroups = [{ id: "shared", channel: "FSC-A", scale: "linear", bounds: { min: 0, max: 1000 } }];
+    for (const panel of layout.panels) panel.x = { channel: "FSC-A", scale: "linear", boundsGroup: "shared" };
+    expect((await upsertLayout({ workspacePath, layout, expectedRevision: (await readWorkspace(workspacePath)).revision })).ok).toBe(true);
+    const rendered = await renderLayout({ workspacePath, layoutId: layout.id, output: "content" });
+    for (const panel of rendered.panels) expect(panel.visualBounds).toMatchObject({ xMin: 0, xMax: 1000 });
+  });
   it("proposes deterministic ragged comparisons without modifying the workspace", async () => {
     const before = await fs.readFile(workspacePath, "utf8");
     const panels = ["alpha", "beta", "alpha"].map((sample) => ({
@@ -156,14 +200,24 @@ describe("layout rendering", () => {
     expect(fluorescence.sources?.[0].applied.channels).toContain("FITC-A");
   });
 
-  it("blocks imported transform parameters instead of silently using preview defaults", async () => {
+  it("uses imported biex parameters rather than preview defaults", async () => {
     const panel = layouts[0].panels[1];
     expect(panel.x.scale).toBe("biex");
     expect(panel.x.transform).toMatchObject({ width: -10, pos: 4.3, maxRange: 262144 });
 
-    const result = await renderLayout({ workspacePath, layoutId: layouts[0].id });
-    expect(result.panels[1].reason).toContain("layout_axis_configuration_not_supported");
-    expect(result.panels[1].previewSummary).toBeUndefined();
+    const unsupported = await renderLayout({ workspacePath, layoutId: layouts[0].id });
+    expect(unsupported.panels[1].state).toBe("placeholder");
+    expect(unsupported.panels[1].reason).toContain("not in the validated reference table");
+    const layout = structuredClone(layouts[0]);
+    layout.id = "validated_biex";
+    for (const entry of layout.panels) for (const axis of [entry.x, entry.y]) {
+      if (axis?.scale === "biex") axis.transform = { length: 256, maxRange: 262144, pos: 4.5, neg: 0, width: -10 };
+    }
+    expect((await upsertLayout({ workspacePath, layout, expectedRevision: (await readWorkspace(workspacePath)).revision })).ok).toBe(true);
+    const result = await renderLayout({ workspacePath, layoutId: layout.id });
+    expect(result.panels[1].state).toBe("rendered");
+    expect(result.panels[1].scale?.x).toBe("biex");
+    expect(result.panels[1].axisConfiguration?.x.transform).toEqual(layout.panels[1].x.transform);
   });
 
   it("compensation=\"none\" blocks recorded compensated gates rather than reporting invalid statistics", async () => {
@@ -193,7 +247,7 @@ describe("layout rendering", () => {
       y: panel.y?.channel,
       compensationId: source.compensationId,
     });
-    const standalone = renderPlotSvg(context, panel.position.width, panel.position.height, "layout_clip_1");
+    const standalone = renderPlotSvg(configurePlotAxes(context, { x: panel.x, y: panel.y! }), panel.position.width, panel.position.height, "layout_clip_1");
 
     // Only the root element's placement attributes differ; every child element
     // is carried over unchanged.
@@ -220,13 +274,15 @@ describe("layout rendering", () => {
     expect(await fs.readFile(workspacePath, "utf8")).toBe(before);
   });
 
-  it("does not silently discard explicit panel bounds", async () => {
+  it("honors explicit panel bounds", async () => {
     const layout = structuredClone(strategy());
     layout.id = "explicit_bounds";
     layout.panels[0].x.bounds = { min: 1, max: 500 };
+    layout.panels[0].x.scale = "linear";
     expect((await upsertLayout({ workspacePath, layout, expectedRevision: (await readWorkspace(workspacePath)).revision })).ok).toBe(true);
     const result = await renderLayout({ workspacePath, layoutId: layout.id, output: "content" });
-    expect(result.panels[0].reason).toContain("layout_axis_configuration_not_supported");
+    expect(result.panels[0].state).toBe("rendered");
+    expect(result.panels[0].visualBounds).toMatchObject({ xMin: 1, xMax: 500 });
   });
 
   it("renders the comparison layout as plots plus labelled placeholders", async () => {

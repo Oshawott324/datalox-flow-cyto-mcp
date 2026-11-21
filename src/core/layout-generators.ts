@@ -40,7 +40,7 @@ async function finish(input: GeneratorOptions, panels: LayoutPanel[], kind: Flow
   };
   const validation = await validateLayout({ workspacePath: input.workspacePath, layout });
   return { ...validation, layout, expectedRevision: revision,
-    limitations: ["Axis ranges are not automatically matched; supply explicit compatible bounds. Parameterized layout transforms and explicit bounds are not yet rendered.",
+    limitations: ["Axis ranges are not automatically matched; supply explicit compatible bounds. Biex parameters must belong to the validated reference table.",
       "Independent FlowJo visual and event-membership validation remains pending."],
   };
 }

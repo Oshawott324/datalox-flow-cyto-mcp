@@ -4,6 +4,79 @@ Date: 2026-11-17 (revised 2026-11-18 after review)
 
 Authors: Fang Xie, Yifan Jin
 
+## Parameter-aware rendering update (2026-11-21)
+
+This supersedes the temporary transform/bounds blocker described in the earlier review below.
+`configurePlotAxes` now applies each panel's scale, transform parameters and data-space bounds.
+Bounds groups supply the common mapping and extent. Events, gate overlays and tick labels share
+the same forward/inverse functions; explicit bounds are not padded or auto-fitted.
+Arcsinh requires its explicit cofactor; biex uses the existing validated reference spline table.
+An unrepresented biex parameter set remains a typed `unsupported_flowjo_biex_parameters` failure,
+never an approximation with default parameters. The synthetic import fixture intentionally includes
+such a set (pos=4.3), while the real tetramer parameters are covered by the reference table.
+
+Preview membership, compensation and deterministic sampling still use the existing preview
+pipeline. Preview caches remain data-space artifacts: changing presentation parameters does not
+change their identity or mutate them. Density bins remain the existing uniform data-space bins,
+whose boundaries are transformed for display; they are not newly binned uniformly in display
+space. This distinction matters when assessing density appearance against another application.
+Nonpositive log events are outside the log display domain; invalid gate vertices are reported,
+not rendered at invented coordinates. No population counts change when only bounds change.
+
+The live-render script again requires six strategy plots and three comparison plots plus two
+missing-sample placeholders. `layout_transform_rendering` is no longer a known gap.
+**Independent FlowJo visual and event-membership validation remains pending.** Numeric tests,
+reference spline checks and standalone comparisons are not evidence of vendor equivalence.
+
+## Verified defect: axis rescale is not applied (2026-11-21)
+
+Parameter-aware rendering works — the imported biex parameters demonstrably drive the mapping —
+but the rendered panels are still wrong, for a separate reason found while verifying it.
+
+Evidence from the reference workspace, panel `Layout-1_panel_1`, channel `APC (Allophycocyanin)-A`:
+
+| Quantity | Value |
+|---|---|
+| `$PnR` (FCS data range) | 2147483647 |
+| biex `maxRange` parameter | 214748 |
+| event median, raw | 8.12e7 |
+| event median, compensated | 8.16e7 |
+| events above `maxRange` | 249 / 249 (100%) |
+| `forward(maxRange)` | 257.0 (the biex display ceiling) |
+| computed `visualBounds.x` | −528 .. 47331 |
+| axis fraction holding data up to `maxRange` | 1.64% |
+
+Compensation is not the cause: raw and compensated medians agree to three digits and the matrix is
+near-identity. The cause is a missing domain rescale. The workspace's `<Cytometer>` declares:
+
+```xml
+<Cytometer name="YETI" widthBasis="-10" linMin="0" linMax="214748" logMax="214748"
+           linearRescale="10000" logRescale="10000" transformType="BIEX" .../>
+```
+
+FlowJo divides FCS values by 10000 before applying a transform whose `maxRange` is 214748, so
+2147483647 / 10000 = 214748 maps exactly onto the transform ceiling. `flowJoTransformContext`
+already reads `linearRescale` and uses it for gate coordinate conversion, but the layout axis path
+(`buildPanelAxisMapping`) feeds raw data values straight into the biex transform. Every event
+therefore lands about 10^4 too far along the axis, auto-bounds expand to roughly 47000 biex units
+instead of 0..257, and the entire population is compressed into the bottom ~1.6% of the plot.
+
+`forward(8.16e7 / 10000) = forward(8160) ≈ 175`, which sits mid-range as expected, so the rescale
+fully accounts for the discrepancy.
+
+Fix outline: carry the per-cytometer rescale into the imported axis configuration and apply it
+inside the axis mapping, so events, gate overlays, bounds and tick labels all share it. Linear
+axes are visually unaffected because a uniform factor is absorbed by auto-bounds, but their tick
+labels are wrong by the same factor and must be corrected too.
+
+Until this lands, the six strategy panels and three comparison panels render, but their axis
+domains do not match FlowJo and a visual comparison will not be meaningful. This is tracked as the
+`axis_domain_rescale_not_applied` entry in the live script's `knownGaps`.
+
+Found without FlowJo, by checking the transform parameter domain against the data range. It is the
+kind of defect the pending vendor comparison is meant to catch, and it would have dominated that
+comparison had it not been found first.
+
 ## Renderer review and L3 start (2026-11-21)
 
 Review of `d7e4e865` found a rendering correctness gap, not only pending vendor validation:

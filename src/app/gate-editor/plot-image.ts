@@ -122,7 +122,10 @@ function dataToSvg(
   context: RenderablePlotContext,
   area: PlotArea,
 ): [number, number] {
-  return visualToSvg(transformPoint(point, context.scale), context.visualBounds, area);
+  const mapped: [number, number] = context.axisMapping
+    ? [context.axisMapping.x.forward(point[0]), context.axisMapping.y.forward(point[1])]
+    : transformPoint(point, context.scale);
+  return visualToSvg(mapped, context.visualBounds, area);
 }
 
 function renderGridAndAxes(context: RenderablePlotContext, area: PlotArea): string[] {
@@ -143,12 +146,12 @@ function renderGridAndAxes(context: RenderablePlotContext, area: PlotArea): stri
 
   for (const tick of xTicks) {
     const [x] = visualToSvg([tick, context.visualBounds.yMin], context.visualBounds, area);
-    const label = formatTick(inverseTransformValue(tick, context.scale.x));
+    const label = formatTick(context.axisMapping ? context.axisMapping.x.inverse(tick) : inverseTransformValue(tick, context.scale.x));
     parts.push(`<text x="${fixed(x)}" y="${area.top + area.height + 20}" text-anchor="middle" font-size="11" fill="#5b6570">${escapeXml(label)}</text>`);
   }
   for (const tick of yTicks) {
     const [, y] = visualToSvg([context.visualBounds.xMin, tick], context.visualBounds, area);
-    const label = formatTick(inverseTransformValue(tick, context.scale.y));
+    const label = formatTick(context.axisMapping ? context.axisMapping.y.inverse(tick) : inverseTransformValue(tick, context.scale.y));
     parts.push(`<text x="${area.left - 8}" y="${fixed(y + 4)}" text-anchor="end" font-size="11" fill="#5b6570">${escapeXml(label)}</text>`);
   }
   return parts;
@@ -171,8 +174,19 @@ function renderBins(context: RenderablePlotContext, area: PlotArea): string[] {
       const x1 = x0 + xStep;
       const y0 = bins.yMin + yIndex * yStep;
       const y1 = y0 + yStep;
-      const a = dataToSvg([x0, y0], context, area);
-      const b = dataToSvg([x1, y1], context, area);
+      // Clip bin rectangles in data space before transforming, including bins
+      // straddling zero on log axes. This preserves their visible positive part.
+      const mapping = context.axisMapping;
+      const clipped = mapping ? [
+        Math.max(x0, mapping.x.inverse(context.visualBounds.xMin)),
+        Math.max(y0, mapping.y.inverse(context.visualBounds.yMin)),
+        Math.min(x1, mapping.x.inverse(context.visualBounds.xMax)),
+        Math.min(y1, mapping.y.inverse(context.visualBounds.yMax)),
+      ] : [x0, y0, x1, y1];
+      if (clipped[0] >= clipped[2] || clipped[1] >= clipped[3]) continue;
+      const a = dataToSvg([clipped[0], clipped[1]], context, area);
+      const b = dataToSvg([clipped[2], clipped[3]], context, area);
+      if (![...a, ...b].every(Number.isFinite)) continue;
       const left = Math.max(area.left, Math.min(a[0], b[0]));
       const right = Math.min(area.left + area.width, Math.max(a[0], b[0]));
       const top = Math.max(area.top, Math.min(a[1], b[1]));
@@ -189,6 +203,7 @@ function renderPoints(context: RenderablePlotContext, area: PlotArea): string[] 
   const points = context.preview.points ?? [];
   return points.map((point) => {
     const [x, y] = dataToSvg(point, context, area);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return "";
     return `<circle cx="${fixed(x, 1)}" cy="${fixed(y, 1)}" r="1.2" fill="rgba(38,70,83,0.42)"/>`;
   });
 }
@@ -221,19 +236,21 @@ export function renderPlotSvg(context: RenderablePlotContext, width = 760, heigh
     width: safeWidth - 104,
     height: safeHeight - 104,
   };
+  const fitLabel = (label: string, width: number, fontSize: number) => label.length * fontSize * 0.6 > width
+    ? ` textLength="${width}" lengthAdjust="spacingAndGlyphs"` : "";
   const parts: string[] = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${safeWidth}" height="${safeHeight}" viewBox="0 0 ${safeWidth} ${safeHeight}" role="img" aria-label="${escapeXml(context.xLabel)} versus ${escapeXml(context.yLabel)}">`,
     `<rect width="100%" height="100%" fill="#ffffff"/>`,
-    `<text x="${area.left}" y="24" font-size="16" font-weight="600" fill="#1f2933">${escapeXml(context.sampleId)}: ${escapeXml(context.xLabel)} vs ${escapeXml(context.yLabel)}</text>`,
-    `<text x="${safeWidth - 18}" y="24" text-anchor="end" font-size="11" fill="#6b7280">events ${context.previewSummary.sampledEvents}/${context.previewSummary.filteredEvents}</text>`,
+    `<text x="${area.left}" y="20" font-size="14" font-weight="600" fill="#1f2933"${fitLabel(context.sampleId, area.width, 14)}>${escapeXml(context.sampleId)}</text>`,
+    `<text x="${area.left}" y="37" font-size="11" fill="#6b7280">events ${context.previewSummary.sampledEvents}/${context.previewSummary.filteredEvents}</text>`,
     `<defs><clipPath id="${escapeXml(clipId)}"><rect x="${area.left}" y="${area.top}" width="${area.width}" height="${area.height}"/></clipPath></defs>`,
     ...renderGridAndAxes(context, area),
     `<g clip-path="url(#${escapeXml(clipId)})">`,
     ...(context.preview.bins ? renderBins(context, area) : renderPoints(context, area)),
     ...context.gates.map((gate) => renderGate(gate, context, area)).filter((value): value is string => value !== null),
     `</g>`,
-    `<text x="${area.left + area.width / 2}" y="${safeHeight - 18}" text-anchor="middle" font-size="13" fill="#374151">${escapeXml(context.xLabel)}</text>`,
-    `<text transform="translate(18 ${area.top + area.height / 2}) rotate(-90)" text-anchor="middle" font-size="13" fill="#374151">${escapeXml(context.yLabel)}</text>`,
+    `<text x="${area.left + area.width / 2}" y="${safeHeight - 18}" text-anchor="middle" font-size="13" fill="#374151"${fitLabel(context.xLabel, area.width, 13)}>${escapeXml(context.xLabel)}</text>`,
+    `<text transform="translate(18 ${area.top + area.height / 2}) rotate(-90)" text-anchor="middle" font-size="13" fill="#374151"${fitLabel(context.yLabel, area.height, 13)}>${escapeXml(context.yLabel)}</text>`,
     `</svg>`,
   ];
   return parts.join("");

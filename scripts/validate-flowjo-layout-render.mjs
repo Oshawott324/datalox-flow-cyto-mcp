@@ -8,6 +8,7 @@ import { XMLParser } from "fast-xml-parser";
 import { importFlowJoWorkspace, readWorkspace } from "../dist/src/core/index.js";
 import { renderLayout } from "../dist/src/app/gate-editor/layout-image.js";
 import { renderPlotSvg } from "../dist/src/app/gate-editor/plot-image.js";
+import { configurePlotAxes } from "../dist/src/app/gate-editor/plot-axis-context.js";
 import { getRenderablePlotContext } from "../dist/src/app/gate-editor/server.js";
 
 // Renders the layouts of a real FlowJo .wsp and checks each panel against a
@@ -81,7 +82,13 @@ for (const layout of layouts) {
       maxEvents: 20000,
       compensationId: panelSource.compensationId,
     });
-    const standalone = renderPlotSvg(context, panel.position.width, panel.position.height, `layout_clip_${layout.panels.indexOf(panel)}`);
+    const configured = configurePlotAxes(context, { x: panel.x, y: panel.y });
+    const standalone = renderPlotSvg(configured, panel.position.width, panel.position.height, `layout_clip_${layout.panels.indexOf(panel)}`);
+    check(`${layout.name}: ${result.id} reports requested scale`,
+      result.scale.x === (panel.x.scale ?? context.scale.x) && result.scale.y === (panel.y.scale ?? context.scale.y));
+    check(`${layout.name}: ${result.id} reports requested transform parameters`,
+      JSON.stringify(result.axisConfiguration.x.transform) === JSON.stringify(panel.x.transform)
+      && JSON.stringify(result.axisConfiguration.y.transform) === JSON.stringify(panel.y.transform));
     const inner = standalone.slice(standalone.indexOf(">") + 1);
     check(
       `${layout.name}: ${result.id} matches a standalone render of the same inputs`,
@@ -183,26 +190,42 @@ for (const layout of layouts) {
 const strategy = report.find((entry) => entry.kind === "gating_strategy");
 const comparison = report.find((entry) => entry.kind === "comparison");
 
-// These assert what the renderer does TODAY, not what it should eventually do.
-// A permanently failing script cannot tell a known gap from a new regression, so
-// the gap is asserted explicitly instead: a panel carrying imported transform
-// parameters must be blocked, and must not quietly start rendering with some
-// other scale. knownGaps below records what is still missing.
-check("strategy layout renders its scatter panels and blocks the rest",
-  strategy?.rendered === 3 && strategy?.blockedByTransform === 3,
+// Pipeline acceptance is separate from independent vendor equivalence.
+check("strategy layout renders all six panels",
+  strategy?.rendered === 6 && strategy?.placeholders === 0,
   `rendered ${strategy?.rendered}, blocked ${strategy?.blockedByTransform}`);
-check("comparison layout blocks every transform panel and both dangling samples",
-  comparison?.rendered === 0 && comparison?.blockedByTransform === 3 && comparison?.placeholders === 5,
+check("comparison layout renders three panels and preserves both dangling samples",
+  comparison?.rendered === 3 && comparison?.blockedByTransform === 0 && comparison?.placeholders === 2,
   `rendered ${comparison?.rendered}, blocked ${comparison?.blockedByTransform}, placeholders ${comparison?.placeholders}`);
+
+// A biex axis whose data sits entirely above its own maxRange is rendering in the
+// wrong domain: FlowJo divides by the cytometer's linearRescale/logRescale first.
+// Reported rather than asserted, since the renderer does not yet apply it.
+const rescaleSuspects = [];
+for (const layout of layouts) {
+  for (const panel of layout.panels) {
+    if (panel.status.state !== "resolved") continue;
+    for (const key of ["x", "y"]) {
+      const axis = panel[key];
+      if (axis?.scale !== "biex" || !Number.isFinite(axis.transform?.maxRange)) continue;
+      rescaleSuspects.push({ panel: panel.id, axis: key, channel: axis.channel, maxRange: axis.transform.maxRange });
+    }
+  }
+}
+
+const cytometer = (Array.isArray(source.Cytometers?.Cytometer)
+  ? source.Cytometers.Cytometer[0]
+  : source.Cytometers?.Cytometer) ?? {};
 
 const knownGaps = [
   {
-    id: "layout_transform_rendering",
-    detail: `${(strategy?.blockedByTransform ?? 0) + (comparison?.blockedByTransform ?? 0)} panels carry imported biex transform parameters the renderer does not yet apply; they are blocked rather than drawn with preview defaults.`,
+    id: "axis_domain_rescale_not_applied",
+    detail: `The cytometer declares linearRescale=${cytometer.linearRescale} and logRescale=${cytometer.logRescale} with linMax=${cytometer.linMax}, so FlowJo divides FCS values before transforming. The layout axis mapping does not, so ${rescaleSuspects.length} biex axes render with data far above their own maxRange and the population is compressed into a small fraction of the plot. See docs/layout-plan-2026-11-17.md.`,
+    axes: rescaleSuspects,
   },
   {
     id: "flowjo_equivalence_unverified",
-    detail: "No panel has been compared against FlowJo's own rendering. Current evidence shows pipeline consistency, not vendor equivalence.",
+    detail: "No panel has been compared against FlowJo's own rendering. Current evidence shows pipeline consistency, not vendor equivalence. The rescale gap above would dominate such a comparison until it is fixed.",
   },
 ];
 

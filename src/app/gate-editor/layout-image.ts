@@ -12,6 +12,7 @@ import {
 } from "../../core/index.js";
 import { getRenderablePlotContext, type RenderablePlotContext } from "./server.js";
 import { renderPlotSvg, type PlotImageOutput } from "./plot-image.js";
+import { configurePlotAxes } from "./plot-axis-context.js";
 
 /**
  * How a layout's recorded compensation is treated when rendering.
@@ -60,6 +61,8 @@ export type LayoutPanelReport = {
   x?: string;
   y?: string;
   scale?: { x: string; y: string };
+  visualBounds?: RenderablePlotContext["visualBounds"];
+  axisConfiguration?: { x: LayoutPanel["x"]; y: LayoutPanel["x"] };
   sources?: LayoutSourceReport[];
   previewSummary?: RenderablePlotContext["previewSummary"];
   gateCount?: number;
@@ -231,14 +234,10 @@ export async function renderLayout(options: LayoutImageOptions): Promise<Rendere
 
   for (const [panelIndex, panel] of layout.panels.entries()) {
     const disabledRecordedCompensation = mode === "none" && panel.sources.some((source) => source.compensationId);
-    const unsupportedAxes = [panel.x, panel.y].some((axis) => axis &&
-      (axis.transform || axis.bounds || axis.boundsGroup));
     const reason = placeholderReason(panel)
       ?? (disabledRecordedCompensation
         ? "compensation_space_mismatch: recorded compensation was disabled; gated populations and overlays cannot be evaluated in a different coordinate space. Use an explicit root-level diagnostic layout without those gates."
-        : unsupportedAxes
-          ? "layout_axis_configuration_not_supported: this renderer does not yet implement explicit layout transforms or bounds."
-          : null);
+        : null);
     if (reason) {
       body.push(renderPlaceholder(panel, panel.id, reason));
       reports.push({ id: panel.id, state: "placeholder", position: panel.position, reason });
@@ -248,7 +247,15 @@ export async function renderLayout(options: LayoutImageOptions): Promise<Rendere
     // "none" does not undo processing already stored in the FCS file.
     const compensationId = mode === "as_recorded" ? source.compensationId : undefined;
     let context: RenderablePlotContext;
+    let axisConfiguration: NonNullable<LayoutPanelReport["axisConfiguration"]>;
     try {
+      const resolveAxis = (axis: LayoutPanel["x"]) => {
+        if (!axis.boundsGroup) return axis;
+        const group = layout.boundsGroups?.find((entry) => entry.id === axis.boundsGroup);
+        if (!group) throw new FlowcytoError("unknown_bounds_group", `Unknown bounds group ${axis.boundsGroup}.`);
+        return { ...axis, scale: group.scale, transform: group.transform, bounds: group.bounds };
+      };
+      axisConfiguration = { x: resolveAxis(panel.x), y: resolveAxis(panel.y!) };
       context = await getRenderablePlotContext({
         workspacePath: options.workspacePath,
         sampleId: source.sample,
@@ -261,24 +268,16 @@ export async function renderLayout(options: LayoutImageOptions): Promise<Rendere
         binHeight: options.binHeight,
         compensationId,
       });
+      if (source.gate) context = { ...context, gates: context.gates.filter((gate) => gate.id === source.gate) };
+      context = configurePlotAxes(context, axisConfiguration);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      const failed = `render_failed: ${detail}`;
+      const failed = `${error instanceof FlowcytoError ? error.code : "render_failed"}: ${detail}`;
       body.push(renderPlaceholder(panel, panel.id, failed));
       reports.push({ id: panel.id, state: "placeholder", position: panel.position, reason: failed });
       continue;
     }
 
-    if (["x", "y"].some((axis) => {
-      const key = axis as "x" | "y";
-      return panel[key]?.scale !== undefined && panel[key]?.scale !== context.scale[key];
-    })) {
-      const reason = "layout_scale_mismatch: preview scale differs from the recorded panel scale.";
-      body.push(renderPlaceholder(panel, panel.id, reason));
-      reports.push({ id: panel.id, state: "placeholder", position: panel.position, reason });
-      continue;
-    }
-    if (source.gate) context = { ...context, gates: context.gates.filter((gate) => gate.id === source.gate) };
     const svg = renderPlotSvg(context, panel.position.width, panel.position.height, `layout_clip_${panelIndex}`);
     body.push(placePanelSvg(svg, panel));
     rendered += 1;
@@ -289,6 +288,8 @@ export async function renderLayout(options: LayoutImageOptions): Promise<Rendere
       x: context.x,
       y: context.y,
       scale: { x: context.scale.x, y: context.scale.y },
+      axisConfiguration,
+      visualBounds: context.visualBounds,
       gateCount: context.gates.length,
       previewSummary: context.previewSummary,
       sources: [{
