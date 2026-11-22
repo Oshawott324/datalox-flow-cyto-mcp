@@ -28,6 +28,69 @@ missing-sample placeholders. `layout_transform_rendering` is no longer a known g
 **Independent FlowJo visual and event-membership validation remains pending.** Numeric tests,
 reference spline checks and standalone comparisons are not evidence of vendor equivalence.
 
+## Gate coordinates are in the wrong domain too, measured against FlowJo's own counts (2026-11-22)
+
+Auditing the importer alongside the axis-rescale defect, as point 5 of the review required, found
+that the same root cause affects **population membership**, not only rendering.
+
+`coordinateConverter` multiplies by `linearRescale` for `kind === "linear"` gates and for nothing
+else. Biex, log, flog and fasinh gate coordinates receive no rescale, so fluorescence gates and
+their events end up in different domains.
+
+### An independent membership oracle, without opening FlowJo
+
+A `.wsp` records FlowJo's own `count` on every `<Population>`, written by FlowJo from the same FCS
+files. `scripts/validate-flowjo-population-counts.mjs` walks both trees in parallel and compares.
+This tests gating semantics, which screenshots cannot. It is not vendor-rendering equivalence.
+
+Across all 12 samples of the reference workspace, 56 populations compared at 2% tolerance:
+
+| | Populations | Result |
+|---|---|---|
+| Linear scatter axes | 26 | **all agree** (ratios 0.993–0.994) |
+| Fluorescence biex axes | 30 | **all disagree** (worst ratios 0.36, 0.38, 0.49; several return 0 events) |
+
+The split falls exactly along transform family, which is what distinguishes a coordinate-domain
+fault from individually bad gates. Main chain of sample `flowjo_19`:
+
+| Population | Axes | FlowJo | Ours | Ratio |
+|---|---|---|---|---|
+| Lymphocytes | FSC-A / SSC-A | 7689 | 7636 | 0.993 |
+| Single Cells | FSC-H / FSC-W | 6626 | 6579 | 0.993 |
+| Single Cells | SSC-H / SSC-W | 6369 | 6329 | 0.994 |
+| Live CD3+ | viability / FITC | 526 | 257 | 0.489 |
+| CD4+ | APC / FITC | 369 | 173 | 0.469 |
+| Tet+ | APC / PE | 345 | 170 | 0.493 |
+
+### What FlowJo actually stores, and one model already ruled out
+
+The CD4+ rectangle is stored as:
+
+```xml
+<gating:dimension gating:min="1653.8343979932247"  gating:max="46446.13012510569" />   <!-- APC  -->
+<gating:dimension gating:min="586.2990265788363"   gating:max="11605.671053315473" />  <!-- FITC -->
+```
+
+Those are not 0..`length`(256) channel units. They span roughly 0..`maxRange`(214748), matching the
+cytometer's `linMax`/`logMax`. `invertFlowJoBiex` passes them straight into a transform whose
+inverse expects 0..256, which is why the APC gate lands at `[1.15e7, 3.73e8]` against ungated
+events with a median of `2.26e5`: the gate sits above its own data and keeps only the extreme tail.
+
+The obvious composition — divide the stored coordinate by `maxRange / length` (838.86), invert the
+biex, multiply by `logRescale` — was tested and **rejected**: it maps the FITC dimension to
+`[-1.07e6, -5.31e5]`, entirely negative, against positive FITC events. The correct composition
+still has to be established empirically.
+
+### Consequences for the fix
+
+The axis-rendering divisor and the gate-coordinate conversion are the same defect seen from two
+ends and must be fixed together. Fixing only rendering would leave gates in a different domain,
+with membership still wrong and now harder to notice because the picture looks reasonable.
+
+`validate-flowjo-population-counts.mjs` is the acceptance test: the 30 fluorescence populations
+should reach the ~0.99 the 26 linear ones already achieve. The script currently exits non-zero,
+which is correct — it reports a real defect rather than a missing feature.
+
 ## Verified defect: axis rescale is not applied (2026-11-21)
 
 Parameter-aware rendering works — the imported biex parameters demonstrably drive the mapping —
