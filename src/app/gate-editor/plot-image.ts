@@ -144,6 +144,11 @@ function renderGridAndAxes(context: RenderablePlotContext, area: PlotArea): stri
 
   parts.push(`<rect x="${area.left}" y="${area.top}" width="${area.width}" height="${area.height}" fill="none" stroke="#293241" stroke-width="1.2"/>`);
 
+  // Tick labels are in FCS data units, the same units as the plotted events and
+  // the stored gate coordinates. They are NOT in the rescaled display units a
+  // vendor tool may print on its own axes: an axis with an inputDivisor of
+  // 10000 labels 1e6 where FlowJo would label 100. The mapping's inverse ends
+  // in data units by construction, so one contract covers every scale.
   for (const tick of xTicks) {
     const [x] = visualToSvg([tick, context.visualBounds.yMin], context.visualBounds, area);
     const label = formatTick(context.axisMapping ? context.axisMapping.x.inverse(tick) : inverseTransformValue(tick, context.scale.x));

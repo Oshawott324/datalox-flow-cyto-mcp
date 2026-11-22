@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Two cytometers with deliberately different rescale factors, so a sample bound
+  to the wrong one cannot produce the right coordinates. The second sample names
+  a cytometer that is not declared, which must warn rather than fall back to the
+  first cytometer.
+-->
+<Workspace version="20.0" creator="FlowJo-hand-crafted-fixture"
+  xmlns:gating="http://www.isac-net.org/std/Gating-ML/v2.0/gating"
+  xmlns:transforms="http://www.isac-net.org/std/Gating-ML/v2.0/transformations"
+  xmlns:data-type="http://www.isac-net.org/std/Gating-ML/v2.0/datatypes">
+  <Cytometers>
+    <Cytometer name="Alpha" cyt="Alpha" linearRescale="10" logRescale="20">
+      <TransformStore>
+        <MatrixID matrixId="uncompensated">
+          <Transforms>
+            <transforms:linear transforms:minRange="0" transforms:maxRange="214748" gain="1">
+              <data-type:parameter data-type:name="LIN-A"/>
+            </transforms:linear>
+            <transforms:biex transforms:length="256" transforms:maxRange="214748" transforms:neg="0" transforms:width="-10" transforms:pos="4.3319291278">
+              <data-type:parameter data-type:name="BIEX-A"/>
+            </transforms:biex>
+          </Transforms>
+        </MatrixID>
+      </TransformStore>
+    </Cytometer>
+    <Cytometer name="Beta" cyt="Beta" linearRescale="1000" logRescale="2000">
+      <TransformStore>
+        <MatrixID matrixId="uncompensated">
+          <Transforms>
+            <transforms:linear transforms:minRange="0" transforms:maxRange="214748" gain="1">
+              <data-type:parameter data-type:name="LIN-A"/>
+            </transforms:linear>
+            <transforms:biex transforms:length="256" transforms:maxRange="214748" transforms:neg="0" transforms:width="-10" transforms:pos="4.3319291278">
+              <data-type:parameter data-type:name="BIEX-A"/>
+            </transforms:biex>
+          </Transforms>
+        </MatrixID>
+      </TransformStore>
+    </Cytometer>
+  </Cytometers>
+  <SampleList>
+    <Sample>
+      <DataSet uri="file:///testdata/fixtures/flowjo/beta-sample.fcs"/>
+      <SampleNode name="beta-sample.fcs" owningGroup="" sampleID="1" count="2">
+        <Subpopulations>
+          <Gate name="Beta Lin" gating:id="gate-beta-lin">
+            <gating:RangeGate gating:id="gate-beta-lin">
+              <gating:dimension gating:min="3" gating:max="7">
+                <data-type:parameter data-type:name="LIN-A"/>
+              </gating:dimension>
+            </gating:RangeGate>
+          </Gate>
+          <Gate name="Beta Biex" gating:id="gate-beta-biex">
+            <gating:RangeGate gating:id="gate-beta-biex">
+              <gating:dimension gating:min="10" gating:max="100">
+                <data-type:parameter data-type:name="BIEX-A"/>
+              </gating:dimension>
+            </gating:RangeGate>
+          </Gate>
+        </Subpopulations>
+      </SampleNode>
+    </Sample>
+    <Sample>
+      <DataSet uri="file:///testdata/fixtures/flowjo/unknown-sample.fcs"/>
+      <SampleNode name="unknown-sample.fcs" owningGroup="" sampleID="2" count="2">
+        <Subpopulations>
+          <Gate name="Unknown Lin" gating:id="gate-unknown-lin">
+            <gating:RangeGate gating:id="gate-unknown-lin">
+              <gating:dimension gating:min="3" gating:max="7">
+                <data-type:parameter data-type:name="LIN-A"/>
+              </gating:dimension>
+            </gating:RangeGate>
+          </Gate>
+        </Subpopulations>
+      </SampleNode>
+    </Sample>
+  </SampleList>
+</Workspace>

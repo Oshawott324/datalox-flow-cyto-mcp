@@ -6,6 +6,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import { renderLayout } from "../src/app/gate-editor/layout-image.js";
 import { renderPlotSvg } from "../src/app/gate-editor/plot-image.js";
+import { formatTick } from "../src/core/scale.js";
 import { configurePlotAxes, buildPanelAxisMapping } from "../src/app/gate-editor/plot-axis-context.js";
 import { getRenderablePlotContext } from "../src/app/gate-editor/server.js";
 import {
@@ -124,6 +125,63 @@ describe("layout rendering", () => {
     expect(() => buildPanelAxisMapping({ channel: "X", scale: "biex", transform: { maxRange: 123, pos: 4, neg: 0, width: -10, length: 256 } })).toThrow();
   });
 
+  it("composes the input divisor with the transform for events, gates, bounds and ticks", async () => {
+    // FlowJo states biex parameters in its own rescaled data space, so the
+    // divisor has to be applied before the transform and undone after it.
+    // Everything on the data side of this mapping is in FCS units.
+    const parameters = { maxRange: 214748, pos: 4.3319291278, neg: 0, width: -10, length: 256 };
+    const plain = buildPanelAxisMapping({ channel: "FITC-A", scale: "biex", transform: parameters });
+    const scaled = buildPanelAxisMapping({ channel: "FITC-A", scale: "biex", transform: parameters, inputDivisor: 10000 });
+    for (const value of [0, 1234, 1e5, 1e7, 2.1e9]) {
+      expect(scaled.forward(value)).toBeCloseTo(plain.forward(value / 10000), 12);
+      // The biex inverse is a spline, so the round trip is compared relatively;
+      // the residual is interpolation error, largest near maxRange.
+      const roundTrip = scaled.inverse(scaled.forward(value));
+      expect(Math.abs(roundTrip - value)).toBeLessThanOrEqual(Math.max(1e-4, Math.abs(value) * 1e-5));
+    }
+    // A divisor of 1 must be the identity, not a separate code path.
+    expect(buildPanelAxisMapping({ channel: "FITC-A", scale: "linear", inputDivisor: 1 }).forward(42)).toBe(42);
+    // Log is parameterless here, so this isolates the divisor from the transform.
+    expect(buildPanelAxisMapping({ channel: "FITC-A", scale: "log", inputDivisor: 100 }).forward(1000)).toBeCloseTo(1, 12);
+    for (const divisor of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => buildPanelAxisMapping({ channel: "FITC-A", scale: "linear", inputDivisor: divisor })).toThrow();
+    }
+
+    // Events, gate vertices, explicit bounds and tick labels must all land in
+    // the same domain: if any one of them skipped the divisor, the gate would
+    // no longer sit where its events are.
+    const context = await getRenderablePlotContext({ workspacePath, sampleId: "alpha", parent: "root", x: "FITC-A", y: "PE-A", format: "points" });
+    context.preview = { ...context.preview, bins: undefined, points: [[5000, 0]], format: "points" };
+    context.gates = [{ id: "check", sample: "alpha", parent: "root", type: "rect", x: "FITC-A", y: "PE-A", xMin: 5000, xMax: 50000, yMin: -1, yMax: 1 }];
+    const configured = configurePlotAxes(context, {
+      x: { channel: "FITC-A", scale: "log", inputDivisor: 100, bounds: { min: 100, max: 100000 } },
+      y: { channel: "PE-A", scale: "linear", inputDivisor: 10 },
+    });
+    expect(configured.visualBounds.xMin).toBeCloseTo(0, 12);
+    expect(configured.visualBounds.xMax).toBeCloseTo(3, 12);
+    expect(configured.axisMapping!.x.forward(5000)).toBeCloseTo(Math.log10(50), 12);
+    expect(configured.axisMapping!.x.inverse(configured.axisMapping!.x.forward(5000))).toBeCloseTo(5000, 6);
+    // The stored bounds stay in data units even though the visual range is not.
+    expect(configured.bounds.xMin).toBe(100);
+    expect(configured.bounds.xMax).toBe(100000);
+    // Tick labels are in FCS units: the bounds given in data units come back as
+    // the printed labels, abbreviated but unrescaled.
+    const svg = renderPlotSvg(configured, 760, 560);
+    expect(svg).toContain(">100<");
+    expect(svg).toContain(">100K<");
+
+    // On a biex axis the contract is visible: FlowJo would print its own
+    // rescaled number (at most maxRange), while these labels reach the FCS
+    // value. A tick axis that skipped the divisor could not exceed maxRange.
+    const biexConfigured = configurePlotAxes(context, {
+      x: { channel: "FITC-A", scale: "biex", transform: parameters, inputDivisor: 10000, bounds: { min: 0, max: 2.0e9 } },
+      y: { channel: "PE-A", scale: "linear" },
+    });
+    const topTick = biexConfigured.axisMapping!.x.inverse(biexConfigured.visualBounds.xMax);
+    expect(topTick).toBeGreaterThan(1e9);
+    expect(renderPlotSvg(biexConfigured, 760, 560)).toContain(`>${formatTick(topTick)}<`);
+  });
+
   it("applies shared bounds groups to both panels exactly", async () => {
     const layout = structuredClone(strategy());
     layout.id = "group_bounds";
@@ -134,6 +192,35 @@ describe("layout rendering", () => {
     expect((await upsertLayout({ workspacePath, layout, expectedRevision: (await readWorkspace(workspacePath)).revision })).ok).toBe(true);
     const rendered = await renderLayout({ workspacePath, layoutId: layout.id, output: "content" });
     for (const panel of rendered.panels) expect(panel.visualBounds).toMatchObject({ xMin: 0, xMax: 1000 });
+
+    // Bounds are display-space numbers, so members must share the input domain
+    // too: the same bound under two divisors is two different data values.
+    const mismatched = structuredClone(layout);
+    mismatched.id = "group_divisor_mismatch";
+    mismatched.boundsGroups = [{ id: "shared", channel: "FSC-A", scale: "linear", inputDivisor: 10, bounds: { min: 0, max: 1000 } }];
+    mismatched.panels[0].x = { channel: "FSC-A", scale: "linear", inputDivisor: 10, boundsGroup: "shared" };
+    mismatched.panels[1].x = { channel: "FSC-A", scale: "linear", inputDivisor: 1000, boundsGroup: "shared" };
+    const rejected = await upsertLayout({ workspacePath, layout: mismatched, expectedRevision: (await readWorkspace(workspacePath)).revision });
+    expect(rejected.ok).toBe(false);
+    expect(JSON.stringify(rejected)).toContain("bounds_group_input_divisor_mismatch");
+
+    // An omitted divisor means 1, so it must agree with an explicit 1 and
+    // disagree with anything else.
+    const implicit = structuredClone(mismatched);
+    implicit.id = "group_divisor_implicit";
+    implicit.boundsGroups = [{ id: "shared", channel: "FSC-A", scale: "linear", bounds: { min: 0, max: 1000 } }];
+    implicit.panels[0].x = { channel: "FSC-A", scale: "linear", inputDivisor: 1, boundsGroup: "shared" };
+    implicit.panels[1].x = { channel: "FSC-A", scale: "linear", boundsGroup: "shared" };
+    expect((await upsertLayout({ workspacePath, layout: implicit, expectedRevision: (await readWorkspace(workspacePath)).revision })).ok).toBe(true);
+
+    // A divisor that cannot define a domain is rejected at storage time.
+    const invalid = structuredClone(layout);
+    invalid.id = "group_divisor_invalid";
+    invalid.boundsGroups = undefined;
+    for (const panel of invalid.panels) panel.x = { channel: "FSC-A", scale: "linear", inputDivisor: 0 };
+    const refused = await upsertLayout({ workspacePath, layout: invalid, expectedRevision: (await readWorkspace(workspacePath)).revision });
+    expect(refused.ok).toBe(false);
+    expect(JSON.stringify(refused)).toContain("invalid_axis_input_divisor");
   });
   it("proposes deterministic ragged comparisons without modifying the workspace", async () => {
     const before = await fs.readFile(workspacePath, "utf8");

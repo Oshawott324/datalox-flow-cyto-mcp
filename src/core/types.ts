@@ -148,6 +148,14 @@ export type PanelAxis = {
   channel: string;
   scale?: AxisScale;
   transform?: AxisTransformParams;
+  // Divisor that converts an FCS value into the domain this axis' transform
+  // parameters are expressed in, before the transform is applied. FlowJo keeps
+  // its own data space - the FCS value divided by the cytometer's
+  // linearRescale/logRescale - and states maxRange in that space, so a biex
+  // axis imported from a .wsp needs this to render in the right domain. It is
+  // an explicit, imported setting: never inferred from $PnR / maxRange. Must be
+  // positive and finite; 1, the default, means FCS units.
+  inputDivisor?: number;
   bounds?: AxisBounds;
   // Id of an AxisBoundsGroup on the owning layout. The group supplies the bounds
   // and constrains every member to one parameter and one transform. Channel
@@ -247,10 +255,14 @@ export type LayoutPanel = {
 export type AxisBoundsGroup = {
   id: string;
   // Every member axis must resolve, in its own sample's FCS metadata, to the same
-  // parameter this channel resolves to, and must use this scale and transform.
+  // parameter this channel resolves to, and must use this scale, transform and
+  // input domain. Two axes sharing bounds under different divisors would place
+  // the same number at different data values, which is what a shared axis is
+  // meant to rule out.
   channel: string;
   scale: AxisScale;
   transform?: AxisTransformParams;
+  inputDivisor?: number;
   bounds: AxisBounds;
 };
 

@@ -253,9 +253,18 @@ export async function renderLayout(options: LayoutImageOptions): Promise<Rendere
         if (!axis.boundsGroup) return axis;
         const group = layout.boundsGroups?.find((entry) => entry.id === axis.boundsGroup);
         if (!group) throw new FlowcytoError("unknown_bounds_group", `Unknown bounds group ${axis.boundsGroup}.`);
-        return { ...axis, scale: group.scale, transform: group.transform, bounds: group.bounds };
+        // The group owns the whole mapping, input domain included: a member that
+        // kept its own divisor would place the group's bounds at a different
+        // data value.
+        return { ...axis, scale: group.scale, transform: group.transform, inputDivisor: group.inputDivisor, bounds: group.bounds };
       };
-      axisConfiguration = { x: resolveAxis(panel.x), y: resolveAxis(panel.y!) };
+      // A two-dimensional render needs both axes. Saying so is better than
+      // asserting the y axis exists: a panel without one becomes a placeholder
+      // that names the problem instead of failing inside the renderer.
+      if (!panel.y) {
+        throw new FlowcytoError("missing_panel_y_axis", `Panel ${panel.id} states no y axis, so it cannot be rendered as a two-dimensional plot.`);
+      }
+      axisConfiguration = { x: resolveAxis(panel.x), y: resolveAxis(panel.y) };
       context = await getRenderablePlotContext({
         workspacePath: options.workspacePath,
         sampleId: source.sample,

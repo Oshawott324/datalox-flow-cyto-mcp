@@ -33,25 +33,35 @@ reference spline checks and standalone comparisons are not evidence of vendor eq
 Auditing the importer alongside the axis-rescale defect, as point 5 of the review required, found
 that the same root cause affects **population membership**, not only rendering.
 
-`coordinateConverter` multiplies by `linearRescale` for `kind === "linear"` gates and for nothing
-else. Biex, log, flog and fasinh gate coordinates receive no rescale, so fluorescence gates and
-their events end up in different domains.
+`coordinateConverter` multiplied by `linearRescale` for `kind === "linear"` gates and, for every
+other kind, applied a transform *inverse* to coordinates that were never in display space. Both
+halves are fixed below, together, as the review required.
 
-### An independent membership oracle, without opening FlowJo
+### Corrected aggregate-count audit (2026-11-22)
 
-A `.wsp` records FlowJo's own `count` on every `<Population>`, written by FlowJo from the same FCS
-files. `scripts/validate-flowjo-population-counts.mjs` walks both trees in parallel and compares.
-This tests gating semantics, which screenshots cannot. It is not vendor-rendering equivalence.
+A `.wsp` records a `count` on each `<Population>`. These are external aggregate-count evidence,
+not event-membership ground truth: different event sets can have equal counts, and stored counts
+may be stale. Independent FlowJo rendering and event-membership validation remain pending.
 
-Across all 12 samples of the reference workspace, 56 populations compared at 2% tolerance:
+The original probe omitted compensation, paired populations by array position and skipped
+zero-count references. Its subsampling explanation was also incorrect: population graphs count
+all events. The corrected probe applies the explicitly imported per-sample matrix, resolves
+sample-scoped name paths, retains unresolved comparisons, and checks zero-count populations.
+It refuses samples with multiple matrices rather than guessing a binding.
+
+Across all 12 samples, **58 populations** compare at the explicit 2% diagnostic tolerance:
 
 | | Populations | Result |
 |---|---|---|
-| Linear scatter axes | 26 | **all agree** (ratios 0.993–0.994) |
-| Fluorescence biex axes | 30 | **all disagree** (worst ratios 0.36, 0.38, 0.49; several return 0 events) |
+| All populations | 58 | 27 agree, 31 disagree, none uncompared |
+| Fluorescence axes | 30 | All disagree |
+| Other axes | 28 | 27 agree; one TLSW population disagrees |
 
-The split falls exactly along transform family, which is what distinguishes a coordinate-domain
-fault from individually bad gates. Main chain of sample `flowjo_19`:
+All 12 root counts match their XML sample counts. This does not prove event identity. The failure
+does **not** split exclusively by transform family. A 0.99 ratio is not an acceptance target,
+and agreement within 2% is not a substitute for checking discrepancies and event membership.
+
+Historical results below came from the original, uncompensated probe and are superseded:
 
 | Population | Axes | FlowJo | Ours | Ratio |
 |---|---|---|---|---|
@@ -79,17 +89,95 @@ events with a median of `2.26e5`: the gate sits above its own data and keeps onl
 The obvious composition — divide the stored coordinate by `maxRange / length` (838.86), invert the
 biex, multiply by `logRescale` — was tested and **rejected**: it maps the FITC dimension to
 `[-1.07e6, -5.31e5]`, entirely negative, against positive FITC events. The correct composition
-still has to be established empirically.
+still has to be established from serialization semantics and independent evidence, not fitted
+to population totals.
 
-### Consequences for the fix
+### Resolved: FlowJo stores gate coordinates in its own data space (2026-11-22)
 
-The axis-rendering divisor and the gate-coordinate conversion are the same defect seen from two
-ends and must be fixed together. Fixing only rendering would leave gates in a different domain,
-with membership still wrong and now harder to notice because the picture looks reasonable.
+The convention was established from the serialization itself, not fitted to counts.
 
-`validate-flowjo-population-counts.mjs` is the acceptance test: the 30 fluorescence populations
-should reach the ~0.99 the 26 linear ones already achieve. The script currently exits non-zero,
-which is correct — it reports a real defect rather than a missing feature.
+Three independent facts agree:
+
+1. **The numbers.** Every stored *scatter* coordinate in the reference workspace is exactly
+   1/10000 of the FCS value our importer already produced correctly. The cytometer declares
+   `linearRescale="10000"` and `logRescale="10000"` with `linMax="214748"`, while the samples
+   declare `$PnR="2147483647"`. `2147483647 / 10000 = 214748`: `linMax` *is* the FCS range
+   expressed in FlowJo's space.
+2. **FlowKit.** Its `wsp_utils.py` states that "FlowJo stores gate boundary info in the
+   untransformed space", forward-applies each dimension's transform on import and inverts it on
+   export. It never divides a coordinate by `T`, `maxRange`, 4096 or 256. Nothing in it treats a
+   non-linear coordinate as a channel/display value.
+3. **Plausibility of the result.** The CD4+ APC bounds become `[1.65e7, 4.64e8]` against APC
+   events whose median is `4.10e5` and 95th percentile is `1.02e8` — a positive-population gate,
+   where the previous `[1.15e7, 3.73e8]`-against-`2.26e5` reading was an artefact of comparing
+   against a differently scaled column.
+
+So stored coordinates are neither FCS values nor display/channel values: they are FCS values
+divided by the cytometer's rescale factor. The conversion is a multiplication by that factor and
+**nothing else**. Applying a transform inverse to them was a domain error, which is why the
+earlier "divide by `maxRange / length`, invert, multiply" composition produced an entirely
+negative FITC interval — it was refining the wrong operation.
+
+### The implemented fix
+
+`coordinateConverter` multiplies by `linearRescale` for a linear parameter and by `logRescale`
+for log, flog, fasinh and biex. The four `invertFlowJo*` helpers are deleted: they had no correct
+caller. A channel with no declared transform is still left untouched, because nothing identifies
+which space its coordinates are in.
+
+Cytometer binding is now per sample, by the sample's `$CYT` keyword against each
+`<Cytometer cyt=...>`. A single declared cytometer is used without a match, since that is
+unambiguous; several cytometers with no match applies no rescale and warns. Taking the first
+cytometer — the previous behaviour — would have put one sample's gates in the wrong domain while
+every other sample still looked correct. `testdata/fixtures/flowjo/two-cytometers-rescale.wsp`
+declares two cytometers with deliberately different factors so a wrong binding cannot pass.
+
+Rendering states the same conversion explicitly rather than inferring it. `PanelAxis` and
+`AxisBoundsGroup` carry `inputDivisor`, a positive finite number defaulting to 1, which layout
+import sets from the bound cytometer's factor for that axis' scale. The mapping composes it:
+
+```
+forward(fcsValue) = transform(fcsValue / inputDivisor)
+inverse(display)  = inputDivisor * inverseTransform(display)
+```
+
+Events, raw-space gate vertices and raw-space bounds all go through that one pair, so they cannot
+drift apart. Bounds-group compatibility includes the divisor: bounds are display-space numbers, so
+two members under different divisors would put the same bound at different data values. An absent
+divisor means 1 and must agree with an explicit 1.
+
+**Tick-unit contract: labels are in FCS data units**, the same units as the plotted events and the
+stored gate coordinates — not the rescaled units FlowJo prints on its own axes. An axis with a
+divisor of 10000 labels `1e6` where FlowJo labels `100`. One unit system covers gates, events and
+ticks; the divisor is reported per axis so a FlowJo screenshot comparison can convert. This is a
+choice, not a derivation: counts cannot settle it, and a side-by-side screenshot will show
+different axis numbers at the same positions by design.
+
+Export needed no coordinate change — it already writes FCS units — but it now declares
+`linearRescale="1"` and `logRescale="1"` explicitly, so the round trip does not depend on a
+reader's default for the factor import now relies on.
+
+### Result against the oracle
+
+All **58 of 58** populations across 12 samples now agree with FlowJo's recorded counts, where 31
+disagreed before. Maximum relative error is **1.99%**; 43 of 58 agree within 0.5%.
+
+The residual is not a domain error. It concentrates on polygon gates and the populations beneath
+them — the largest, `Size/FL19-A+` at 1.99%, is a child of a polygon gate that is itself 1.66%
+off — which is what boundary-inclusion and polygon edge-rule differences look like. The remaining
+nonlinear-polygon question from the review stands: transforming vertices and joining them with
+straight segments in raw space does not reproduce a polygon drawn in transformed space. That is a
+separate, smaller defect, and it is the most likely explanation for the residual.
+
+Stored counts remain aggregate evidence: equal counts do not prove identical event sets.
+Independent FlowJo rendering and event-membership validation are still pending. 1.99% is a
+measured residual, not an acceptance threshold.
+
+### Still open
+
+- Nonlinear polygon edge semantics (above), the likely source of the residual.
+- Independent FlowJo visual and event-membership validation.
+- The flaky-test investigation, deliberately kept separate from coordinate correctness.
 
 ## Verified defect: axis rescale is not applied (2026-11-21)
 

@@ -23,6 +23,12 @@ export type FlowJoLayoutSample = {
   matricesByPrefix: Map<string, ImportedFlowJoMatrix>;
   /** This sample's own transforms, keyed by the raw FlowJo parameter name. */
   transforms: Map<string, ImportedAxisTransform>;
+  /**
+   * Divisors the sample's bound cytometer applies to FCS values before FlowJo
+   * transforms them. Carried here so an imported axis states its input domain
+   * explicitly instead of the renderer guessing one.
+   */
+  rescale: { linear: number; log: number; provenance: string };
 };
 
 export type FlowJoLayoutImportInput = {
@@ -200,10 +206,16 @@ function readAxis(
   }
 
   const transform = sample.transforms.get(rawName);
+  // The divisor belongs to the cytometer, but which of its two factors applies
+  // is decided by this axis' scale, exactly as gate-coordinate conversion does.
+  const divisor = transform
+    ? (transform.scale === "linear" ? sample.rescale.linear : sample.rescale.log)
+    : 1;
   const axis: PanelAxis = {
     channel: resolved,
     ...(transform ? { scale: transform.scale } : {}),
     ...(transform?.params ? { transform: transform.params } : {}),
+    ...(Number.isFinite(divisor) && divisor > 0 && divisor !== 1 ? { inputDivisor: divisor } : {}),
   };
   return {
     ok: true,

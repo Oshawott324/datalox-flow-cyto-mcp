@@ -702,13 +702,19 @@ describe("flowcyto core", () => {
     })).rejects.toMatchObject({ code: "flowjo_sample_filter_no_match" });
   });
 
-  it("inverts FlowJo log, flog, and fasinh gate coordinates on import", async () => {
+  it("converts FlowJo gate coordinates by the cytometer rescale, not by a transform inverse", async () => {
+    // FlowJo stores gate coordinates in its own data space: the FCS value
+    // divided by the cytometer's rescale factor. They are not display/channel
+    // values, so inverting the transform is a domain error. Verified against a
+    // real workspace whose samples declare $PnR=2147483647 while its cytometer
+    // declares linMax=214748 with linearRescale=10000, and matching FlowKit,
+    // which documents the stored values as untransformed.
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-transform-import-"));
     const samplePath = path.join(dir, "transform-sample.fcs");
     await writeTinyIntegerFcs({
       fcsPath: samplePath,
-      channels: ["LOG-A", "FLOG-A", "FASINH-A", "BIEX-A"],
-      rows: [[100, 200, 300, 400], [150, 250, 350, 450]],
+      channels: ["LOG-A", "FLOG-A", "FASINH-A", "BIEX-A", "LIN-A"],
+      rows: [[100, 200, 300, 400, 500], [150, 250, 350, 450, 550]],
     });
 
     const result = await importFlowJoWorkspace({
@@ -717,50 +723,61 @@ describe("flowcyto core", () => {
       samplePathMap: { "transform-sample.fcs": samplePath },
     });
     const workspace = await readWorkspace(result.workspacePath);
-    const logRect = workspace.gates.find((gate) => gate.id === "gate-log-rect");
-    const fasinhRange = workspace.gates.find((gate) => gate.id === "gate-fasinh-range");
-    const biexRange = workspace.gates.find((gate) => gate.id === "gate-biex-range");
-    const biexRectRange = workspace.gates.find((gate) => gate.id === "gate-biex-rect-range");
+    const gate = (id: string) => workspace.gates.find((entry) => entry.id === id);
+    const logRect = gate("gate-log-rect");
+    const fasinhRange = gate("gate-fasinh-range");
+    const biexRange = gate("gate-biex-range");
+    const biexRectRange = gate("gate-biex-rect-range");
+    const linRange = gate("gate-lin-range");
 
     expect(result.warnings).toEqual([]);
-    expect(logRect).toMatchObject({
-      type: "rect",
-      x: "LOG-A",
-      y: "FLOG-A",
-      xMin: 10,
-      xMax: 100000,
-      yMax: 10000,
+    // The fixture declares logRescale=100 and linearRescale=10000, so a test
+    // that applied the wrong factor, or none, cannot pass.
+    expect(logRect).toMatchObject({ type: "rect", x: "LOG-A", y: "FLOG-A", xMin: 50, xMax: 150, yMin: 100, yMax: 200 });
+    expect(fasinhRange).toMatchObject({ type: "range", x: "FASINH-A", min: 10000, max: 14000 });
+    expect(biexRange).toMatchObject({ type: "range", x: "BIEX-A", min: 1000, max: 10000 });
+    // A one-dimensional RectangleGate must use the same conversion as a
+    // RangeGate on the same channel and the same stored values.
+    expect(biexRectRange).toMatchObject({ type: "range", x: "BIEX-A", min: 1000, max: 10000 });
+    // A linear parameter takes linearRescale, not logRescale.
+    expect(linRange).toMatchObject({ type: "range", x: "LIN-A", min: 30000, max: 70000 });
+  });
+
+  it("binds each sample to its own cytometer and refuses to guess when it cannot", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-cytometer-bind-"));
+    const betaPath = path.join(dir, "beta-sample.fcs");
+    const unknownPath = path.join(dir, "unknown-sample.fcs");
+    // $CYT is what ties a sample to a cytometer; the fixture declares Alpha
+    // first, so taking the first cytometer would silently use the wrong factors.
+    await writeTinyIntegerFcs({
+      fcsPath: betaPath,
+      channels: ["LIN-A", "BIEX-A"],
+      rows: [[100, 200], [150, 250]],
+      extraKeywords: { $CYT: "Beta" },
     });
-    expect(logRect?.type === "rect" ? logRect.yMin : Number.NaN).toBeCloseTo(316.22776601683796, 10);
-    expect(fasinhRange).toMatchObject({
-      type: "range",
-      x: "FASINH-A",
+    await writeTinyIntegerFcs({
+      fcsPath: unknownPath,
+      channels: ["LIN-A", "BIEX-A"],
+      rows: [[100, 200], [150, 250]],
+      extraKeywords: { $CYT: "Gamma" },
     });
-    if (fasinhRange?.type !== "range") throw new Error("Expected fasinh range gate.");
-    const invertFasinh = (value: number) => {
-      const m = 4;
-      const a = 0.7;
-      const length = 256;
-      const t = 12000;
-      return Math.sinh(((m + a) * Math.LN10 * value / length) - (a * Math.LN10)) * t / Math.sinh(m * Math.LN10);
-    };
-    expect(fasinhRange.min).toBeCloseTo(invertFasinh(100), 10);
-    expect(fasinhRange.max).toBeCloseTo(invertFasinh(140), 10);
-    const biexTransform = buildBiexTransform({
-      length: 256,
-      maxRange: 214748,
-      pos: 4.3319291278,
-      neg: 0,
-      width: -10,
+
+    const result = await importFlowJoWorkspace({
+      wspPath: path.join(flowJoFixtureDir, "two-cytometers-rescale.wsp"),
+      workspaceDir: dir,
+      samplePathMap: { "beta-sample.fcs": betaPath, "unknown-sample.fcs": unknownPath },
     });
-    expect(biexRange).toMatchObject({ type: "range", x: "BIEX-A" });
-    expect(biexRange?.type === "range" ? biexRange.min : Number.NaN).toBeCloseTo(biexTransform.inverse(10), 10);
-    expect(biexRange?.type === "range" ? biexRange.max : Number.NaN).toBeCloseTo(biexTransform.inverse(100), 10);
-    // One-dimensional RectangleGate with biex transform must apply the same coordinate
-    // inversion as a RangeGate on the same channel and display-space values.
-    expect(biexRectRange).toMatchObject({ type: "range", x: "BIEX-A" });
-    expect(biexRectRange?.type === "range" ? biexRectRange.min : Number.NaN).toBeCloseTo(biexTransform.inverse(10), 10);
-    expect(biexRectRange?.type === "range" ? biexRectRange.max : Number.NaN).toBeCloseTo(biexTransform.inverse(100), 10);
+    const workspace = await readWorkspace(result.workspacePath);
+    const gate = (id: string) => workspace.gates.find((entry) => entry.id.endsWith(id));
+
+    // Beta: linearRescale=1000, logRescale=2000. Alpha's 10/20 would give 30/70.
+    expect(gate("gate-beta-lin")).toMatchObject({ type: "range", min: 3000, max: 7000 });
+    expect(gate("gate-beta-biex")).toMatchObject({ type: "range", min: 20000, max: 200000 });
+
+    // An unmatched $CYT with several cytometers declared must not fall back.
+    expect(gate("gate-unknown-lin")).toMatchObject({ type: "range", min: 3, max: 7 });
+    expect(result.warnings.some((warning) =>
+      warning.includes("could not be bound") && warning.includes("Gamma"))).toBe(true);
   });
 
   it("skips unsupported FlowJo gate types with warnings, promotes orphaned children to parent", async () => {
@@ -2491,7 +2508,7 @@ describe("flowcyto core", () => {
     expect(uniqueIds.size).toBeGreaterThanOrEqual(2);
     // Cytometers section must be present even when no non-linear views are defined
     expect(xml).toContain("<Cytometers>");
-    expect(xml).toMatch(/<Cytometers>\s*<Cytometer name="Flowcyto" linearRescale="1"\s*\/>\s*<\/Cytometers>/);
+    expect(xml).toMatch(/<Cytometers>\s*<Cytometer name="Flowcyto" cyt="Flowcyto" linearRescale="1" logRescale="1"\s*\/>\s*<\/Cytometers>/);
     expect(xml).toContain('<GroupNode name="All Samples"');
     expect(xml).toContain('<Group name="All Samples"');
     expect(xml).toMatch(/<SampleRefs>[\s\S]*?<SampleRef sampleID="1"\s*\/>[\s\S]*?<SampleRef sampleID="2"\s*\/>[\s\S]*?<\/SampleRefs>/);

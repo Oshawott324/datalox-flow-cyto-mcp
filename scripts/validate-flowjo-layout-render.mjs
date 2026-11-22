@@ -198,34 +198,43 @@ check("comparison layout renders three panels and preserves both dangling sample
   comparison?.rendered === 3 && comparison?.blockedByTransform === 0 && comparison?.placeholders === 2,
   `rendered ${comparison?.rendered}, blocked ${comparison?.blockedByTransform}, placeholders ${comparison?.placeholders}`);
 
-// A biex axis whose data sits entirely above its own maxRange is rendering in the
-// wrong domain: FlowJo divides by the cytometer's linearRescale/logRescale first.
-// Reported rather than asserted, since the renderer does not yet apply it.
-const rescaleSuspects = [];
+// Every axis carrying FlowJo transform parameters must also state the input
+// domain those parameters are in, and it must be the bound cytometer's factor.
+// Without it the data sits far above its own maxRange and the population is
+// compressed into a corner of the plot, which is how this defect presented.
+const cytometers = (Array.isArray(source.Cytometers?.Cytometer)
+  ? source.Cytometers.Cytometer
+  : [source.Cytometers?.Cytometer]).filter(Boolean);
+const declaredDivisors = new Set(cytometers.map((entry) => Number(entry.logRescale)).filter((value) => Number.isFinite(value) && value > 0));
+
+const rescaledAxes = [];
 for (const layout of layouts) {
   for (const panel of layout.panels) {
     if (panel.status.state !== "resolved") continue;
     for (const key of ["x", "y"]) {
       const axis = panel[key];
-      if (axis?.scale !== "biex" || !Number.isFinite(axis.transform?.maxRange)) continue;
-      rescaleSuspects.push({ panel: panel.id, axis: key, channel: axis.channel, maxRange: axis.transform.maxRange });
+      if (!axis?.transform || !Number.isFinite(axis.transform.maxRange)) continue;
+      rescaledAxes.push({ panel: panel.id, axis: key, channel: axis.channel, maxRange: axis.transform.maxRange, inputDivisor: axis.inputDivisor });
+      check(`${layout.name}: ${panel.id} ${key} axis states its input domain`,
+        Number.isFinite(axis.inputDivisor) && axis.inputDivisor > 0,
+        `inputDivisor=${axis.inputDivisor} for ${axis.channel}`);
+      check(`${layout.name}: ${panel.id} ${key} axis divisor comes from a declared cytometer`,
+        declaredDivisors.has(axis.inputDivisor),
+        `${axis.inputDivisor} not in ${[...declaredDivisors].join(", ")}`);
     }
   }
 }
-
-const cytometer = (Array.isArray(source.Cytometers?.Cytometer)
-  ? source.Cytometers.Cytometer[0]
-  : source.Cytometers?.Cytometer) ?? {};
+check("some axis carries an imported transform, so the divisor checks are not vacuous", rescaledAxes.length > 0);
 
 const knownGaps = [
   {
-    id: "axis_domain_rescale_not_applied",
-    detail: `The cytometer declares linearRescale=${cytometer.linearRescale} and logRescale=${cytometer.logRescale} with linMax=${cytometer.linMax}, so FlowJo divides FCS values before transforming. The layout axis mapping does not, so ${rescaleSuspects.length} biex axes render with data far above their own maxRange and the population is compressed into a small fraction of the plot. See docs/layout-plan-2026-11-17.md.`,
-    axes: rescaleSuspects,
+    id: "flowjo_equivalence_unverified",
+    detail: "No panel has been compared against FlowJo's own rendering. Current evidence is pipeline consistency plus agreement with FlowJo's own recorded population counts (scripts/validate-flowjo-population-counts.mjs), not vendor rendering equivalence.",
   },
   {
-    id: "flowjo_equivalence_unverified",
-    detail: "No panel has been compared against FlowJo's own rendering. Current evidence shows pipeline consistency, not vendor equivalence. The rescale gap above would dominate such a comparison until it is fixed.",
+    id: "axis_tick_units_are_fcs_units",
+    detail: "Tick labels are in FCS data units, not the rescaled units FlowJo prints on its own axes. A side-by-side screenshot comparison will show different axis numbers for the same positions by design; see docs/layout-plan-2026-11-17.md.",
+    axes: rescaledAxes,
   },
 ];
 

@@ -586,7 +586,21 @@ function transformSignature(transform: unknown): string | null {
   return parts.length === 0 ? null : parts.join(",");
 }
 
-type BoundsGroupSpec = { channel: string; scale: string; transform: string | null };
+/**
+ * The divisor converts an FCS value into the domain the transform parameters
+ * are stated in, so a zero, negative or non-finite one does not mean "no
+ * conversion": it makes every mapped coordinate meaningless. Rejected here
+ * rather than defended against at render time.
+ */
+function validateAxisInputDivisor(divisor: unknown, basePath: string): ValidationError[] {
+  if (divisor === undefined) return [];
+  if (!isFiniteNumber(divisor) || Number(divisor) <= 0) {
+    return [validationError(basePath, "invalid_axis_input_divisor", "Axis inputDivisor must be a positive finite number.")];
+  }
+  return [];
+}
+
+type BoundsGroupSpec = { channel: string; scale: string; transform: string | null; inputDivisor: number };
 
 // Structural only: scale and transform are compared here because that is pure data.
 // Channel identity needs FCS parameter metadata and is checked in
@@ -612,6 +626,7 @@ function validatePanelAxis(
     errors.push(validationError(`${basePath}/scale`, "invalid_axis_scale", "Axis scale must be linear, log, arcsinh, or biex."));
   }
   errors.push(...validateAxisTransform(axis.transform, `${basePath}/transform`));
+  errors.push(...validateAxisInputDivisor(axis.inputDivisor, `${basePath}/inputDivisor`));
   if (axis.bounds !== undefined) errors.push(...validateAxisBounds(axis.bounds, `${basePath}/bounds`));
 
   const groupId = axis.boundsGroup === undefined ? undefined : asString(axis.boundsGroup);
@@ -629,6 +644,18 @@ function validatePanelAxis(
       `${basePath}/scale`,
       "bounds_group_scale_mismatch",
       `Axis scale ${scale} does not match bounds group ${groupId} scale ${group.scale}.`,
+    ));
+    return errors;
+  }
+  // Bounds are stated in display units, so members must also agree on the input
+  // domain: the same display number under two divisors is two different data
+  // values, which is exactly what sharing an axis is supposed to prevent.
+  const axisDivisor = isFiniteNumber(axis.inputDivisor) ? Number(axis.inputDivisor) : 1;
+  if (axisDivisor !== group.inputDivisor) {
+    errors.push(validationError(
+      `${basePath}/inputDivisor`,
+      "bounds_group_input_divisor_mismatch",
+      `Axis inputDivisor ${axisDivisor} does not match bounds group ${groupId} inputDivisor ${group.inputDivisor}.`,
     ));
     return errors;
   }
@@ -833,6 +860,7 @@ function validateLayoutShape(
       errors.push(validationError(`${groupPath}/scale`, "invalid_axis_scale", "Bounds group scale must be linear, log, arcsinh, or biex."));
     }
     errors.push(...validateAxisTransform(group.transform, `${groupPath}/transform`));
+    errors.push(...validateAxisInputDivisor(group.inputDivisor, `${groupPath}/inputDivisor`));
     errors.push(...validateAxisBounds(group.bounds, `${groupPath}/bounds`));
     if (scale && PARAMETERIZED_SCALES.has(scale) && transformSignature(group.transform) === null) {
       errors.push(validationError(
@@ -841,7 +869,14 @@ function validateLayoutShape(
         `Bounds group ${id ?? groupIndex} uses ${scale}, so it must state transform parameters; a scale name alone does not identify a transform.`,
       ));
     }
-    if (id && channel && scale) groups.set(id, { channel, scale, transform: transformSignature(group.transform) });
+    if (id && channel && scale) {
+      groups.set(id, {
+        channel,
+        scale,
+        transform: transformSignature(group.transform),
+        inputDivisor: isFiniteNumber(group.inputDivisor) ? Number(group.inputDivisor) : 1,
+      });
+    }
   });
 
   if (!Array.isArray(layout.panels)) {

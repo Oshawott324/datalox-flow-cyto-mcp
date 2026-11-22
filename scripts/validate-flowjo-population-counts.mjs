@@ -5,15 +5,15 @@ import path from "node:path";
 
 import { XMLParser } from "fast-xml-parser";
 
-import { importFlowJoWorkspace, readWorkspace, getPopulationTable } from "../dist/src/core/index.js";
+import { importFlowJoWorkspace, readWorkspace, getPopulationGraph, namePathToGateId } from "../dist/src/core/index.js";
 
 /**
  * Compares our computed population counts against the counts FlowJo recorded in
  * the .wsp itself.
  *
- * This is independent membership evidence, obtained without opening FlowJo: the
- * counts were written by FlowJo from the same FCS files. It tests gating
- * semantics, which screenshots cannot. It is NOT vendor-rendering equivalence.
+ * This is aggregate-count evidence, not event-membership ground truth. Equal
+ * counts do not prove identical selected events, and stored counts may be stale.
+ * It is NOT vendor-rendering equivalence.
  *
  * Usage: node scripts/validate-flowjo-population-counts.mjs <wsp> <fcs-dir> [tolerance]
  */
@@ -21,9 +21,10 @@ const [wspPath, fcsDirectory, toleranceArg] = process.argv.slice(2);
 if (!wspPath || !fcsDirectory) {
   throw new Error("Usage: node scripts/validate-flowjo-population-counts.mjs <wsp> <fcs-directory> [tolerance]");
 }
-// Our previews subsample and boundary handling differs slightly, so exact
-// equality is not expected; correct gates land within a couple of percent.
+// Population graphs count all events. This is an explicit diagnostic tolerance,
+// not an allowance for preview subsampling or a scientific acceptance guarantee.
 const tolerance = Number(toleranceArg ?? 0.02);
+assert(Number.isFinite(tolerance) && tolerance >= 0 && tolerance < 1, "tolerance must be in [0,1)");
 
 const array = (value) => (value == null ? [] : Array.isArray(value) ? value : [value]);
 const xml = await fs.readFile(wspPath, "utf8");
@@ -48,18 +49,23 @@ const imported = await importFlowJoWorkspace({ wspPath, workspaceDir, samplePath
 const workspace = await readWorkspace(imported.workspacePath);
 const sampleIds = [...samplesByLocalId.keys()].filter((id) =>
   workspace.samples.some((sample) => sample.id === id));
-const table = await getPopulationTable({ workspacePath: imported.workspacePath, sampleIds });
-
-/** Walks our gate tree in parent order, mirroring FlowJo's Subpopulations nesting. */
-function ourChain(sampleId, parent, gates) {
-  const children = workspace.gates.filter((gate) => gate.sample === sampleId && gate.parent === parent);
-  return children.map((gate) => ({
-    gate,
-    count: gates[gate.id]?.count,
-    children: ourChain(sampleId, gate.id, gates),
-  }));
+const graphs = new Map();
+const sampleReports = [];
+for (const sampleId of sampleIds) {
+  const matrices = (workspace.compensations ?? []).filter((matrix) => matrix.sample === sampleId && matrix.source === "flowjo_wsp");
+  const declared = array(samplesByLocalId.get(sampleId).spilloverMatrix);
+  assert.equal(matrices.length, declared.length, `Not all declared matrices imported for ${sampleId}`);
+  assert(matrices.length <= 1, `Multiple matrices for ${sampleId}; explicit per-population binding is required`);
+  const graph = await getPopulationGraph({ workspacePath: imported.workspacePath, sampleId, compensationId: matrices[0]?.id });
+  const nodes = new Map();
+  function collect(node) { nodes.set(node.gateId, node); node.children.forEach(collect); }
+  collect(graph.root);
+  graphs.set(sampleId, nodes);
+  sampleReports.push({ sampleId, compensationId: matrices[0]?.id ?? null, originalEventCount: graph.root.count,
+    flowjoRootCount: Number(samplesByLocalId.get(sampleId).SampleNode.count) });
 }
 
+/** Retains XML ancestry so imported populations can be matched by sample and path. */
 function flowjoChain(node) {
   return array(node?.Population).map((pop) => ({
     name: pop.name,
@@ -69,39 +75,47 @@ function flowjoChain(node) {
 }
 
 const rows = [];
-const walk = (theirs, ours, sampleId, prefix) => {
-  theirs.forEach((they, index) => {
-    const we = ours[index];
-    const axes = we ? [we.gate.x, we.gate.y].filter(Boolean).join(" / ") : "";
+const walk = (theirs, sampleId, prefix) => {
+  theirs.forEach((they) => {
+    const population = prefix ? `${prefix}/${they.name}` : they.name;
+    const resolution = namePathToGateId(workspace, sampleId, population);
+    const we = resolution.status === "resolved" ? graphs.get(sampleId).get(resolution.gateId) : undefined;
+    const gate = workspace.gates.find((entry) => entry.sample === sampleId && entry.id === we?.gateId);
+    const axes = gate ? [gate.x, gate.y].filter(Boolean).join(" / ") : "";
+    const validReference = Number.isInteger(they.count) && they.count >= 0;
+    const relativeError = validReference && we ? Math.abs(we.count - they.count) / Math.max(1, they.count) : null;
     rows.push({
       sample: sampleId,
-      population: `${prefix}/${they.name}`,
+      population,
+      resolution,
       axes,
       flowjo: they.count,
       ours: we?.count ?? null,
       ratio: we?.count != null && they.count ? we.count / they.count : null,
+      relativeError,
+      status: relativeError === null ? "uncompared" : relativeError <= tolerance ? "agreeing" : "disagreeing",
     });
-    if (we) walk(they.children, we.children, sampleId, `${prefix}/${they.name}`);
+    walk(they.children, sampleId, population);
   });
 };
 
 for (const sampleId of sampleIds) {
   const xmlSample = samplesByLocalId.get(sampleId);
-  const gates = table.rows.find((row) => row.sampleId === sampleId)?.gates ?? {};
-  walk(flowjoChain(xmlSample.SampleNode.Subpopulations), ourChain(sampleId, "root", gates), sampleId, "");
+  walk(flowjoChain(xmlSample.SampleNode.Subpopulations), sampleId, "");
 }
 
-const compared = rows.filter((row) => row.ratio !== null);
-const agreeing = compared.filter((row) => Math.abs(row.ratio - 1) <= tolerance);
-const disagreeing = compared.filter((row) => Math.abs(row.ratio - 1) > tolerance);
+const compared = rows.filter((row) => row.status !== "uncompared");
+const agreeing = rows.filter((row) => row.status === "agreeing");
+const disagreeing = rows.filter((row) => row.status === "disagreeing");
+const uncompared = rows.filter((row) => row.status === "uncompared");
 
 // Group the disagreements by axis set, since a whole transform family failing
 // together points at a coordinate-domain problem rather than one bad gate.
 const byAxes = new Map();
 for (const row of disagreeing) {
-  const entry = byAxes.get(row.axes) ?? { axes: row.axes, populations: 0, worstRatio: 1 };
+  const entry = byAxes.get(row.axes) ?? { axes: row.axes, populations: 0, worstRelativeError: 0 };
   entry.populations += 1;
-  if (Math.abs(row.ratio - 1) > Math.abs(entry.worstRatio - 1)) entry.worstRatio = row.ratio;
+  entry.worstRelativeError = Math.max(entry.worstRelativeError, row.relativeError);
   byAxes.set(row.axes, entry);
 }
 
@@ -109,6 +123,8 @@ console.log(JSON.stringify({
   workspacePath: imported.workspacePath,
   tolerance,
   samples: sampleIds.length,
+  sampleReports,
+  uncompared: uncompared.length,
   comparedPopulations: compared.length,
   agreeing: agreeing.length,
   disagreeing: disagreeing.length,
@@ -117,9 +133,10 @@ console.log(JSON.stringify({
 }, null, 2));
 
 assert.ok(compared.length > 0, "No population counts could be compared; the probe must not pass vacuously.");
+assert.equal(uncompared.length, 0, "Some reference populations could not be compared.");
 assert.equal(
   disagreeing.length,
   0,
   `${disagreeing.length} of ${compared.length} populations disagree with FlowJo's recorded counts beyond ${tolerance * 100}%:\n`
-  + disagreeing.map((row) => `- ${row.population} [${row.axes}] FlowJo=${row.flowjo} ours=${row.ours} ratio=${row.ratio.toFixed(3)}`).join("\n"),
+  + disagreeing.map((row) => `- ${row.population} [${row.axes}] FlowJo=${row.flowjo} ours=${row.ours} relativeError=${row.relativeError}`).join("\n"),
 );
