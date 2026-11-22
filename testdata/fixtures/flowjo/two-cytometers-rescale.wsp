@@ -2,8 +2,8 @@
 <!--
   Two cytometers with deliberately different rescale factors, so a sample bound
   to the wrong one cannot produce the right coordinates. The second sample names
-  a cytometer that is not declared, which must warn rather than fall back to the
-  first cytometer.
+  a cytometer that is not declared, which must fail rather than import gates in
+  an unknown coordinate domain.
 -->
 <Workspace version="20.0" creator="FlowJo-hand-crafted-fixture"
   xmlns:gating="http://www.isac-net.org/std/Gating-ML/v2.0/gating"

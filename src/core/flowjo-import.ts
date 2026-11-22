@@ -541,6 +541,19 @@ function addTransforms(nodes: unknown, kind: FlowJoTransform["kind"], context: F
   }
 }
 
+function cytometerRescale(node: XmlNode, key: "linearRescale" | "logRescale"): number {
+  if (node[key] === undefined) return 1;
+  const value = numberAttr(node, key);
+  if (value === undefined || value <= 0) {
+    throw new FlowcytoError(
+      "invalid_flowjo_rescale",
+      `FlowJo cytometer ${stringAttr(node, "cyt") ?? stringAttr(node, "name") ?? "(unnamed)"} declares invalid ${key}=${JSON.stringify(node[key])}; supply a positive finite rescale factor.`,
+      `/Cytometers/Cytometer/${key}`,
+    );
+  }
+  return value;
+}
+
 /** Parses every declared cytometer; binding one to a sample is a separate step. */
 function flowJoCytometers(workspace: XmlNode, resolveChannel: ChannelResolver): FlowJoCytometer[] {
   return arrayOf(asRecord(workspace.Cytometers)?.Cytometer)
@@ -549,8 +562,8 @@ function flowJoCytometers(workspace: XmlNode, resolveChannel: ChannelResolver): 
     .map((cytometer) => {
       const parsed: FlowJoCytometer = {
         id: stringAttr(cytometer, "cyt") ?? stringAttr(cytometer, "name") ?? null,
-        linearRescale: numberAttr(cytometer, "linearRescale") ?? 1,
-        logRescale: numberAttr(cytometer, "logRescale") ?? 1,
+        linearRescale: cytometerRescale(cytometer, "linearRescale"),
+        logRescale: cytometerRescale(cytometer, "logRescale"),
         transformsByChannel: new Map(),
       };
       const sink: FlowJoTransformContext = {
@@ -575,16 +588,13 @@ function flowJoCytometers(workspace: XmlNode, resolveChannel: ChannelResolver): 
 
 /**
  * Binds the sample to the cytometer that acquired it, by its $CYT keyword. A
- * single declared cytometer is used without a match, since that is unambiguous.
- * Several cytometers with no match applies no rescale and warns: silently
- * taking the first would put this sample's gates in the wrong domain while
- * every other sample still looked correct.
+ * sole declaration can supply context when $CYT is absent, but cannot override
+ * an explicit conflicting identity. Unresolved bindings abort before any write.
  */
 function flowJoTransformContext(
   cytometers: FlowJoCytometer[],
   metadata: SampleMetadata,
   sampleId: string,
-  warnings: string[],
 ): FlowJoTransformContext {
   const unbound: FlowJoTransformContext = {
     linearRescale: 1,
@@ -604,16 +614,15 @@ function flowJoTransformContext(
   if (matched.length === 1) {
     chosen = matched[0];
     provenance = `matched $CYT="${declared}"`;
-  } else if (cytometers.length === 1 && matched.length === 0) {
+  } else if (cytometers.length === 1 && !declared) {
     chosen = cytometers[0];
-    provenance = declared
-      ? `sole declared cytometer "${cytometers[0].id ?? "(unnamed)"}"; sample reports $CYT="${declared}"`
-      : `sole declared cytometer "${cytometers[0].id ?? "(unnamed)"}"; sample declares no $CYT`;
+    provenance = `sole declared cytometer "${cytometers[0].id ?? "(unnamed)"}"; sample declares no $CYT`;
   } else {
-    warnings.push(
-      `Sample ${sampleId} could not be bound to one of ${cytometers.length} FlowJo cytometers (${declared ? `$CYT="${declared}"` : "no $CYT keyword"}); gate coordinates are imported as stored and are not rescaled.`,
+    throw new FlowcytoError(
+      "unresolved_flowjo_cytometer",
+      `Sample ${sampleId} cannot be bound uniquely to a FlowJo cytometer (${declared ? `$CYT="${declared}"` : "no $CYT keyword"}; declarations: ${cytometers.map((entry) => entry.id ?? "(unnamed)").join(", ")}). Verify the FCS binding and cytometer declarations; no unscaled gates will be imported.`,
+      "/Cytometers",
     );
-    return unbound;
   }
   return {
     linearRescale: chosen.linearRescale,
@@ -693,7 +702,7 @@ async function readFlowJoSamples(input: ImportFlowJoWorkspaceInput, workspace: X
     const metadata = await readFcsMetadata(samplePath, sampleId);
     const resolveChannel = channelResolver(metadata);
     const cytometers = flowJoCytometers(workspace, resolveChannel);
-    const transformContext = flowJoTransformContext(cytometers, metadata, sampleId, warnings);
+    const transformContext = flowJoTransformContext(cytometers, metadata, sampleId);
     samples.push({ id: sampleId, path: pathForWorkspace(rootDir, samplePath) });
 
     // Compensation matrices and transforms are per sample in .wsp: the file has

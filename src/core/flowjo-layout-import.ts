@@ -215,7 +215,7 @@ function readAxis(
     channel: resolved,
     ...(transform ? { scale: transform.scale } : {}),
     ...(transform?.params ? { transform: transform.params } : {}),
-    ...(Number.isFinite(divisor) && divisor > 0 && divisor !== 1 ? { inputDivisor: divisor } : {}),
+    ...(divisor !== 1 ? { inputDivisor: divisor } : {}),
   };
   return {
     ok: true,

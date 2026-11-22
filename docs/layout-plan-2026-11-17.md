@@ -4,6 +4,34 @@ Date: 2026-11-17 (revised 2026-11-18 after review)
 
 Authors: Fang Xie, Yifan Jin
 
+## Strict domain import validation (2026-11-22)
+
+Unresolved cytometer bindings now abort import with `unresolved_flowjo_cytometer`, before
+creating or updating workspace state. This includes multiple matches, multiple declarations
+without a sample identity, and an explicit `$CYT` that conflicts even with a sole declaration.
+A sole declaration may supply context only when the sample has no `$CYT`. Files without a
+cytometer section retain the existing unit-domain convention.
+
+Export declares the actual `$CYT` identities with unit rescale factors, rather than labelling
+every instrument as Flowcyto. Multi-instrument export rejects samples missing an identity;
+otherwise the generated declarations would leave their binding ambiguous on re-import.
+
+Declared `linearRescale` and `logRescale` must be positive finite numbers. Invalid declarations
+raise `invalid_flowjo_rescale`; only absent attributes default to 1. Layout import no longer
+omits invalid divisors to evade storage validation. These rules supersede the warning-only
+unmatched-cytometer behavior in the earlier checkpoint below.
+
+Bounds and tick labels remain in FCS data units; `inputDivisor` changes the transform's input
+domain, not the stored bounds' units. Independent FlowJo visual and event-membership validation
+remains pending. Aggregate count agreement is not membership equivalence; flaky-test
+investigation remains a separate task.
+
+Verification: typecheck clean; 182 tests pass. The reference tetramer count probe exits 0:
+58/58 populations within the existing 2% diagnostic tolerance (maximum relative error
+1.992%). The layout probe exits 0 with no failures: six strategy panels, three comparison
+panels, two missing-sample placeholders, and twelve axes retaining `inputDivisor=10000`.
+Neither probe establishes independent FlowJo visual or event-membership equivalence.
+
 ## Parameter-aware rendering update (2026-11-21)
 
 This supersedes the temporary transform/bounds blocker described in the earlier review below.

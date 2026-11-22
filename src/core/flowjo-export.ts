@@ -457,15 +457,20 @@ function allSamplesGroup(sampleCount: number): XmlElement {
 
 function buildFlowJoXml(workspacePath: string, workspace: FlowcytoWorkspace, metadataBySample: Map<string, SampleMetadata>, compensation?: CompensationMatrix): string {
   const context = buildTransformContext(workspace, metadataBySample, compensation);
+  const identities = [...metadataBySample.values()].map((metadata) => metadata.keywords["$CYT"]?.trim() ?? "");
+  const cytometerIds = [...new Set(identities.filter(Boolean))];
+  if (cytometerIds.length > 1 && identities.includes("")) {
+    throw new FlowcytoError("unresolved_flowjo_cytometer", "Cannot export multiple cytometers when a sample has no $CYT identity; export known-identity samples separately or supply correctly identified FCS files.", "/samples");
+  }
   const cytometers = {
-    Cytometer: {
-      "@_name": "Flowcyto",
-      "@_cyt": "Flowcyto",
+    Cytometer: (cytometerIds.length ? cytometerIds : ["Flowcyto"]).map((id) => ({
+      "@_name": id,
+      "@_cyt": id,
       // Both factors are stated: an absent logRescale would leave the domain of
       // exported non-linear gate coordinates up to the reader's default.
       "@_linearRescale": "1",
       "@_logRescale": "1",
-    },
+    })),
   };
   const builder = new XMLBuilder({
     ignoreAttributes: false,

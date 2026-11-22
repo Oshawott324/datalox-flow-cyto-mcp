@@ -9,6 +9,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { chromium } from "playwright";
 import { describe, expect, it } from "vitest";
+import { XMLBuilder, XMLParser } from "fast-xml-parser";
 
 import {
   isLocalGateEditorPreviewUrl,
@@ -765,6 +766,7 @@ describe("flowcyto core", () => {
     const result = await importFlowJoWorkspace({
       wspPath: path.join(flowJoFixtureDir, "two-cytometers-rescale.wsp"),
       workspaceDir: dir,
+      sampleNames: ["beta-sample.fcs"],
       samplePathMap: { "beta-sample.fcs": betaPath, "unknown-sample.fcs": unknownPath },
     });
     const workspace = await readWorkspace(result.workspacePath);
@@ -774,10 +776,60 @@ describe("flowcyto core", () => {
     expect(gate("gate-beta-lin")).toMatchObject({ type: "range", min: 3000, max: 7000 });
     expect(gate("gate-beta-biex")).toMatchObject({ type: "range", min: 20000, max: 200000 });
 
-    // An unmatched $CYT with several cytometers declared must not fall back.
-    expect(gate("gate-unknown-lin")).toMatchObject({ type: "range", min: 3, max: 7 });
-    expect(result.warnings.some((warning) =>
-      warning.includes("could not be bound") && warning.includes("Gamma"))).toBe(true);
+    // A failed import after reading a valid sample must not partly update state.
+    const before = await fs.readFile(result.workspacePath, "utf8");
+    await expect(importFlowJoWorkspace({
+      wspPath: path.join(flowJoFixtureDir, "two-cytometers-rescale.wsp"), workspaceDir: dir,
+      samplePathMap: { "beta-sample.fcs": betaPath, "unknown-sample.fcs": unknownPath },
+    })).rejects.toMatchObject({ code: "unresolved_flowjo_cytometer" });
+    expect(await fs.readFile(result.workspacePath, "utf8")).toBe(before);
+  });
+
+  it.each(["conflicting sole cytometer", "duplicate identity", "missing identity"])("rejects %s without creating a workspace", async (scenario) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-cytometer-reject-"));
+    const samplePath = path.join(dir, "beta-sample.fcs");
+    await writeTinyIntegerFcs({ fcsPath: samplePath, channels: ["LIN-A", "BIEX-A"], rows: [[10, 20]],
+      extraKeywords: scenario === "missing identity" ? {} : { $CYT: "Beta" } });
+    const xml = new XMLParser({ ignoreAttributes: false }).parse(await fs.readFile(path.join(flowJoFixtureDir, "two-cytometers-rescale.wsp"), "utf8"));
+    if (scenario === "conflicting sole cytometer") xml.Workspace.Cytometers.Cytometer = [xml.Workspace.Cytometers.Cytometer[0]];
+    if (scenario === "duplicate identity") xml.Workspace.Cytometers.Cytometer[0]["@_cyt"] = "Beta";
+    const wspPath = path.join(dir, "source.wsp");
+    await fs.writeFile(wspPath, new XMLBuilder({ ignoreAttributes: false }).build(xml));
+    await expect(importFlowJoWorkspace({ wspPath, workspaceDir: dir, sampleNames: ["beta-sample.fcs"],
+      samplePathMap: { "beta-sample.fcs": samplePath } })).rejects.toMatchObject({ code: "unresolved_flowjo_cytometer" });
+    await expect(fs.access(path.join(dir, "flowcyto.workspace.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each(["0", "-1", "NaN", "Infinity", "1e999", "", " ", "not-a-number"])("rejects declared rescale %j instead of defaulting to one", async (value) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-rescale-reject-"));
+    const samplePath = path.join(dir, "beta-sample.fcs");
+    await writeTinyIntegerFcs({ fcsPath: samplePath, channels: ["LIN-A", "BIEX-A"], rows: [[10, 20]], extraKeywords: { $CYT: "Beta" } });
+    for (const field of ["linearRescale", "logRescale"]) {
+      const xml = new XMLParser({ ignoreAttributes: false }).parse(await fs.readFile(path.join(flowJoFixtureDir, "two-cytometers-rescale.wsp"), "utf8"));
+      xml.Workspace.Cytometers.Cytometer[1][`@_${field}`] = value;
+      const wspPath = path.join(dir, "source.wsp");
+      await fs.writeFile(wspPath, new XMLBuilder({ ignoreAttributes: false }).build(xml));
+      await expect(importFlowJoWorkspace({ wspPath, workspaceDir: dir, sampleNames: ["beta-sample.fcs"],
+        samplePathMap: { "beta-sample.fcs": samplePath } })).rejects.toMatchObject({ code: "invalid_flowjo_rescale", path: `/Cytometers/Cytometer/${field}` });
+      await expect(fs.access(path.join(dir, "flowcyto.workspace.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
+  it.each([undefined, "1"])("accepts absent or explicit unit rescale (%s)", async (value) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-rescale-unit-"));
+    const samplePath = path.join(dir, "beta-sample.fcs");
+    await writeTinyIntegerFcs({ fcsPath: samplePath, channels: ["LIN-A", "BIEX-A"], rows: [[10, 20]], extraKeywords: { $CYT: "Beta" } });
+    const xml = new XMLParser({ ignoreAttributes: false }).parse(await fs.readFile(path.join(flowJoFixtureDir, "two-cytometers-rescale.wsp"), "utf8"));
+    for (const field of ["linearRescale", "logRescale"]) {
+      if (value === undefined) delete xml.Workspace.Cytometers.Cytometer[1][`@_${field}`];
+      else xml.Workspace.Cytometers.Cytometer[1][`@_${field}`] = value;
+    }
+    const wspPath = path.join(dir, "source.wsp");
+    await fs.writeFile(wspPath, new XMLBuilder({ ignoreAttributes: false }).build(xml));
+    const result = await importFlowJoWorkspace({ wspPath, workspaceDir: dir, sampleNames: ["beta-sample.fcs"], samplePathMap: { "beta-sample.fcs": samplePath } });
+    const workspace = await readWorkspace(result.workspacePath);
+    expect(workspace.gates.find((gate) => gate.id.endsWith("gate-beta-lin"))).toMatchObject({ min: 3, max: 7 });
+    expect(workspace.gates.find((gate) => gate.id.endsWith("gate-beta-biex"))).toMatchObject({ min: 10, max: 100 });
   });
 
   it("skips unsupported FlowJo gate types with warnings, promotes orphaned children to parent", async () => {
@@ -2354,6 +2406,7 @@ describe("flowcyto core", () => {
     const outputPath = path.join(dir, "detectors.wsp");
     await exportFlowJoWorkspace({ workspacePath, outputPath });
     const xml = await fs.readFile(outputPath, "utf8");
+    expect(xml).toContain('<Cytometer name="Test Cytometer" cyt="Test Cytometer" linearRescale="1" logRescale="1"');
     expect(xml).toContain('<data-type:fcs-dimension data-type:name="BL1-A"');
     expect(xml).toContain('<data-type:fcs-dimension data-type:name="BL3-A"');
     expect(xml).not.toContain('<data-type:fcs-dimension data-type:name="Annexin X-FITC-A"');
@@ -2377,6 +2430,30 @@ describe("flowcyto core", () => {
     const roundTrip = await readWorkspace(imported.workspacePath);
     const quadrant = roundTrip.gates.find((gate) => gate.type === "quadrant");
     expect(quadrant).toMatchObject({ x: "Annexin X-FITC-A", y: "PI-PerCP-Cy5.5-A" });
+  });
+
+  it.each([false, true])("exports multiple cytometers without inventing missing identities (missing=%s)", async (missing) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-export-cytometers-"));
+    const samples = [];
+    for (const [index, identity] of ["Alpha", "Beta", ...(missing ? [""] : [])].entries()) {
+      const samplePath = path.join(dir, `sample${index}.fcs`);
+      await writeTinyIntegerFcs({ fcsPath: samplePath, channels: ["X", "Y"], rows: [[10, 20]], extraKeywords: identity ? { $CYT: identity } : {} });
+      samples.push({ id: `sample${index}`, path: samplePath });
+    }
+    const { workspacePath } = await initWorkspace({ rootDir: dir, samplePath: samples[0].path, sampleId: samples[0].id });
+    const workspace = await readWorkspace(workspacePath);
+    expect((await writeWorkspace({ workspacePath, workspace: { ...workspace, samples }, expectedRevision: workspace.revision })).ok).toBe(true);
+    const outputPath = path.join(dir, "export.wsp");
+    if (missing) {
+      await expect(exportFlowJoWorkspace({ workspacePath, outputPath })).rejects.toMatchObject({ code: "unresolved_flowjo_cytometer" });
+      await expect(fs.access(outputPath)).rejects.toMatchObject({ code: "ENOENT" });
+    } else {
+      await exportFlowJoWorkspace({ workspacePath, outputPath });
+      const xml = new XMLParser({ ignoreAttributes: false }).parse(await fs.readFile(outputPath, "utf8"));
+      expect(xml.Workspace.Cytometers.Cytometer.map((node: Record<string, string>) => node["@_cyt"])).toEqual(["Alpha", "Beta"]);
+      const imported = await importFlowJoWorkspace({ wspPath: outputPath, workspaceDir: path.join(dir, "roundtrip") });
+      expect(imported.samplesImported).toBe(2);
+    }
   });
 
   it("exports compensated fluorescence graphs and quadrant dimensions on matching Comp channels", async () => {
