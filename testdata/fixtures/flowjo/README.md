@@ -12,6 +12,7 @@ to verify round-trip correctness.
 | `minimal-linear-rect.wsp` | One rect gate on FSC-A vs SSC-A | Import parser: rectangle gate |
 | `minimal-linear-rect-range.wsp` | One one-dimensional RectangleGate on FITC-A | Import parser: FlowJo rectangle interval imported as Flowcyto range gate |
 | `nested-hierarchy.wsp` | Three-level gate hierarchy | Import parser: gate hierarchy, parent_id chaining |
+| `layouts.wsp` | Two layouts: a gating strategy and a sample comparison | Layout import: panel binding, dangling `SampleRef`, `Comp-` axis reference, zero-size `ChartData`, unmodelled `Multigraph` |
 | `transform-log-fasinh.wsp` | Log, FlowJo flog, fasinh, and biex gates | Import parser: exact inverse transform conversion |
 
 ## Real FlowJo fixtures (NOT YET ADDED — required before PR B ships)

@@ -3,10 +3,16 @@ import path from "node:path";
 
 import { XMLParser } from "fast-xml-parser";
 
-import { buildBiexTransform } from "./biex-transform.js";
 import { readFcsMetadata } from "./fcs.js";
 import { validateWorkspaceObject, writeWorkspace } from "./workspace.js";
-import { FlowcytoError, type FlowcytoSample, type FlowcytoWorkspace, type SampleMetadata, type WorkspaceGate } from "./types.js";
+import { FlowcytoError, type CompensationMatrix, type FlowcytoSample, type FlowcytoWorkspace, type SampleMetadata, type WorkspaceGate } from "./types.js";
+
+import {
+  importSampleTransforms,
+  importSpilloverMatrix,
+  type ImportedFlowJoMatrix,
+} from "./flowjo-compensation-import.js";
+import { importFlowJoLayouts, type FlowJoLayoutSample } from "./flowjo-layout-import.js";
 
 type XmlNode = Record<string, unknown>;
 type ImportedGateBase = {
@@ -32,8 +38,35 @@ type FlowJoTransform = {
   neg?: number;
   width?: number;
 };
-type FlowJoTransformContext = {
+/**
+ * FlowJo does not store gate coordinates in FCS units, nor in display/channel
+ * units. It stores them in its own data space: the FCS value divided by the
+ * cytometer's rescale factor. Supported by the reference workspace, whose
+ * samples declare $PnR=2147483647 while its cytometer declares linMax=214748
+ * with linearRescale=logRescale=10000. $PnR/10000 is 214748.3647, not 214748:
+ * the range is consistent with truncation, not an exact identity or independent
+ * proof of gate semantics. FlowJo visual and event-membership checks are pending.
+ *
+ * This agrees with FlowKit, which documents the stored values as being "in the
+ * untransformed space" and forward-applies the transform on import rather than
+ * inverting them. Gate coordinates therefore need the rescale alone: applying a
+ * transform inverse to them is a domain error, not a missing refinement.
+ */
+type FlowJoCytometer = {
+  /** cyt, falling back to name; matched against the sample's $CYT keyword. */
+  id: string | null;
   linearRescale: number;
+  logRescale: number;
+  transformsByChannel: Map<string, FlowJoTransform>;
+};
+
+type FlowJoTransformContext = {
+  /** Divisor FlowJo applied to linear FCS values; 1 when none was declared. */
+  linearRescale: number;
+  /** Divisor FlowJo applied to non-linear FCS values; 1 when none was declared. */
+  logRescale: number;
+  /** How this cytometer was chosen, so a wrong binding stays auditable. */
+  rescaleProvenance: string;
   transformsByChannel: Map<string, FlowJoTransform>;
   unsupportedWarnings: Set<string>;
 };
@@ -47,6 +80,14 @@ export type ImportFlowJoWorkspaceInput = {
   samplePathMap?: Record<string, string>;
   overwriteSamples?: boolean;
   overwriteGates?: boolean;
+  /** Import <Layout> panels alongside gates. Default true. */
+  importLayouts?: boolean;
+  /**
+   * Parse, resolve and validate without writing flowcyto.workspace.json. The
+   * source .wsp and FCS files are never written in either mode; this controls
+   * only whether the workspace artifact is produced.
+   */
+  dryRun?: boolean;
 };
 
 export type ImportFlowJoWorkspaceResult = {
@@ -55,6 +96,24 @@ export type ImportFlowJoWorkspaceResult = {
   samplesImported: number;
   gatesImported: number;
   compensationsImported: number;
+  layoutsImported: number;
+  layoutPanels: {
+    total: number;
+    /** Bound and renderable. */
+    resolved: number;
+    /** Bound, but blocked by an unresolved compensation reference or transform. */
+    partial: number;
+    unresolved: number;
+    unresolvedByReason: Record<string, number>;
+    blockedByReason: Record<string, number>;
+  };
+  /**
+   * Explicit compensation references found on layout axes. `resolved` bound to an
+   * imported matrix, `unresolved` could not be bound, and `absent` counts axes
+   * carrying no reference, which is not a claim that they are raw.
+   */
+  layoutCompensationReferences: { resolved: number; unresolved: number; absent: number };
+  dryRun: boolean;
   warnings: string[];
 };
 
@@ -483,69 +542,115 @@ function addTransforms(nodes: unknown, kind: FlowJoTransform["kind"], context: F
   }
 }
 
-function flowJoTransformContext(workspace: XmlNode, resolveChannel: ChannelResolver): FlowJoTransformContext {
-  const context: FlowJoTransformContext = {
+function cytometerRescale(node: XmlNode, key: "linearRescale" | "logRescale"): number {
+  if (node[key] === undefined) return 1;
+  const value = numberAttr(node, key);
+  if (value === undefined || value <= 0) {
+    throw new FlowcytoError(
+      "invalid_flowjo_rescale",
+      `FlowJo cytometer ${stringAttr(node, "cyt") ?? stringAttr(node, "name") ?? "(unnamed)"} declares invalid ${key}=${JSON.stringify(node[key])}; supply a positive finite rescale factor.`,
+      `/Cytometers/Cytometer/${key}`,
+    );
+  }
+  return value;
+}
+
+/** Parses every declared cytometer; binding one to a sample is a separate step. */
+function flowJoCytometers(workspace: XmlNode, resolveChannel: ChannelResolver): FlowJoCytometer[] {
+  return arrayOf(asRecord(workspace.Cytometers)?.Cytometer)
+    .map(asRecord)
+    .filter((entry): entry is XmlNode => entry !== null)
+    .map((cytometer) => {
+      const parsed: FlowJoCytometer = {
+        id: stringAttr(cytometer, "cyt") ?? stringAttr(cytometer, "name") ?? null,
+        linearRescale: cytometerRescale(cytometer, "linearRescale"),
+        logRescale: cytometerRescale(cytometer, "logRescale"),
+        transformsByChannel: new Map(),
+      };
+      const sink: FlowJoTransformContext = {
+        linearRescale: parsed.linearRescale,
+        logRescale: parsed.logRescale,
+        rescaleProvenance: "",
+        transformsByChannel: parsed.transformsByChannel,
+        unsupportedWarnings: new Set(),
+      };
+      for (const matrixId of arrayOf(asRecord(cytometer.TransformStore)?.MatrixID).map(asRecord).filter((entry): entry is XmlNode => entry !== null)) {
+        const transforms = asRecord(matrixId.Transforms);
+        if (!transforms) continue;
+        addTransforms(transforms.linear, "linear", sink, resolveChannel);
+        addTransforms(transforms.log, "log", sink, resolveChannel);
+        addTransforms(transforms.flog, "flog", sink, resolveChannel);
+        addTransforms(transforms.fasinh, "fasinh", sink, resolveChannel);
+        addTransforms(transforms.biex, "biex", sink, resolveChannel);
+      }
+      return parsed;
+    });
+}
+
+/**
+ * Binds the sample to the cytometer that acquired it, by its $CYT keyword. A
+ * sole declaration can supply context when $CYT is absent, but cannot override
+ * an explicit conflicting identity. Unresolved bindings abort before any write.
+ */
+function flowJoTransformContext(
+  cytometers: FlowJoCytometer[],
+  metadata: SampleMetadata,
+  sampleId: string,
+): FlowJoTransformContext {
+  const unbound: FlowJoTransformContext = {
     linearRescale: 1,
+    logRescale: 1,
+    rescaleProvenance: "no cytometer bound; coordinates imported as stored",
     transformsByChannel: new Map(),
     unsupportedWarnings: new Set(),
   };
-  const cytometer = asRecord(arrayOf(asRecord(workspace.Cytometers)?.Cytometer)[0]);
-  if (!cytometer) return context;
-  context.linearRescale = numberAttr(cytometer, "linearRescale") ?? 1;
-  for (const matrixId of arrayOf(asRecord(cytometer.TransformStore)?.MatrixID).map(asRecord).filter((entry): entry is XmlNode => entry !== null)) {
-    const transforms = asRecord(matrixId.Transforms);
-    if (!transforms) continue;
-    addTransforms(transforms.linear, "linear", context, resolveChannel);
-    addTransforms(transforms.log, "log", context, resolveChannel);
-    addTransforms(transforms.flog, "flog", context, resolveChannel);
-    addTransforms(transforms.fasinh, "fasinh", context, resolveChannel);
-    addTransforms(transforms.biex, "biex", context, resolveChannel);
+  if (cytometers.length === 0) return unbound;
+  const keyword = (metadata.keywords ?? {})["$CYT"];
+  const declared = typeof keyword === "string" ? keyword.trim() : "";
+  const matched = declared
+    ? cytometers.filter((cytometer) => cytometer.id !== null && cytometer.id.trim() === declared)
+    : [];
+  let chosen: FlowJoCytometer;
+  let provenance: string;
+  if (matched.length === 1) {
+    chosen = matched[0];
+    provenance = `matched $CYT="${declared}"`;
+  } else if (cytometers.length === 1 && !declared) {
+    chosen = cytometers[0];
+    provenance = `sole declared cytometer "${cytometers[0].id ?? "(unnamed)"}"; sample declares no $CYT`;
+  } else {
+    throw new FlowcytoError(
+      "unresolved_flowjo_cytometer",
+      `Sample ${sampleId} cannot be bound uniquely to a FlowJo cytometer (${declared ? `$CYT="${declared}"` : "no $CYT keyword"}; declarations: ${cytometers.map((entry) => entry.id ?? "(unnamed)").join(", ")}). Verify the FCS binding and cytometer declarations; no unscaled gates will be imported.`,
+      "/Cytometers",
+    );
   }
-  return context;
+  return {
+    linearRescale: chosen.linearRescale,
+    logRescale: chosen.logRescale,
+    rescaleProvenance: provenance,
+    transformsByChannel: chosen.transformsByChannel,
+    unsupportedWarnings: new Set(),
+  };
 }
 
-function invertFlowJoLog(value: number, transform: FlowJoTransform): number {
-  const t = transform.t ?? transform.maxRange ?? 1;
-  const m = transform.m ?? transform.decade ?? 4.5;
-  return t * 10 ** (m * (value - 1));
-}
-
-function invertFlowJoFlog(value: number, transform: FlowJoTransform): number {
-  const decade = transform.decade ?? transform.m ?? 4.5;
-  const offset = transform.offset ?? 1;
-  const scale = transform.scale ?? 1;
-  return 10 ** ((value * decade / scale) + Math.log10(offset));
-}
-
-function invertFlowJoFasinh(value: number, transform: FlowJoTransform): number {
-  const t = transform.t ?? transform.maxRange ?? 262144;
-  const m = transform.m ?? transform.pos ?? 4.5;
-  const a = transform.a ?? transform.neg ?? 0;
-  const length = transform.length ?? 1;
-  const ln10 = Math.LN10;
-  return Math.sinh(((m + a) * ln10 * value / length) - (a * ln10)) * t / Math.sinh(m * ln10);
-}
-
-function invertFlowJoBiex(value: number, transform: FlowJoTransform): number {
-  const xform = buildBiexTransform({
-    length: transform.length ?? 256,
-    maxRange: transform.maxRange ?? 262144,
-    pos: transform.pos ?? 4.5,
-    neg: transform.neg ?? 0,
-    width: transform.width ?? -10,
-  });
-  return xform.inverse(value);
-}
-
+/**
+ * Converts one stored FlowJo gate coordinate into FCS units.
+ *
+ * This is a domain conversion, not a transform inverse. Which rescale applies
+ * is decided by the channel's declared transform kind, because FlowJo keeps a
+ * separate factor for linear and non-linear parameters; it is not inferred from
+ * $PnR / maxRange. A channel with no declared transform is left untouched,
+ * since nothing identifies which space its coordinates are in.
+ */
 function coordinateConverter(context: FlowJoTransformContext, warnings: string[]): CoordinateConverter {
   return (channel, value, gateName) => {
     const transform = context.transformsByChannel.get(channel);
     if (!transform) return value;
     if (transform.kind === "linear") return value * context.linearRescale / (transform.gain ?? 1);
-    if (transform.kind === "log") return invertFlowJoLog(value, transform);
-    if (transform.kind === "flog") return invertFlowJoFlog(value, transform);
-    if (transform.kind === "fasinh") return invertFlowJoFasinh(value, transform);
-    if (transform.kind === "biex") return invertFlowJoBiex(value, transform);
+    if (transform.kind === "log" || transform.kind === "flog" || transform.kind === "fasinh" || transform.kind === "biex") {
+      return value * context.logRescale;
+    }
     const warning = `FlowJo ${transform.kind} transform is not converted for gate ${gateName} channel ${channel}; coordinates imported as stored.`;
     if (!context.unsupportedWarnings.has(warning)) {
       context.unsupportedWarnings.add(warning);
@@ -555,11 +660,35 @@ function coordinateConverter(context: FlowJoTransformContext, warnings: string[]
   };
 }
 
-async function readFlowJoSamples(input: ImportFlowJoWorkspaceInput, workspace: XmlNode): Promise<{ samples: FlowcytoSample[]; gates: WorkspaceGate[]; warnings: string[] }> {
+/** Numeric sampleIDs named by any <SampleRef>, used as evidence for dangling ids. */
+function collectSampleRefs(value: unknown, found: Set<string> = new Set()): Set<string> {
+  const node = asRecord(value);
+  if (!node) return found;
+  for (const reference of arrayOf(node.SampleRef)) {
+    const id = stringAttr(asRecord(reference), "sampleID");
+    if (id) found.add(id);
+  }
+  for (const [key, child] of Object.entries(node)) {
+    if (key === "SampleRef") continue;
+    if (Array.isArray(child)) child.forEach((entry) => collectSampleRefs(entry, found));
+    else collectSampleRefs(child, found);
+  }
+  return found;
+}
+
+async function readFlowJoSamples(input: ImportFlowJoWorkspaceInput, workspace: XmlNode): Promise<{
+  samples: FlowcytoSample[];
+  gates: WorkspaceGate[];
+  warnings: string[];
+  samplesByFlowJoId: Map<string, FlowJoLayoutSample>;
+  compensations: CompensationMatrix[];
+}> {
   const sampleNodes = arrayOf(asRecord(workspace.SampleList)?.Sample).map(asRecord).filter((entry): entry is XmlNode => entry !== null);
   const warnings: string[] = [];
   const samples: FlowcytoSample[] = [];
   const gates: WorkspaceGate[] = [];
+  const compensations: CompensationMatrix[] = [];
+  const samplesByFlowJoId = new Map<string, FlowJoLayoutSample>();
   const rootDir = path.resolve(input.workspaceDir);
 
   for (let index = 0; index < sampleNodes.length; index += 1) {
@@ -573,14 +702,52 @@ async function readFlowJoSamples(input: ImportFlowJoWorkspaceInput, workspace: X
     const samplePath = resolveSamplePath(input, sampleName, dataUri);
     const metadata = await readFcsMetadata(samplePath, sampleId);
     const resolveChannel = channelResolver(metadata);
-    const transformContext = flowJoTransformContext(workspace, resolveChannel);
+    const cytometers = flowJoCytometers(workspace, resolveChannel);
+    const transformContext = flowJoTransformContext(cytometers, metadata, sampleId);
     samples.push({ id: sampleId, path: pathForWorkspace(rootDir, samplePath) });
+
+    // Compensation matrices and transforms are per sample in .wsp: the file has
+    // one <Transformations> and one <spilloverMatrix> inside each <Sample>.
+    // Reading them from a workspace-wide map would bind the wrong context.
+    const matricesByPrefix = new Map<string, ImportedFlowJoMatrix>();
+    arrayOf(sample.spilloverMatrix).map(asRecord).forEach((node, matrixIndex) => {
+      if (!node) return;
+      const imported = importSpilloverMatrix({ node, sampleId, resolveChannel, index: matrixIndex });
+      if ("error" in imported) {
+        warnings.push(imported.error);
+        return;
+      }
+      const prefix = imported.matrix.prefix;
+      if (prefix && matricesByPrefix.has(prefix)) {
+        warnings.push(`Sample ${sampleId} defines more than one compensation matrix with prefix "${prefix}"; axes using it cannot be bound unambiguously.`);
+        matricesByPrefix.delete(prefix);
+        return;
+      }
+      if (prefix) matricesByPrefix.set(prefix, imported.matrix);
+      compensations.push(imported.matrix.compensation);
+    });
+
+    const flowjoSampleId = stringAttr(sampleNode, "sampleID");
+    if (flowjoSampleId) {
+      samplesByFlowJoId.set(flowjoSampleId, {
+        sampleId,
+        metadata,
+        resolveChannel,
+        matricesByPrefix,
+        transforms: importSampleTransforms(sample),
+        rescale: {
+          linear: transformContext.linearRescale,
+          log: transformContext.logRescale,
+          provenance: transformContext.rescaleProvenance,
+        },
+      });
+    }
     appendNestedGates(collectGateWrappers(sampleNode?.Subpopulations), sampleId, "root", gates, warnings, resolveChannel, coordinateConverter(transformContext, warnings));
   }
   if (samples.length === 0) {
     throw new FlowcytoError("flowjo_sample_filter_no_match", "No FlowJo samples matched sampleNames/sampleIds filter.", "/sampleNames");
   }
-  return { samples, gates, warnings };
+  return { samples, gates, warnings, samplesByFlowJoId, compensations };
 }
 
 function mergeById<T extends { id: string }>(existing: T[], imported: T[], overwrite: boolean): T[] {
@@ -621,31 +788,64 @@ export async function importFlowJoWorkspace(input: ImportFlowJoWorkspaceInput): 
   const currentState = await existingOrEmptyWorkspace(workspacePath);
   const current = currentState.workspace;
   const importedGates = uniquifyGateIds(imported.gates);
-  const next: FlowcytoWorkspace = {
+  const withGates: FlowcytoWorkspace = {
     ...current,
     samples: mergeById(current.samples, imported.samples, input.overwriteSamples ?? false),
     gates: mergeById(current.gates, importedGates, input.overwriteGates ?? false),
+    ...(imported.compensations.length > 0
+      ? { compensations: mergeById(current.compensations ?? [], imported.compensations, true) }
+      : {}),
   };
+
+  // Layouts resolve population name paths against the merged gates, so they are
+  // built after gate ids are final.
+  const layoutImport = (input.importLayouts ?? true)
+    ? importFlowJoLayouts({
+      workspaceXml: flowJoWorkspace,
+      samplesByFlowJoId: imported.samplesByFlowJoId,
+      groupReferencedSampleIds: collectSampleRefs(flowJoWorkspace),
+      workspace: withGates,
+    })
+    : null;
+  const next: FlowcytoWorkspace = layoutImport
+    ? { ...withGates, layouts: mergeById(current.layouts ?? [], layoutImport.layouts, true) }
+    : withGates;
+
   const validation = await validateWorkspaceObject(workspacePath, next);
   if (!validation.ok) {
     const first = validation.errors[0];
     throw new FlowcytoError(first?.code ?? "flowjo_import_validation_failed", first?.message ?? "Imported FlowJo workspace is invalid.", first?.path);
   }
-  if (currentState.exists) {
-    const write = await writeWorkspace({ workspacePath, workspace: next, expectedRevision: current.revision });
-    if (!write.ok) {
-      const first = write.errors[0];
-      throw new FlowcytoError(first?.code ?? "flowjo_import_write_failed", first?.message ?? "Unable to write imported FlowJo workspace.", first?.path);
+  const dryRun = input.dryRun ?? false;
+  if (!dryRun) {
+    if (currentState.exists) {
+      const write = await writeWorkspace({ workspacePath, workspace: next, expectedRevision: current.revision });
+      if (!write.ok) {
+        const first = write.errors[0];
+        throw new FlowcytoError(first?.code ?? "flowjo_import_write_failed", first?.message ?? "Unable to write imported FlowJo workspace.", first?.path);
+      }
+    } else {
+      await fs.writeFile(workspacePath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
     }
-  } else {
-    await fs.writeFile(workspacePath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
   }
   return {
     ok: true,
     workspacePath,
     samplesImported: imported.samples.length,
     gatesImported: importedGates.length,
-    compensationsImported: 0,
-    warnings: imported.warnings,
+    compensationsImported: imported.compensations.length,
+    layoutsImported: layoutImport?.layouts.length ?? 0,
+    layoutPanels: {
+      total: layoutImport?.panelsTotal ?? 0,
+      resolved: layoutImport?.panelsResolved ?? 0,
+      partial: layoutImport?.panelsPartial ?? 0,
+      unresolved: layoutImport?.panelsUnresolved ?? 0,
+      unresolvedByReason: layoutImport?.unresolvedByReason ?? {},
+      blockedByReason: layoutImport?.blockedByReason ?? {},
+    },
+    layoutCompensationReferences: layoutImport?.compensationReferences
+      ?? { resolved: 0, unresolved: 0, absent: 0 },
+    dryRun,
+    warnings: [...imported.warnings, ...(layoutImport?.warnings ?? [])],
   };
 }

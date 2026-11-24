@@ -10,7 +10,7 @@ export type CompensationKeyword = "$SPILLOVER" | "SPILLOVER" | "$COMP" | "COMP" 
 export type CompensationMatrix = {
   id: string;
   name?: string;
-  source: "fcs_keyword" | "controls" | "manual";
+  source: "fcs_keyword" | "controls" | "manual" | "flowjo_wsp";
   sample?: string;
   keyword?: CompensationKeyword;
   channels: string[];
@@ -125,6 +125,160 @@ export type QuadrantRegionGate = GateBase & {
 export type WorkspaceGate = PolygonGate | RectGate | RangeGate | QuadrantGate;
 export type EvaluableGate = PolygonGate | RectGate | RangeGate | QuadrantRegionGate;
 
+// Explicit axis range in data space. Scale type alone does not make two panels
+// comparable, so panels carry bounds and may share them through an AxisBoundsGroup.
+export type AxisBounds = {
+  min: number;
+  max: number;
+};
+
+// Parameters for a parameterized scale. A matching AxisScale name is not enough:
+// two "biex" axes with different parameters are different transforms, so axes
+// joining a bounds group under biex or arcsinh must state these and agree.
+export type AxisTransformParams = {
+  cofactor?: number;                 // arcsinh
+  maxRange?: number;                 // biex
+  pos?: number;
+  neg?: number;
+  width?: number;
+  length?: number;
+};
+
+export type PanelAxis = {
+  channel: string;
+  scale?: AxisScale;
+  transform?: AxisTransformParams;
+  // Divisor that converts an FCS value into the domain this axis' transform
+  // parameters are expressed in, before the transform is applied. FlowJo keeps
+  // its own data space - the FCS value divided by the cytometer's
+  // linearRescale/logRescale - and states maxRange in that space, so a biex
+  // axis imported from a .wsp needs this to render in the right domain. It is
+  // an explicit, imported setting: never inferred from $PnR / maxRange. Must be
+  // positive and finite; 1, the default, means FCS units.
+  inputDivisor?: number;
+  bounds?: AxisBounds;
+  // Id of an AxisBoundsGroup on the owning layout. The group supplies the bounds
+  // and constrains every member to one parameter and one transform. Channel
+  // identity is checked against FCS metadata, so a detector name and its marker
+  // alias for the same parameter may share a group.
+  boundsGroup?: string;
+};
+
+// A panel may plot several sources at once (overlay). Comparison layouts instead
+// use one source per panel across several panels; both are the same primitive.
+export type LayoutPanelSource = {
+  sample: string;
+  // Population plotted: a gate id, a quadrant population id, or "root".
+  parent: string;
+  // Optional child gate drawn on top of that population.
+  gate?: string;
+  // Compensation is per source, not per panel: overlaid samples can carry
+  // different sample-specific matrices. Nothing is applied without an explicit id.
+  compensationId?: string;
+  // An explicit compensation reference found in an imported file that could not be
+  // bound to a workspace matrix. Its presence means the compensation state is
+  // UNKNOWN, which is not the same as uncompensated, so a renderer must not draw
+  // this source as raw data. Absence of both fields means no reference was found,
+  // which is also not a claim that the data is uncompensated.
+  unresolvedCompensation?: { reference: string; detail: string };
+  legend?: { color?: string; label?: string };
+};
+
+export type PanelUnresolvedReason =
+  | "ambiguous_path"
+  | "unknown_path"
+  | "unknown_sample"
+  | "unknown_parameter"
+  | "unsupported_name"
+  | "unsupported_feature";
+
+// Why a bound panel still cannot be rendered faithfully.
+export type PanelBlocker = {
+  reason: "unresolved_compensation" | "unresolved_transform";
+  detail: string;
+};
+
+/**
+ * A panel that cannot be bound stays in the layout and stays visibly unresolved;
+ * nothing is dropped silently.
+ *
+ * "resolved" means bound AND renderable. "partial" means the sample and
+ * population bound but something needed to draw the data faithfully did not, so
+ * a renderer must show a labelled placeholder rather than a plot. Resolving a
+ * sample and a population is not on its own enough to render.
+ */
+export type PanelStatus =
+  | { state: "resolved" }
+  | { state: "partial"; blockers: PanelBlocker[] }
+  | {
+    state: "unresolved";
+    reason: PanelUnresolvedReason;
+    detail: string;
+    candidates?: string[];
+  };
+
+export type LayoutPlotType = "pseudocolor" | "dot" | "contour" | "histogram";
+
+export type LayoutPanelPosition = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type LayoutPanel = {
+  id: string;
+  // An unresolved panel carries no sources: a source needs a known sample and a
+  // known population, and inventing either would be a plausible substitute for
+  // evidence. The original reference is kept verbatim in _flowjo and summarized
+  // in status.detail.
+  sources: LayoutPanelSource[];
+  x: PanelAxis;
+  // Omit for a histogram.
+  y?: PanelAxis;
+  plotType?: LayoutPlotType;
+  position: LayoutPanelPosition;
+  title?: string;
+  show?: {
+    sampleName?: boolean;
+    populationName?: boolean;
+    count?: boolean;
+    freq?: boolean;
+  };
+  status: PanelStatus;
+  // Presentation-only state preserved from an imported file. Never a source of
+  // truth: live sample mappings, population references, axes and geometry always
+  // override it on export.
+  _flowjo?: Record<string, unknown>;
+};
+
+export type AxisBoundsGroup = {
+  id: string;
+  // Every member axis must resolve, in its own sample's FCS metadata, to the same
+  // parameter this channel resolves to, and must use this scale, transform and
+  // input domain. Two axes sharing bounds under different divisors would place
+  // the same number at different data values, which is what a shared axis is
+  // meant to rule out.
+  channel: string;
+  scale: AxisScale;
+  transform?: AxisTransformParams;
+  inputDivisor?: number;
+  bounds: AxisBounds;
+};
+
+export type LayoutKind = "gating_strategy" | "comparison" | "freeform";
+
+export type FlowcytoLayout = {
+  id: string;
+  name: string;
+  kind: LayoutKind;
+  canvas: { width: number; height: number };
+  panels: LayoutPanel[];
+  boundsGroups?: AxisBoundsGroup[];
+  source?: "generated" | "flowjo_wsp" | "manual";
+  _flowjo?: Record<string, unknown>;
+};
+
 export type FlowcytoWorkspace = {
   version: 1;
   revision: number;
@@ -133,6 +287,7 @@ export type FlowcytoWorkspace = {
   gates: WorkspaceGate[];
   compensations?: CompensationMatrix[];
   compensationStatus?: Record<string, CompensationStatus>;
+  layouts?: FlowcytoLayout[];
 };
 
 export type ValidationError = {

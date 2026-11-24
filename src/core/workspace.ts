@@ -5,6 +5,7 @@ import {
   compensationDiagnosticsForWorkspace,
   detectCompensationStatus,
   extractSpilloverMatrices,
+  normalizeDetectorToken,
 } from "./compensation.js";
 import { readFcsMetadata } from "./fcs.js";
 import {
@@ -522,8 +523,8 @@ function validateCompensationShape(matrix: unknown, index: number): ValidationEr
   const id = asString(matrix.id);
   if (!id) errors.push(validationError(`/compensations/${index}/id`, "missing_compensation_id", "Compensation id is required."));
   const source = asString(matrix.source);
-  if (source !== "fcs_keyword" && source !== "controls" && source !== "manual") {
-    errors.push(validationError(`/compensations/${index}/source`, "invalid_compensation_source", "Compensation source must be fcs_keyword, controls, or manual."));
+  if (source !== "fcs_keyword" && source !== "controls" && source !== "manual" && source !== "flowjo_wsp") {
+    errors.push(validationError(`/compensations/${index}/source`, "invalid_compensation_source", "Compensation source must be fcs_keyword, controls, manual, or flowjo_wsp."));
   }
   const channels = Array.isArray(matrix.channels) ? matrix.channels : [];
   if (channels.length === 0 || channels.some((channel) => typeof channel !== "string" || channel.length === 0)) {
@@ -538,6 +539,444 @@ function validateCompensationShape(matrix: unknown, index: number): ValidationEr
       errors.push(validationError(`/compensations/${index}/matrix/${rowIndex}`, "invalid_compensation_matrix", "Compensation matrix rows must match channels length and contain finite numbers."));
     }
   });
+  return errors;
+}
+
+const AXIS_SCALES = new Set(["linear", "log", "arcsinh", "biex"]);
+const LAYOUT_KINDS = new Set(["gating_strategy", "comparison", "freeform"]);
+const LAYOUT_PLOT_TYPES = new Set(["pseudocolor", "dot", "contour", "histogram"]);
+const PANEL_UNRESOLVED_REASONS = new Set([
+  "ambiguous_path", "unknown_path", "unknown_sample", "unknown_parameter",
+  "unsupported_name", "unsupported_feature",
+]);
+
+function validateAxisBounds(bounds: unknown, basePath: string): ValidationError[] {
+  if (!isRecord(bounds)) {
+    return [validationError(basePath, "invalid_axis_bounds", "Axis bounds must be an object with min and max.")];
+  }
+  if (!isFiniteNumber(bounds.min) || !isFiniteNumber(bounds.max) || Number(bounds.max) <= Number(bounds.min)) {
+    return [validationError(basePath, "invalid_axis_bounds", "Axis bounds max must be a finite number greater than min.")];
+  }
+  return [];
+}
+
+const TRANSFORM_KEYS = ["cofactor", "maxRange", "pos", "neg", "width", "length"] as const;
+// A shared AxisScale name is not sufficient for these: parameters change the mapping.
+const PARAMETERIZED_SCALES = new Set(["biex", "arcsinh"]);
+
+function validateAxisTransform(transform: unknown, basePath: string): ValidationError[] {
+  if (transform === undefined) return [];
+  if (!isRecord(transform)) {
+    return [validationError(basePath, "invalid_axis_transform", "Axis transform must be an object of numeric parameters.")];
+  }
+  const errors: ValidationError[] = [];
+  for (const key of TRANSFORM_KEYS) {
+    if (transform[key] !== undefined && !isFiniteNumber(transform[key])) {
+      errors.push(validationError(`${basePath}/${key}`, "invalid_axis_transform", `Axis transform ${key} must be a finite number.`));
+    }
+  }
+  return errors;
+}
+
+/** Canonical comparison key for a transform; null when no parameter is stated. */
+function transformSignature(transform: unknown): string | null {
+  if (!isRecord(transform)) return null;
+  const parts = TRANSFORM_KEYS
+    .filter((key) => isFiniteNumber(transform[key]))
+    .map((key) => `${key}=${Number(transform[key])}`);
+  return parts.length === 0 ? null : parts.join(",");
+}
+
+/**
+ * The divisor converts an FCS value into the domain the transform parameters
+ * are stated in, so a zero, negative or non-finite one does not mean "no
+ * conversion": it makes every mapped coordinate meaningless. Rejected here
+ * rather than defended against at render time.
+ */
+function validateAxisInputDivisor(divisor: unknown, basePath: string): ValidationError[] {
+  if (divisor === undefined) return [];
+  if (!isFiniteNumber(divisor) || Number(divisor) <= 0) {
+    return [validationError(basePath, "invalid_axis_input_divisor", "Axis inputDivisor must be a positive finite number.")];
+  }
+  return [];
+}
+
+type BoundsGroupSpec = { channel: string; scale: string; transform: string | null; inputDivisor: number };
+
+// Structural only: scale and transform are compared here because that is pure data.
+// Channel identity needs FCS parameter metadata and is checked in
+// validateLayoutChannels, so a detector name and its marker alias are not
+// rejected before metadata has had a chance to reconcile them.
+function validatePanelAxis(
+  axis: unknown,
+  basePath: string,
+  groups: Map<string, BoundsGroupSpec>,
+  panelResolved: boolean,
+): ValidationError[] {
+  const errors: ValidationError[] = [];
+  if (!isRecord(axis)) {
+    return [validationError(basePath, "invalid_panel_axis", "Panel axis must be an object.")];
+  }
+  // An unresolved panel may have no readable channel; inventing one would assert a
+  // parameter the source file did not supply.
+  if (!asString(axis.channel) && panelResolved) {
+    errors.push(validationError(`${basePath}/channel`, "missing_panel_axis_channel", "A resolved panel axis requires a channel."));
+  }
+  const scale = axis.scale === undefined ? undefined : asString(axis.scale);
+  if (axis.scale !== undefined && (!scale || !AXIS_SCALES.has(scale))) {
+    errors.push(validationError(`${basePath}/scale`, "invalid_axis_scale", "Axis scale must be linear, log, arcsinh, or biex."));
+  }
+  errors.push(...validateAxisTransform(axis.transform, `${basePath}/transform`));
+  errors.push(...validateAxisInputDivisor(axis.inputDivisor, `${basePath}/inputDivisor`));
+  if (axis.bounds !== undefined) errors.push(...validateAxisBounds(axis.bounds, `${basePath}/bounds`));
+
+  const groupId = axis.boundsGroup === undefined ? undefined : asString(axis.boundsGroup);
+  if (axis.boundsGroup !== undefined && !groupId) {
+    errors.push(validationError(`${basePath}/boundsGroup`, "invalid_bounds_group_ref", "Axis boundsGroup must be a string id."));
+  }
+  if (!groupId) return errors;
+  const group = groups.get(groupId);
+  if (!group) {
+    errors.push(validationError(`${basePath}/boundsGroup`, "unknown_bounds_group", `Bounds group ${groupId} is not defined on this layout.`));
+    return errors;
+  }
+  if (scale !== undefined && scale !== group.scale) {
+    errors.push(validationError(
+      `${basePath}/scale`,
+      "bounds_group_scale_mismatch",
+      `Axis scale ${scale} does not match bounds group ${groupId} scale ${group.scale}.`,
+    ));
+    return errors;
+  }
+  // Bounds are stated in display units, so members must also agree on the input
+  // domain: the same display number under two divisors is two different data
+  // values, which is exactly what sharing an axis is supposed to prevent.
+  const axisDivisor = isFiniteNumber(axis.inputDivisor) ? Number(axis.inputDivisor) : 1;
+  if (axisDivisor !== group.inputDivisor) {
+    errors.push(validationError(
+      `${basePath}/inputDivisor`,
+      "bounds_group_input_divisor_mismatch",
+      `Axis inputDivisor ${axisDivisor} does not match bounds group ${groupId} inputDivisor ${group.inputDivisor}.`,
+    ));
+    return errors;
+  }
+  if (PARAMETERIZED_SCALES.has(group.scale)) {
+    const axisTransform = transformSignature(axis.transform);
+    if (group.transform === null || axisTransform === null) {
+      errors.push(validationError(
+        `${basePath}/transform`,
+        "missing_axis_transform",
+        `Bounds group ${groupId} uses ${group.scale}, so the group and every member axis must state transform parameters; a matching scale name alone does not establish that two transforms are the same.`,
+      ));
+    } else if (axisTransform !== group.transform) {
+      errors.push(validationError(
+        `${basePath}/transform`,
+        "bounds_group_transform_mismatch",
+        `Axis transform (${axisTransform}) does not match bounds group ${groupId} transform (${group.transform}).`,
+      ));
+    }
+  }
+  return errors;
+}
+
+/** Exact parameter name first, then detector and marker aliases. */
+function resolveParameterName(metadata: SampleMetadata | undefined, channel: string): string | null {
+  if (!metadata) return null;
+  const token = normalizeDetectorToken(channel);
+  for (const parameter of metadata.parameters) {
+    if (normalizeDetectorToken(parameter.name) === token) return parameter.name;
+  }
+  for (const parameter of metadata.parameters) {
+    if (parameter.detector && normalizeDetectorToken(parameter.detector) === token) return parameter.name;
+    if (parameter.marker && normalizeDetectorToken(parameter.marker) === token) return parameter.name;
+  }
+  return null;
+}
+
+// Metadata-aware pass. Resolves each axis channel in every sample the panel
+// actually plots, then checks bounds-group membership on resolved identity rather
+// than on string equality. Skipped entirely when metadata could not be loaded, in
+// which case sample_metadata_failed already blocks the write.
+function validateLayoutChannels(
+  layouts: unknown[],
+  metadataBySample: Map<string, SampleMetadata>,
+): ValidationError[] {
+  if (metadataBySample.size === 0) return [];
+  const errors: ValidationError[] = [];
+  layouts.forEach((layout, layoutIndex) => {
+    if (!isRecord(layout) || !Array.isArray(layout.panels)) return;
+    const groupChannels = new Map<string, string>();
+    for (const group of Array.isArray(layout.boundsGroups) ? layout.boundsGroups : []) {
+      if (!isRecord(group)) continue;
+      const id = asString(group.id);
+      const channel = asString(group.channel);
+      if (id && channel) groupChannels.set(id, channel);
+    }
+    layout.panels.forEach((panel, panelIndex) => {
+      if (!isRecord(panel) || !Array.isArray(panel.sources)) return;
+      const samples = panel.sources
+        .filter(isRecord)
+        .map((source) => asString(source.sample))
+        .filter((sample): sample is string => Boolean(sample));
+      const base = `/layouts/${layoutIndex}/panels/${panelIndex}`;
+      for (const key of ["x", "y"] as const) {
+        const axis = panel[key];
+        if (!isRecord(axis)) continue;
+        const channel = asString(axis.channel);
+        if (!channel) continue;
+        const groupId = asString(axis.boundsGroup);
+        const groupChannel = groupId ? groupChannels.get(groupId) : undefined;
+        for (const sample of samples) {
+          const metadata = metadataBySample.get(sample);
+          if (!metadata) continue;
+          const resolved = resolveParameterName(metadata, channel);
+          if (!resolved) {
+            errors.push(validationError(
+              `${base}/${key}/channel`,
+              "unknown_parameter",
+              `Parameter ${channel} is not present in sample ${sample}.`,
+            ));
+            continue;
+          }
+          if (!groupChannel) continue;
+          const groupResolved = resolveParameterName(metadata, groupChannel);
+          if (!groupResolved) {
+            errors.push(validationError(
+              `${base}/${key}/boundsGroup`,
+              "unknown_parameter",
+              `Bounds group ${groupId} channel ${groupChannel} is not present in sample ${sample}.`,
+            ));
+          } else if (groupResolved !== resolved) {
+            errors.push(validationError(
+              `${base}/${key}/channel`,
+              "bounds_group_channel_mismatch",
+              `Axis channel ${channel} resolves to ${resolved} in sample ${sample}, but bounds group ${groupId} channel ${groupChannel} resolves to ${groupResolved}.`,
+            ));
+          }
+        }
+      }
+    });
+  });
+  return errors;
+}
+
+const PANEL_BLOCKER_REASONS = new Set(["unresolved_compensation", "unresolved_transform"]);
+
+function validatePanelStatus(status: unknown, basePath: string): ValidationError[] {
+  if (!isRecord(status)) {
+    return [validationError(basePath, "missing_panel_status", "Panel status is required and must be an object.")];
+  }
+  const state = asString(status.state);
+  if (state === "resolved") return [];
+  if (state === "partial") {
+    const blockers = Array.isArray(status.blockers) ? status.blockers : null;
+    if (!blockers || blockers.length === 0) {
+      return [validationError(
+        `${basePath}/blockers`,
+        "missing_panel_blockers",
+        "A partial panel requires at least one blocker explaining why it cannot be rendered faithfully.",
+      )];
+    }
+    return blockers.flatMap((blocker, blockerIndex) => {
+      const blockerPath = `${basePath}/blockers/${blockerIndex}`;
+      if (!isRecord(blocker)) {
+        return [validationError(blockerPath, "invalid_panel_blocker", "Panel blocker must be an object.")];
+      }
+      const reason = asString(blocker.reason);
+      const errors: ValidationError[] = [];
+      if (!reason || !PANEL_BLOCKER_REASONS.has(reason)) {
+        errors.push(validationError(
+          `${blockerPath}/reason`,
+          "invalid_panel_blocker_reason",
+          `Panel blocker reason must be one of ${[...PANEL_BLOCKER_REASONS].join(", ")}.`,
+        ));
+      }
+      if (!asString(blocker.detail)) {
+        errors.push(validationError(`${blockerPath}/detail`, "missing_panel_blocker_detail", "Panel blocker requires a detail message."));
+      }
+      return errors;
+    });
+  }
+  if (state !== "unresolved") {
+    return [validationError(`${basePath}/state`, "invalid_panel_status", "Panel status state must be resolved, partial, or unresolved.")];
+  }
+  const errors: ValidationError[] = [];
+  const reason = asString(status.reason);
+  if (!reason || !PANEL_UNRESOLVED_REASONS.has(reason)) {
+    errors.push(validationError(
+      `${basePath}/reason`,
+      "invalid_panel_status_reason",
+      `Unresolved panel reason must be one of ${[...PANEL_UNRESOLVED_REASONS].join(", ")}.`,
+    ));
+  }
+  if (!asString(status.detail)) {
+    errors.push(validationError(`${basePath}/detail`, "missing_panel_status_detail", "Unresolved panel status requires a detail message."));
+  }
+  if (status.candidates !== undefined
+    && (!Array.isArray(status.candidates) || status.candidates.some((entry) => typeof entry !== "string"))) {
+    errors.push(validationError(`${basePath}/candidates`, "invalid_panel_status_candidates", "Panel status candidates must be an array of gate ids."));
+  }
+  return errors;
+}
+
+function validateLayoutShape(
+  layout: unknown,
+  index: number,
+  context: { sampleIds: Set<string>; populationIds: Set<string>; gateIds: Set<string>; compensationIds: Set<string> },
+): ValidationError[] {
+  const base = `/layouts/${index}`;
+  if (!isRecord(layout)) return [validationError(base, "invalid_layout", "Layout must be an object.")];
+  const errors: ValidationError[] = [];
+
+  if (!asString(layout.id)) errors.push(validationError(`${base}/id`, "missing_layout_id", "Layout id is required."));
+  if (!asString(layout.name)) errors.push(validationError(`${base}/name`, "missing_layout_name", "Layout name is required."));
+  const kind = asString(layout.kind);
+  if (!kind || !LAYOUT_KINDS.has(kind)) {
+    errors.push(validationError(`${base}/kind`, "invalid_layout_kind", "Layout kind must be gating_strategy, comparison, or freeform."));
+  }
+  const canvas = layout.canvas;
+  if (!isRecord(canvas) || !isFiniteNumber(canvas.width) || !isFiniteNumber(canvas.height)
+    || Number(canvas.width) <= 0 || Number(canvas.height) <= 0) {
+    errors.push(validationError(`${base}/canvas`, "invalid_layout_canvas", "Layout canvas requires positive finite width and height."));
+  }
+
+  const groups = new Map<string, BoundsGroupSpec>();
+  if (layout.boundsGroups !== undefined && !Array.isArray(layout.boundsGroups)) {
+    errors.push(validationError(`${base}/boundsGroups`, "invalid_array", "boundsGroups must be an array when present."));
+  }
+  const boundsGroups = Array.isArray(layout.boundsGroups) ? layout.boundsGroups : [];
+  boundsGroups.forEach((group, groupIndex) => {
+    const groupPath = `${base}/boundsGroups/${groupIndex}`;
+    if (!isRecord(group)) {
+      errors.push(validationError(groupPath, "invalid_bounds_group", "Bounds group must be an object."));
+      return;
+    }
+    const id = asString(group.id);
+    const channel = asString(group.channel);
+    const scale = asString(group.scale);
+    if (!id) errors.push(validationError(`${groupPath}/id`, "missing_bounds_group_id", "Bounds group id is required."));
+    if (id && groups.has(id)) errors.push(validationError(`${groupPath}/id`, "duplicate_bounds_group_id", `Duplicate bounds group id ${id}.`));
+    if (!channel) errors.push(validationError(`${groupPath}/channel`, "missing_bounds_group_channel", "Bounds group channel is required."));
+    if (!scale || !AXIS_SCALES.has(scale)) {
+      errors.push(validationError(`${groupPath}/scale`, "invalid_axis_scale", "Bounds group scale must be linear, log, arcsinh, or biex."));
+    }
+    errors.push(...validateAxisTransform(group.transform, `${groupPath}/transform`));
+    errors.push(...validateAxisInputDivisor(group.inputDivisor, `${groupPath}/inputDivisor`));
+    errors.push(...validateAxisBounds(group.bounds, `${groupPath}/bounds`));
+    if (scale && PARAMETERIZED_SCALES.has(scale) && transformSignature(group.transform) === null) {
+      errors.push(validationError(
+        `${groupPath}/transform`,
+        "missing_axis_transform",
+        `Bounds group ${id ?? groupIndex} uses ${scale}, so it must state transform parameters; a scale name alone does not identify a transform.`,
+      ));
+    }
+    if (id && channel && scale) {
+      groups.set(id, {
+        channel,
+        scale,
+        transform: transformSignature(group.transform),
+        inputDivisor: isFiniteNumber(group.inputDivisor) ? Number(group.inputDivisor) : 1,
+      });
+    }
+  });
+
+  if (!Array.isArray(layout.panels)) {
+    errors.push(validationError(`${base}/panels`, "invalid_array", "Layout panels must be an array."));
+    return errors;
+  }
+
+  const panelIds = new Set<string>();
+  layout.panels.forEach((panel, panelIndex) => {
+    const panelPath = `${base}/panels/${panelIndex}`;
+    if (!isRecord(panel)) {
+      errors.push(validationError(panelPath, "invalid_layout_panel", "Layout panel must be an object."));
+      return;
+    }
+    const panelId = asString(panel.id);
+    if (!panelId) errors.push(validationError(`${panelPath}/id`, "missing_panel_id", "Panel id is required."));
+    if (panelId && panelIds.has(panelId)) {
+      errors.push(validationError(`${panelPath}/id`, "duplicate_panel_id", `Duplicate panel id ${panelId}.`));
+    }
+    if (panelId) panelIds.add(panelId);
+
+    // An unresolved panel is allowed to carry no sources and no size, since a
+    // source requires a known sample and population, and a size that is absent
+    // from the source file may not be invented to fill the gap.
+    const panelResolved = !(isRecord(panel.status) && asString(panel.status.state) === "unresolved");
+    const position = panel.position;
+    if (!isRecord(position) || !isFiniteNumber(position.x) || !isFiniteNumber(position.y)
+      || !isFiniteNumber(position.width) || !isFiniteNumber(position.height)
+      || Number(position.width) < 0 || Number(position.height) < 0
+      || (panelResolved && (Number(position.width) <= 0 || Number(position.height) <= 0))) {
+      errors.push(validationError(
+        `${panelPath}/position`,
+        "invalid_panel_position",
+        "Panel position requires finite x and y and non-negative width and height; a resolved panel requires both to be positive.",
+      ));
+    }
+    if (!Array.isArray(panel.sources) || (panel.sources.length === 0 && panelResolved)) {
+      errors.push(validationError(`${panelPath}/sources`, "missing_panel_sources", "A resolved panel requires at least one source."));
+    } else {
+      panel.sources.forEach((source, sourceIndex) => {
+        const sourcePath = `${panelPath}/sources/${sourceIndex}`;
+        if (!isRecord(source)) {
+          errors.push(validationError(sourcePath, "invalid_panel_source", "Panel source must be an object."));
+          return;
+        }
+        const sample = asString(source.sample);
+        if (!sample) {
+          errors.push(validationError(`${sourcePath}/sample`, "missing_sample_id", "Panel source sample is required."));
+        } else if (!context.sampleIds.has(sample)) {
+          errors.push(validationError(`${sourcePath}/sample`, "unknown_sample", `Sample ${sample} is not present.`));
+        }
+        const parent = asString(source.parent);
+        if (!parent) {
+          errors.push(validationError(`${sourcePath}/parent`, "missing_parent_gate", "Panel source parent is required; use \"root\" for the ungated population."));
+        } else if (parent !== "root" && !context.populationIds.has(parent)) {
+          errors.push(validationError(`${sourcePath}/parent`, "unknown_parent_gate", `Parent population ${parent} is not present.`));
+        }
+        const gate = source.gate === undefined ? undefined : asString(source.gate);
+        if (source.gate !== undefined && (!gate || !context.gateIds.has(gate))) {
+          errors.push(validationError(`${sourcePath}/gate`, "unknown_gate", `Gate ${String(source.gate)} is not present.`));
+        }
+        const compensationId = source.compensationId === undefined ? undefined : asString(source.compensationId);
+        if (source.compensationId !== undefined && (!compensationId || !context.compensationIds.has(compensationId))) {
+          errors.push(validationError(`${sourcePath}/compensationId`, "unknown_compensation_id", `Compensation ${String(source.compensationId)} is not present.`));
+        }
+        if (source.unresolvedCompensation !== undefined) {
+          const unresolved = isRecord(source.unresolvedCompensation) ? source.unresolvedCompensation : null;
+          if (!unresolved || !asString(unresolved.reference) || !asString(unresolved.detail)) {
+            errors.push(validationError(
+              `${sourcePath}/unresolvedCompensation`,
+              "invalid_unresolved_compensation",
+              "unresolvedCompensation requires a reference and a detail describing why it could not be bound.",
+            ));
+          }
+          if (source.compensationId !== undefined) {
+            errors.push(validationError(
+              `${sourcePath}/unresolvedCompensation`,
+              "conflicting_compensation_state",
+              "A source cannot both resolve a compensationId and carry an unresolved compensation reference.",
+            ));
+          }
+        }
+      });
+    }
+
+    errors.push(...validatePanelAxis(panel.x, `${panelPath}/x`, groups, panelResolved));
+    if (panel.y !== undefined) errors.push(...validatePanelAxis(panel.y, `${panelPath}/y`, groups, panelResolved));
+
+    const plotType = panel.plotType === undefined ? undefined : asString(panel.plotType);
+    if (panel.plotType !== undefined && (!plotType || !LAYOUT_PLOT_TYPES.has(plotType))) {
+      errors.push(validationError(`${panelPath}/plotType`, "invalid_plot_type", "Panel plotType must be pseudocolor, dot, contour, or histogram."));
+    }
+    if (plotType === "histogram" && panel.y !== undefined) {
+      errors.push(validationError(`${panelPath}/y`, "histogram_with_y_axis", "A histogram panel must not define a y axis."));
+    }
+
+    errors.push(...validatePanelStatus(panel.status, `${panelPath}/status`));
+  });
+
   return errors;
 }
 
@@ -689,6 +1128,25 @@ export async function validateWorkspaceObject(workspacePath: string, workspace: 
       errors.push(validationError(`/compensations/${index}/sample`, "unknown_sample", `Sample ${sample} is not present.`));
     }
   });
+
+  if (candidate.layouts !== undefined && !Array.isArray(candidate.layouts)) {
+    errors.push(validationError("/layouts", "invalid_array", "layouts must be an array when present."));
+  }
+  const layouts = Array.isArray(candidate.layouts) ? candidate.layouts : [];
+  const layoutIds = new Set<string>();
+  layouts.forEach((layout, index) => {
+    errors.push(...validateLayoutShape(layout, index, {
+      sampleIds,
+      populationIds: parentPopulationIds,
+      gateIds,
+      compensationIds,
+    }));
+    if (!isRecord(layout)) return;
+    const id = asString(layout.id);
+    if (id && layoutIds.has(id)) errors.push(validationError(`/layouts/${index}/id`, "duplicate_layout_id", `Duplicate layout id ${id}.`));
+    if (id) layoutIds.add(id);
+  });
+  errors.push(...validateLayoutChannels(layouts, metadataBySample));
 
   const storedGateById = new Map(gates.filter(isRecord).map((gate) => [asString(gate.id), gate]));
   for (const gate of gates) {

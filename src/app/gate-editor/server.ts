@@ -66,6 +66,8 @@ export type GateEditorStateOptions = {
 export type PlotContextOptions = GateEditorStateOptions;
 
 export type RenderablePlotContext = {
+  /** Explicit plot-only mapping shared by events, overlays and tick labels. */
+  axisMapping?: { x: { forward: (value: number) => number; inverse: (value: number) => number }; y: { forward: (value: number) => number; inverse: (value: number) => number } };
   ok: true;
   workspacePath: string;
   revision: number;

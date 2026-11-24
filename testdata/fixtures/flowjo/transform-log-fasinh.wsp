@@ -4,7 +4,7 @@
   xmlns:transforms="http://www.isac-net.org/std/Gating-ML/v2.0/transformations"
   xmlns:data-type="http://www.isac-net.org/std/Gating-ML/v2.0/datatypes">
   <Cytometers>
-    <Cytometer name="Transform Test" linearRescale="10000">
+    <Cytometer name="Transform Test" cyt="Transform Test" linearRescale="10000" logRescale="100">
       <TransformStore>
         <MatrixID matrixId="uncompensated">
           <Transforms>
@@ -20,6 +20,9 @@
             <transforms:biex transforms:length="256" transforms:maxRange="214748" transforms:neg="0" transforms:width="-10" transforms:pos="4.3319291278">
               <data-type:parameter data-type:name="BIEX-A"/>
             </transforms:biex>
+            <transforms:linear transforms:minRange="0" transforms:maxRange="214748" gain="1">
+              <data-type:parameter data-type:name="LIN-A"/>
+            </transforms:linear>
           </Transforms>
         </MatrixID>
       </TransformStore>
@@ -51,6 +54,13 @@
             <gating:RangeGate gating:id="gate-biex-range">
               <gating:dimension gating:min="10" gating:max="100">
                 <data-type:parameter data-type:name="BIEX-A"/>
+              </gating:dimension>
+            </gating:RangeGate>
+          </Gate>
+          <Gate name="Lin Range" gating:id="gate-lin-range">
+            <gating:RangeGate gating:id="gate-lin-range">
+              <gating:dimension gating:min="3" gating:max="7">
+                <data-type:parameter data-type:name="LIN-A"/>
               </gating:dimension>
             </gating:RangeGate>
           </Gate>

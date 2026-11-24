@@ -17,14 +17,23 @@ import {
   type NativeGateEditorWindow,
 } from "../app/gate-editor/native-window.js";
 import { renderPlotImage } from "../app/gate-editor/plot-image.js";
+import { renderLayout } from "../app/gate-editor/layout-image.js";
 import { GATE_EDITOR_HTML } from "../app/gate-editor/ui.js";
 import { getGateEditorState, getPlotContext, recommendedAxes, startGateEditorServer, type GateEditorServer } from "../app/gate-editor/server.js";
 import {
   FlowcytoError,
   deleteGate,
+  deleteLayout,
   estimateCompensationFromControls,
   exportFlowJoWorkspace,
   getEventPreview,
+  getLayout,
+  listLayouts,
+  upsertLayout,
+  validateLayout,
+  suggestComparisonLayout,
+  suggestGatingStrategyLayout,
+  type ComparisonPanelInput,
   getPopulationGraph,
   getPopulationTable,
   importFlowJoWorkspace,
@@ -49,6 +58,7 @@ import {
   writeWorkspace,
   type FlowcytoWorkspace,
   type FlowcytoView,
+  type FlowcytoLayout,
   type WorkspaceGate,
 } from "../core/index.js";
 
@@ -779,7 +789,7 @@ server.registerTool(
 server.registerTool(
   "import_flowjo_workspace",
   {
-    description: "Import FlowJo .wsp gates into a canonical flowcyto.workspace.json. Pass sample_names or sample_ids for a single-sample import; omit them only for intentional batch import. Existing sample paths are preserved unless overwrite_samples=true. Requires explicit sample_path_map when FlowJo file URIs are not valid local FCS paths. Supports polygon, rectangle, range, and Gating-ML quadrant gates.",
+    description: "Import FlowJo .wsp gates and layouts into a canonical flowcyto.workspace.json. Pass sample_names or sample_ids for a single-sample import; omit them only for intentional batch import. Existing sample paths are preserved unless overwrite_samples=true. Requires explicit sample_path_map when FlowJo file URIs are not valid local FCS paths. Supports polygon, rectangle, range, and Gating-ML quadrant gates. Panels that cannot be bound to a known sample, population or parameter are kept with an explicit unresolved status rather than dropped, and an axis compensation reference that cannot be bound is recorded as unknown rather than treated as uncompensated. The source .wsp and FCS files are never modified; dry_run additionally writes no workspace file.",
     inputSchema: {
       wsp_path: z.string(),
       workspace_dir: z.string(),
@@ -789,11 +799,13 @@ server.registerTool(
       sample_path_map: z.record(z.string(), z.string()).optional(),
       overwrite_samples: z.boolean().optional(),
       overwrite_gates: z.boolean().optional(),
+      import_layouts: z.boolean().optional(),
+      dry_run: z.boolean().optional(),
     },
     outputSchema: JsonResultSchema,
     annotations: { readOnlyHint: false },
   },
-  async ({ wsp_path, workspace_dir, sample_names, sample_ids, sample_id_map, sample_path_map, overwrite_samples, overwrite_gates }) => toolContent(() =>
+  async ({ wsp_path, workspace_dir, sample_names, sample_ids, sample_id_map, sample_path_map, overwrite_samples, overwrite_gates, import_layouts, dry_run }) => toolContent(() =>
     importFlowJoWorkspace({
       wspPath: wsp_path,
       workspaceDir: workspace_dir,
@@ -803,6 +815,8 @@ server.registerTool(
       samplePathMap: sample_path_map,
       overwriteSamples: overwrite_samples,
       overwriteGates: overwrite_gates,
+      importLayouts: import_layouts,
+      dryRun: dry_run,
     }),
   ),
 );
@@ -1677,6 +1691,193 @@ server.registerTool(
       view: view as FlowcytoView,
       expectedRevision: expected_revision,
     })),
+);
+
+server.registerTool(
+  "suggest_comparison_layout",
+  {
+    description: "Propose a layout without writing it. Supply explicit source and axis objects for each panel; different samples may show different populations. grid and ragged by_sample arrangements are supported. Shared bounds are not computed yet; unsupported renderer configurations are reported, never silently substituted.",
+    inputSchema: {
+      workspace_path: z.string(), id: z.string(), name: z.string(),
+      panels: z.array(z.object({
+        source: z.object({ sample: z.string(), parent: z.string(), gate: z.string().optional(), compensationId: z.string().optional() }),
+        x: z.object({ channel: z.string() }).passthrough(),
+        y: z.object({ channel: z.string() }).passthrough().optional(),
+        title: z.string().optional(),
+      })).min(1), arrangement: z.enum(["grid", "by_sample"]).optional(),
+      columns: z.number().int().positive().optional(),
+    },
+    outputSchema: JsonResultSchema, annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, id, name, panels, arrangement, columns }) => toolContent(() =>
+    suggestComparisonLayout({ workspacePath: workspace_path, id, name, panels: panels as ComparisonPanelInput[], arrangement, columns })),
+);
+
+server.registerTool(
+  "suggest_gating_strategy_layout",
+  {
+    description: "Propose one parent-population/child-gate panel per gate without writing. Uses gate axes, preserves branches, and does not infer compensation. linear is a vertical sequence; tree groups panels by depth. Automatic matched bounds and independent FlowJo visual validation remain pending.",
+    inputSchema: {
+      workspace_path: z.string(), id: z.string(), name: z.string(), sample_id: z.string(),
+      arrangement: z.enum(["linear", "tree"]).optional(), compensation_id: z.string().optional(),
+    },
+    outputSchema: JsonResultSchema, annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, id, name, sample_id, arrangement, compensation_id }) => toolContent(() =>
+    suggestGatingStrategyLayout({ workspacePath: workspace_path, id, name, sampleId: sample_id, arrangement, compensationId: compensation_id })),
+);
+
+server.registerTool(
+  "render_layout",
+  {
+    description: "Return per-panel render results and actual applied compensation. as_recorded applies stored matrix references; none applies no additional compensation and does not undo existing FCS processing. Disabling recorded compensation blocks those panels to avoid invalid gate statistics. Unsupported transforms/bounds and unresolved panels are explicit placeholders.",
+    inputSchema: {
+      workspace_path: z.string(),
+      layout_id: z.string(),
+      compensation: z.enum(["as_recorded", "none"]).optional(),
+      max_events: z.number().int().positive().optional(),
+      format: z.enum(["auto", "points", "bins"]).optional(),
+      bin_width: z.number().int().positive().optional(),
+      bin_height: z.number().int().positive().optional(),
+      max_panels: z.number().int().positive().optional(),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, layout_id, compensation, max_events, format, bin_width, bin_height, max_panels }) => toolContent(() =>
+    renderLayout({
+      workspacePath: workspace_path,
+      layoutId: layout_id,
+      compensation,
+      maxEvents: max_events,
+      format,
+      binWidth: bin_width,
+      binHeight: bin_height,
+      maxPanels: max_panels,
+      withoutImage: true,
+    })),
+);
+
+server.registerTool(
+  "render_layout_image",
+  {
+    description: "Render a layout SVG with per-panel clip IDs and an expanded viewport separate from stored page geometry. as_recorded applies stored compensation; none means no additional compensation, not raw data. Panels requiring disabled compensation, unsupported explicit transforms/bounds, or unresolved references become labelled placeholders. Independent FlowJo visual validation remains pending.",
+    inputSchema: {
+      workspace_path: z.string(),
+      layout_id: z.string(),
+      compensation: z.enum(["as_recorded", "none"]).optional(),
+      max_events: z.number().int().positive().optional(),
+      format: z.enum(["auto", "points", "bins"]).optional(),
+      bin_width: z.number().int().positive().optional(),
+      bin_height: z.number().int().positive().optional(),
+      max_panels: z.number().int().positive().optional(),
+      output: z.enum(["content", "file", "both"]).optional(),
+      output_path: z.string().optional(),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, layout_id, compensation, max_events, format, bin_width, bin_height, max_panels, output, output_path }) => toolContent(() =>
+    renderLayout({
+      workspacePath: workspace_path,
+      layoutId: layout_id,
+      compensation,
+      maxEvents: max_events,
+      format,
+      binWidth: bin_width,
+      binHeight: bin_height,
+      maxPanels: max_panels,
+      output,
+      outputPath: output_path,
+    })),
+);
+
+server.registerTool(
+  "list_layouts",
+  {
+    description: "List layouts stored in the workspace with per-layout panel counts, including how many panels are unresolved and why. A layout arranges plot panels (gating strategy, sample comparison, or freeform); it does not apply compensation.",
+    inputSchema: {
+      workspace_path: z.string(),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path }) => toolContent(() => listLayouts(workspace_path)),
+);
+
+server.registerTool(
+  "get_layout",
+  {
+    description: "Return one stored layout in full, including every panel and its resolved or unresolved status. Unresolved panels are retained with a typed reason rather than dropped, so a partial import reports as partial.",
+    inputSchema: {
+      workspace_path: z.string(),
+      layout_id: z.string(),
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, layout_id }) => toolContent(() => getLayout(workspace_path, layout_id)),
+);
+
+server.registerTool(
+  "validate_layout",
+  {
+    description: "Validate a candidate layout against the current workspace without writing it. Checks panel sources against known samples, populations and compensation ids, and checks that every axis in a bounds group matches that group's channel and scale. Use before upsert_layout to see errors without consuming a revision.",
+    inputSchema: {
+      workspace_path: z.string(),
+      layout: JsonObject,
+    },
+    outputSchema: JsonResultSchema,
+    annotations: { readOnlyHint: true },
+  },
+  async ({ workspace_path, layout }) => toolContent(() =>
+    validateLayout({ workspacePath: workspace_path, layout: layout as FlowcytoLayout })),
+);
+
+server.registerTool(
+  "upsert_layout",
+  {
+    description: "Create or update a layout in the canonical workspace artifact using revision-safe writes. Use expected_revision from get_workspace_revision or list_layouts. Panels carry compensation per source, never per panel, and nothing is applied without an explicit compensation id. Do not patch workspace JSON directly.",
+    inputSchema: {
+      workspace_path: z.string(),
+      layout: JsonObject,
+      expected_revision: z.number().int(),
+    },
+    outputSchema: JsonResultSchema,
+  },
+  async ({ workspace_path, layout, expected_revision }) => toolContent(() =>
+    upsertLayout({
+      workspacePath: workspace_path,
+      layout: layout as FlowcytoLayout,
+      expectedRevision: expected_revision,
+    }).then((result) => ({
+      ...result,
+      nextAction: result.ok ? workspaceRevisionNextAction(workspace_path) : null,
+    })),
+  ),
+);
+
+server.registerTool(
+  "delete_layout",
+  {
+    description: "Delete a layout from the canonical workspace artifact using revision-safe writes. This removes only the layout; gates, samples and compensation are untouched.",
+    inputSchema: {
+      workspace_path: z.string(),
+      layout_id: z.string(),
+      expected_revision: z.number().int(),
+    },
+    outputSchema: JsonResultSchema,
+  },
+  async ({ workspace_path, layout_id, expected_revision }) => toolContent(() =>
+    deleteLayout({
+      workspacePath: workspace_path,
+      layoutId: layout_id,
+      expectedRevision: expected_revision,
+    }).then((result) => ({
+      ...result,
+      nextAction: result.ok ? workspaceRevisionNextAction(workspace_path) : null,
+    })),
+  ),
 );
 
 server.registerTool(

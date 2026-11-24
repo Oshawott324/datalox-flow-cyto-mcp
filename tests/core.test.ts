@@ -9,6 +9,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { chromium } from "playwright";
 import { describe, expect, it } from "vitest";
+import { XMLBuilder, XMLParser } from "fast-xml-parser";
 
 import {
   isLocalGateEditorPreviewUrl,
@@ -702,13 +703,19 @@ describe("flowcyto core", () => {
     })).rejects.toMatchObject({ code: "flowjo_sample_filter_no_match" });
   });
 
-  it("inverts FlowJo log, flog, and fasinh gate coordinates on import", async () => {
+  it("converts FlowJo gate coordinates by the cytometer rescale, not by a transform inverse", async () => {
+    // FlowJo stores gate coordinates in its own data space: the FCS value
+    // divided by the cytometer's rescale factor. They are not display/channel
+    // values, so inverting the transform is a domain error. Verified against a
+    // real workspace whose samples declare $PnR=2147483647 while its cytometer
+    // declares linMax=214748 with linearRescale=10000, and matching FlowKit,
+    // which documents the stored values as untransformed.
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-transform-import-"));
     const samplePath = path.join(dir, "transform-sample.fcs");
     await writeTinyIntegerFcs({
       fcsPath: samplePath,
-      channels: ["LOG-A", "FLOG-A", "FASINH-A", "BIEX-A"],
-      rows: [[100, 200, 300, 400], [150, 250, 350, 450]],
+      channels: ["LOG-A", "FLOG-A", "FASINH-A", "BIEX-A", "LIN-A"],
+      rows: [[100, 200, 300, 400, 500], [150, 250, 350, 450, 550]],
     });
 
     const result = await importFlowJoWorkspace({
@@ -717,50 +724,112 @@ describe("flowcyto core", () => {
       samplePathMap: { "transform-sample.fcs": samplePath },
     });
     const workspace = await readWorkspace(result.workspacePath);
-    const logRect = workspace.gates.find((gate) => gate.id === "gate-log-rect");
-    const fasinhRange = workspace.gates.find((gate) => gate.id === "gate-fasinh-range");
-    const biexRange = workspace.gates.find((gate) => gate.id === "gate-biex-range");
-    const biexRectRange = workspace.gates.find((gate) => gate.id === "gate-biex-rect-range");
+    const gate = (id: string) => workspace.gates.find((entry) => entry.id === id);
+    const logRect = gate("gate-log-rect");
+    const fasinhRange = gate("gate-fasinh-range");
+    const biexRange = gate("gate-biex-range");
+    const biexRectRange = gate("gate-biex-rect-range");
+    const linRange = gate("gate-lin-range");
 
     expect(result.warnings).toEqual([]);
-    expect(logRect).toMatchObject({
-      type: "rect",
-      x: "LOG-A",
-      y: "FLOG-A",
-      xMin: 10,
-      xMax: 100000,
-      yMax: 10000,
+    // The fixture declares logRescale=100 and linearRescale=10000, so a test
+    // that applied the wrong factor, or none, cannot pass.
+    expect(logRect).toMatchObject({ type: "rect", x: "LOG-A", y: "FLOG-A", xMin: 50, xMax: 150, yMin: 100, yMax: 200 });
+    expect(fasinhRange).toMatchObject({ type: "range", x: "FASINH-A", min: 10000, max: 14000 });
+    expect(biexRange).toMatchObject({ type: "range", x: "BIEX-A", min: 1000, max: 10000 });
+    // A one-dimensional RectangleGate must use the same conversion as a
+    // RangeGate on the same channel and the same stored values.
+    expect(biexRectRange).toMatchObject({ type: "range", x: "BIEX-A", min: 1000, max: 10000 });
+    // A linear parameter takes linearRescale, not logRescale.
+    expect(linRange).toMatchObject({ type: "range", x: "LIN-A", min: 30000, max: 70000 });
+  });
+
+  it("binds each sample to its own cytometer and refuses to guess when it cannot", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-flowjo-cytometer-bind-"));
+    const betaPath = path.join(dir, "beta-sample.fcs");
+    const unknownPath = path.join(dir, "unknown-sample.fcs");
+    // $CYT is what ties a sample to a cytometer; the fixture declares Alpha
+    // first, so taking the first cytometer would silently use the wrong factors.
+    await writeTinyIntegerFcs({
+      fcsPath: betaPath,
+      channels: ["LIN-A", "BIEX-A"],
+      rows: [[100, 200], [150, 250]],
+      extraKeywords: { $CYT: "Beta" },
     });
-    expect(logRect?.type === "rect" ? logRect.yMin : Number.NaN).toBeCloseTo(316.22776601683796, 10);
-    expect(fasinhRange).toMatchObject({
-      type: "range",
-      x: "FASINH-A",
+    await writeTinyIntegerFcs({
+      fcsPath: unknownPath,
+      channels: ["LIN-A", "BIEX-A"],
+      rows: [[100, 200], [150, 250]],
+      extraKeywords: { $CYT: "Gamma" },
     });
-    if (fasinhRange?.type !== "range") throw new Error("Expected fasinh range gate.");
-    const invertFasinh = (value: number) => {
-      const m = 4;
-      const a = 0.7;
-      const length = 256;
-      const t = 12000;
-      return Math.sinh(((m + a) * Math.LN10 * value / length) - (a * Math.LN10)) * t / Math.sinh(m * Math.LN10);
-    };
-    expect(fasinhRange.min).toBeCloseTo(invertFasinh(100), 10);
-    expect(fasinhRange.max).toBeCloseTo(invertFasinh(140), 10);
-    const biexTransform = buildBiexTransform({
-      length: 256,
-      maxRange: 214748,
-      pos: 4.3319291278,
-      neg: 0,
-      width: -10,
+
+    const result = await importFlowJoWorkspace({
+      wspPath: path.join(flowJoFixtureDir, "two-cytometers-rescale.wsp"),
+      workspaceDir: dir,
+      sampleNames: ["beta-sample.fcs"],
+      samplePathMap: { "beta-sample.fcs": betaPath, "unknown-sample.fcs": unknownPath },
     });
-    expect(biexRange).toMatchObject({ type: "range", x: "BIEX-A" });
-    expect(biexRange?.type === "range" ? biexRange.min : Number.NaN).toBeCloseTo(biexTransform.inverse(10), 10);
-    expect(biexRange?.type === "range" ? biexRange.max : Number.NaN).toBeCloseTo(biexTransform.inverse(100), 10);
-    // One-dimensional RectangleGate with biex transform must apply the same coordinate
-    // inversion as a RangeGate on the same channel and display-space values.
-    expect(biexRectRange).toMatchObject({ type: "range", x: "BIEX-A" });
-    expect(biexRectRange?.type === "range" ? biexRectRange.min : Number.NaN).toBeCloseTo(biexTransform.inverse(10), 10);
-    expect(biexRectRange?.type === "range" ? biexRectRange.max : Number.NaN).toBeCloseTo(biexTransform.inverse(100), 10);
+    const workspace = await readWorkspace(result.workspacePath);
+    const gate = (id: string) => workspace.gates.find((entry) => entry.id.endsWith(id));
+
+    // Beta: linearRescale=1000, logRescale=2000. Alpha's 10/20 would give 30/70.
+    expect(gate("gate-beta-lin")).toMatchObject({ type: "range", min: 3000, max: 7000 });
+    expect(gate("gate-beta-biex")).toMatchObject({ type: "range", min: 20000, max: 200000 });
+
+    // A failed import after reading a valid sample must not partly update state.
+    const before = await fs.readFile(result.workspacePath, "utf8");
+    await expect(importFlowJoWorkspace({
+      wspPath: path.join(flowJoFixtureDir, "two-cytometers-rescale.wsp"), workspaceDir: dir,
+      samplePathMap: { "beta-sample.fcs": betaPath, "unknown-sample.fcs": unknownPath },
+    })).rejects.toMatchObject({ code: "unresolved_flowjo_cytometer" });
+    expect(await fs.readFile(result.workspacePath, "utf8")).toBe(before);
+  });
+
+  it.each(["conflicting sole cytometer", "duplicate identity", "missing identity"])("rejects %s without creating a workspace", async (scenario) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-cytometer-reject-"));
+    const samplePath = path.join(dir, "beta-sample.fcs");
+    await writeTinyIntegerFcs({ fcsPath: samplePath, channels: ["LIN-A", "BIEX-A"], rows: [[10, 20]],
+      extraKeywords: scenario === "missing identity" ? {} : { $CYT: "Beta" } });
+    const xml = new XMLParser({ ignoreAttributes: false }).parse(await fs.readFile(path.join(flowJoFixtureDir, "two-cytometers-rescale.wsp"), "utf8"));
+    if (scenario === "conflicting sole cytometer") xml.Workspace.Cytometers.Cytometer = [xml.Workspace.Cytometers.Cytometer[0]];
+    if (scenario === "duplicate identity") xml.Workspace.Cytometers.Cytometer[0]["@_cyt"] = "Beta";
+    const wspPath = path.join(dir, "source.wsp");
+    await fs.writeFile(wspPath, new XMLBuilder({ ignoreAttributes: false }).build(xml));
+    await expect(importFlowJoWorkspace({ wspPath, workspaceDir: dir, sampleNames: ["beta-sample.fcs"],
+      samplePathMap: { "beta-sample.fcs": samplePath } })).rejects.toMatchObject({ code: "unresolved_flowjo_cytometer" });
+    await expect(fs.access(path.join(dir, "flowcyto.workspace.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each(["0", "-1", "NaN", "Infinity", "1e999", "", " ", "not-a-number"])("rejects declared rescale %j instead of defaulting to one", async (value) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-rescale-reject-"));
+    const samplePath = path.join(dir, "beta-sample.fcs");
+    await writeTinyIntegerFcs({ fcsPath: samplePath, channels: ["LIN-A", "BIEX-A"], rows: [[10, 20]], extraKeywords: { $CYT: "Beta" } });
+    for (const field of ["linearRescale", "logRescale"]) {
+      const xml = new XMLParser({ ignoreAttributes: false }).parse(await fs.readFile(path.join(flowJoFixtureDir, "two-cytometers-rescale.wsp"), "utf8"));
+      xml.Workspace.Cytometers.Cytometer[1][`@_${field}`] = value;
+      const wspPath = path.join(dir, "source.wsp");
+      await fs.writeFile(wspPath, new XMLBuilder({ ignoreAttributes: false }).build(xml));
+      await expect(importFlowJoWorkspace({ wspPath, workspaceDir: dir, sampleNames: ["beta-sample.fcs"],
+        samplePathMap: { "beta-sample.fcs": samplePath } })).rejects.toMatchObject({ code: "invalid_flowjo_rescale", path: `/Cytometers/Cytometer/${field}` });
+      await expect(fs.access(path.join(dir, "flowcyto.workspace.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
+  it.each([undefined, "1"])("accepts absent or explicit unit rescale (%s)", async (value) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-rescale-unit-"));
+    const samplePath = path.join(dir, "beta-sample.fcs");
+    await writeTinyIntegerFcs({ fcsPath: samplePath, channels: ["LIN-A", "BIEX-A"], rows: [[10, 20]], extraKeywords: { $CYT: "Beta" } });
+    const xml = new XMLParser({ ignoreAttributes: false }).parse(await fs.readFile(path.join(flowJoFixtureDir, "two-cytometers-rescale.wsp"), "utf8"));
+    for (const field of ["linearRescale", "logRescale"]) {
+      if (value === undefined) delete xml.Workspace.Cytometers.Cytometer[1][`@_${field}`];
+      else xml.Workspace.Cytometers.Cytometer[1][`@_${field}`] = value;
+    }
+    const wspPath = path.join(dir, "source.wsp");
+    await fs.writeFile(wspPath, new XMLBuilder({ ignoreAttributes: false }).build(xml));
+    const result = await importFlowJoWorkspace({ wspPath, workspaceDir: dir, sampleNames: ["beta-sample.fcs"], samplePathMap: { "beta-sample.fcs": samplePath } });
+    const workspace = await readWorkspace(result.workspacePath);
+    expect(workspace.gates.find((gate) => gate.id.endsWith("gate-beta-lin"))).toMatchObject({ min: 3, max: 7 });
+    expect(workspace.gates.find((gate) => gate.id.endsWith("gate-beta-biex"))).toMatchObject({ min: 10, max: 100 });
   });
 
   it("skips unsupported FlowJo gate types with warnings, promotes orphaned children to parent", async () => {
@@ -2337,6 +2406,7 @@ describe("flowcyto core", () => {
     const outputPath = path.join(dir, "detectors.wsp");
     await exportFlowJoWorkspace({ workspacePath, outputPath });
     const xml = await fs.readFile(outputPath, "utf8");
+    expect(xml).toContain('<Cytometer name="Test Cytometer" cyt="Test Cytometer" linearRescale="1" logRescale="1"');
     expect(xml).toContain('<data-type:fcs-dimension data-type:name="BL1-A"');
     expect(xml).toContain('<data-type:fcs-dimension data-type:name="BL3-A"');
     expect(xml).not.toContain('<data-type:fcs-dimension data-type:name="Annexin X-FITC-A"');
@@ -2360,6 +2430,30 @@ describe("flowcyto core", () => {
     const roundTrip = await readWorkspace(imported.workspacePath);
     const quadrant = roundTrip.gates.find((gate) => gate.type === "quadrant");
     expect(quadrant).toMatchObject({ x: "Annexin X-FITC-A", y: "PI-PerCP-Cy5.5-A" });
+  });
+
+  it.each([false, true])("exports multiple cytometers without inventing missing identities (missing=%s)", async (missing) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flowcyto-export-cytometers-"));
+    const samples = [];
+    for (const [index, identity] of ["Alpha", "Beta", ...(missing ? [""] : [])].entries()) {
+      const samplePath = path.join(dir, `sample${index}.fcs`);
+      await writeTinyIntegerFcs({ fcsPath: samplePath, channels: ["X", "Y"], rows: [[10, 20]], extraKeywords: identity ? { $CYT: identity } : {} });
+      samples.push({ id: `sample${index}`, path: samplePath });
+    }
+    const { workspacePath } = await initWorkspace({ rootDir: dir, samplePath: samples[0].path, sampleId: samples[0].id });
+    const workspace = await readWorkspace(workspacePath);
+    expect((await writeWorkspace({ workspacePath, workspace: { ...workspace, samples }, expectedRevision: workspace.revision })).ok).toBe(true);
+    const outputPath = path.join(dir, "export.wsp");
+    if (missing) {
+      await expect(exportFlowJoWorkspace({ workspacePath, outputPath })).rejects.toMatchObject({ code: "unresolved_flowjo_cytometer" });
+      await expect(fs.access(outputPath)).rejects.toMatchObject({ code: "ENOENT" });
+    } else {
+      await exportFlowJoWorkspace({ workspacePath, outputPath });
+      const xml = new XMLParser({ ignoreAttributes: false }).parse(await fs.readFile(outputPath, "utf8"));
+      expect(xml.Workspace.Cytometers.Cytometer.map((node: Record<string, string>) => node["@_cyt"])).toEqual(["Alpha", "Beta"]);
+      const imported = await importFlowJoWorkspace({ wspPath: outputPath, workspaceDir: path.join(dir, "roundtrip") });
+      expect(imported.samplesImported).toBe(2);
+    }
   });
 
   it("exports compensated fluorescence graphs and quadrant dimensions on matching Comp channels", async () => {
@@ -2491,7 +2585,7 @@ describe("flowcyto core", () => {
     expect(uniqueIds.size).toBeGreaterThanOrEqual(2);
     // Cytometers section must be present even when no non-linear views are defined
     expect(xml).toContain("<Cytometers>");
-    expect(xml).toMatch(/<Cytometers>\s*<Cytometer name="Flowcyto" linearRescale="1"\s*\/>\s*<\/Cytometers>/);
+    expect(xml).toMatch(/<Cytometers>\s*<Cytometer name="Flowcyto" cyt="Flowcyto" linearRescale="1" logRescale="1"\s*\/>\s*<\/Cytometers>/);
     expect(xml).toContain('<GroupNode name="All Samples"');
     expect(xml).toContain('<Group name="All Samples"');
     expect(xml).toMatch(/<SampleRefs>[\s\S]*?<SampleRef sampleID="1"\s*\/>[\s\S]*?<SampleRef sampleID="2"\s*\/>[\s\S]*?<\/SampleRefs>/);
@@ -5409,6 +5503,7 @@ describe("flowcyto MCP", () => {
       expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
         "close_gate_editor",
         "delete_gate",
+        "delete_layout",
         "estimate_compensation_from_controls",
         "estimate_compensation_from_gated_controls",
         "export_flowjo_workspace",
@@ -5416,6 +5511,7 @@ describe("flowcyto MCP", () => {
         "get_compensation_matrix",
         "get_event_preview",
         "get_gate_editor_state",
+        "get_layout",
         "get_plot_context",
         "get_population_density",
         "get_population_events",
@@ -5426,6 +5522,7 @@ describe("flowcyto MCP", () => {
         "get_workspace_revision",
         "import_flowjo_workspace",
         "list_compensations",
+        "list_layouts",
         "list_samples",
         "open_fcs",
         "open_gate_editor",
@@ -5434,14 +5531,20 @@ describe("flowcyto MCP", () => {
         "propagate_gates",
         "read_workspace",
         "render_gate_editor",
+        "render_layout",
+        "render_layout_image",
         "render_plot",
         "render_plot_image",
         "suggest_apoptosis_quadrants",
+        "suggest_comparison_layout",
+        "suggest_gating_strategy_layout",
         "suggest_singlet_gate",
         "upsert_compensation_matrix",
         "upsert_gate",
         "upsert_gates",
+        "upsert_layout",
         "upsert_view",
+        "validate_layout",
         "validate_workspace",
         "write_workspace",
       ]);
