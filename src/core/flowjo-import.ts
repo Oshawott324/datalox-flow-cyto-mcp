@@ -41,10 +41,11 @@ type FlowJoTransform = {
 /**
  * FlowJo does not store gate coordinates in FCS units, nor in display/channel
  * units. It stores them in its own data space: the FCS value divided by the
- * cytometer's rescale factor. Verified against the reference workspace, whose
+ * cytometer's rescale factor. Supported by the reference workspace, whose
  * samples declare $PnR=2147483647 while its cytometer declares linMax=214748
- * with linearRescale=logRescale=10000; every stored scatter coordinate is
- * exactly 1/10000 of the matching FCS value.
+ * with linearRescale=logRescale=10000. $PnR/10000 is 214748.3647, not 214748:
+ * the range is consistent with truncation, not an exact identity or independent
+ * proof of gate semantics. FlowJo visual and event-membership checks are pending.
  *
  * This agrees with FlowKit, which documents the stored values as being "in the
  * untransformed space" and forward-applies the transform on import rather than

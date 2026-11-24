@@ -122,15 +122,18 @@ to population totals.
 
 ### Resolved: FlowJo stores gate coordinates in its own data space (2026-11-22)
 
-The convention was established from the serialization itself, not fitted to counts.
+The implemented convention is supported by the serialization evidence below, not fitted to
+counts. The range arithmetic alone does not prove gate-coordinate semantics.
 
-Three independent facts agree:
+Supporting evidence:
 
-1. **The numbers.** Every stored *scatter* coordinate in the reference workspace is exactly
-   1/10000 of the FCS value our importer already produced correctly. The cytometer declares
+1. **The numbers.** The importer scales stored scatter coordinates by 10000. The cytometer declares
    `linearRescale="10000"` and `logRescale="10000"` with `linMax="214748"`, while the samples
-   declare `$PnR="2147483647"`. `2147483647 / 10000 = 214748`: `linMax` *is* the FCS range
-   expressed in FlowJo's space.
+   declare `$PnR="2147483647"`. `$PnR / 10000 = 214748.3647`, while `linMax = 214748`.
+   Conversely, `214748 * 10000 = 2147480000`, which is 3647 below `$PnR`, not equal to it.
+   This is consistent with a truncated rescaled range, not proof of exact equality or of the
+   entire coordinate convention. Independent FlowJo visual and event-membership validation
+   remains pending.
 2. **FlowKit.** Its `wsp_utils.py` states that "FlowJo stores gate boundary info in the
    untransformed space", forward-applies each dimension's transform on import and inverts it on
    export. It never divides a coordinate by `T`, `maxRange`, 4096 or 256. Nothing in it treats a
@@ -233,8 +236,9 @@ near-identity. The cause is a missing domain rescale. The workspace's `<Cytomete
            linearRescale="10000" logRescale="10000" transformType="BIEX" .../>
 ```
 
-FlowJo divides FCS values by 10000 before applying a transform whose `maxRange` is 214748, so
-2147483647 / 10000 = 214748 maps exactly onto the transform ceiling. `flowJoTransformContext`
+The implemented conversion divides FCS values by 10000 before applying a transform whose
+`maxRange` is 214748. `2147483647 / 10000 = 214748.3647`, slightly above that ceiling;
+the declared range is consistent with truncation, not exact equality. `flowJoTransformContext`
 already reads `linearRescale` and uses it for gate coordinate conversion, but the layout axis path
 (`buildPanelAxisMapping`) feeds raw data values straight into the biex transform. Every event
 therefore lands about 10^4 too far along the axis, auto-bounds expand to roughly 47000 biex units
